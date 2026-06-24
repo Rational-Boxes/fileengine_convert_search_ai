@@ -33,6 +33,11 @@ def build_app(config: Config | None = None, *, search: SearchService | None = No
 
     app.state.config = config
     app.state.token_store = token_store or TokenStore(ttl_seconds=config.token_ttl)
+    # Auth coordination: accept http_bridge bearer tokens via introspection
+    # (disabled when CSAI_BRIDGE_URL is unset). One login spans both services.
+    from .bridge_auth import BridgeTokenVerifier
+    app.state.bridge_verifier = BridgeTokenVerifier(
+        config.bridge_url, config.bridge_introspect_ttl)
     gate = PermissionGate(config.permission_cache_ttl)
     app.state.permission_gate = gate
     app.state.search = search or SearchService(config, gate=gate)

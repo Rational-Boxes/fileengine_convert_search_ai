@@ -57,7 +57,8 @@ def _identity(request: Request) -> Identity:
     headers = {k.lower(): v for k, v in request.headers.items()}
     tenant = extract_tenant(headers, headers.get("host", ""), config.tenant)
     ident = resolve_identity(headers.get("authorization", ""), tenant, config,
-                             request.app.state.token_store)
+                             request.app.state.token_store,
+                             getattr(request.app.state, "bridge_verifier", None))
     if ident is None:
         raise HTTPException(status_code=401, detail="authentication required")
     return ident
@@ -133,7 +134,9 @@ async def chat(ws: WebSocket) -> None:
         auth = "Bearer " + ws.query_params["token"]
     tenant = ws.query_params.get("tenant") or extract_tenant(headers, headers.get("host", ""), config.tenant)
 
-    identity = await run_in_threadpool(resolve_identity, auth, tenant, config, ws.app.state.token_store)
+    identity = await run_in_threadpool(
+        resolve_identity, auth, tenant, config, ws.app.state.token_store,
+        getattr(ws.app.state, "bridge_verifier", None))
     await ws.accept()
     if identity is None:
         await ws.send_json({"type": "error", "error": "authentication required"})

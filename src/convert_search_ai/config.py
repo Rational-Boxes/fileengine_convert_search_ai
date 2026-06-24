@@ -128,6 +128,15 @@ class Config:
         self.doc_thumbnail_px = int(_env("CSAI_DOC_THUMBNAIL_PX", "256"))
         self.doc_preview_px = int(_env("CSAI_DOC_PREVIEW_PX", "1280"))
 
+        # --- Auth coordination with the core REST API (http_bridge) ---
+        # When set, a bearer token issued by the bridge is accepted here too:
+        # this service introspects it against the bridge's /v1/auth/introspect,
+        # so one login (LDAP or OAuth, at the bridge) authenticates across both
+        # services. Empty disables coordination (only this service's own
+        # /auth/token bearer tokens + Basic auth are accepted).
+        self.bridge_url = _env("CSAI_BRIDGE_URL", "").rstrip("/")
+        self.bridge_introspect_ttl = int(_env("CSAI_BRIDGE_INTROSPECT_TTL", "60"))
+
     @property
     def pg_dsn(self) -> str:
         return (

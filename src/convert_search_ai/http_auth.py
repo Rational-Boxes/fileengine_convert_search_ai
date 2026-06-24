@@ -46,16 +46,26 @@ def extract_tenant(headers: dict, host: str, default: str) -> str:
     return default
 
 
-def resolve_identity(auth_header: str, tenant: str, config, store: TokenStore) -> Optional[Identity]:
+def resolve_identity(auth_header: str, tenant: str, config, store: TokenStore,
+                     bridge=None) -> Optional[Identity]:
     """Resolve an Authorization header to an authenticated Identity scoped to
-    ``tenant``, or ``None`` if authentication fails / no credentials are given."""
+    ``tenant``, or ``None`` if authentication fails / no credentials are given.
+
+    ``bridge`` (optional ``BridgeTokenVerifier``) enables auth coordination: a
+    bearer token this service didn't issue is validated against the http_bridge,
+    so one bridge login (LDAP or OAuth) works here too."""
     if not auth_header:
         return None
     if auth_header.startswith("Bearer "):
-        identity = store.resolve(auth_header[len("Bearer "):].strip())
-        if identity is None:
-            return None
-        return replace(identity, tenant=tenant)
+        token = auth_header[len("Bearer "):].strip()
+        identity = store.resolve(token)
+        if identity is not None:
+            return replace(identity, tenant=tenant)
+        # Not one of our tokens — try the bridge as the upstream token authority.
+        # Its introspected identity is already tenant-scoped, so use it as-is.
+        if bridge is not None:
+            return bridge.verify(token, tenant)
+        return None
     basic = decode_basic(auth_header)
     if basic is None:
         return None

@@ -139,3 +139,9 @@ list of provider knobs.
 - **Reuses, not reimplements.** The gRPC client is `fileengine` from
   `python_interface`; LDAP auth mirrors `mcp`/the bridges; events come from the
   core publisher per `EVENT_CONTRACT.md`.
+- **One login, two services.** With `CSAI_BRIDGE_URL` set, a bearer token minted
+  by the HTTP bridge (LDAP **or** OAuth) is accepted here via the bridge's
+  `/v1/auth/introspect` (cached briefly). The bridge is the upstream token
+  authority — no shared secret or common token format — so an SPA logs in once
+  and calls both services with the same token. The service still issues its own
+  tokens / accepts Basic auth when coordination is off (standalone).
