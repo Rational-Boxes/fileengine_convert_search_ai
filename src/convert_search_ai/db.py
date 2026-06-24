@@ -24,7 +24,7 @@ def provision_tenant(config: Config, tenant: str) -> str:
     onboarding or first event for a tenant. Returns the schema name."""
     conn = connect(config)
     try:
-        return ensure_tenant_schema(conn, tenant)
+        return ensure_tenant_schema(conn, tenant, config.embedding_dimension)
     finally:
         conn.close()
 
@@ -33,7 +33,8 @@ def connect_for_tenant(config: Config, tenant: str, provision: bool = False):
     """A connection whose ``search_path`` is the tenant's schema (then ``public``
     for the extensions). Set ``provision=True`` to create the schema if missing."""
     conn = connect(config)
-    name = ensure_tenant_schema(conn, tenant) if provision else schema_name(tenant)
+    name = (ensure_tenant_schema(conn, tenant, config.embedding_dimension)
+            if provision else schema_name(tenant))
     with conn.cursor() as cur:
         cur.execute(f'SET search_path TO "{name}", public')
         timeout = int(getattr(config, "db_statement_timeout_ms", 0) or 0)

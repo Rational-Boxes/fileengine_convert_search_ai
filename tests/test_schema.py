@@ -26,5 +26,13 @@ def test_tenant_ddl_targets_the_tenant_schema():
     assert 'CREATE SCHEMA IF NOT EXISTS "tenant_acme"' in ddl
     assert '"tenant_acme".documents' in ddl
     assert '"tenant_acme".chunks' in ddl
-    assert "vector(1024)" in ddl
+    assert "vector(1024)" in ddl                 # default embedding width
     assert "tenant_default" not in ddl  # isolated to the requested tenant
+
+
+def test_tenant_ddl_embedding_dimension_is_configurable():
+    # The pgvector column width follows CSAI_EMBEDDING_DIMENSION so any model
+    # works (e.g. 768 for nomic-embed-text, 1536 for text-embedding-3-small).
+    assert "vector(768)" in tenant_ddl("acme", dimension=768)
+    assert "vector(1536)" in tenant_ddl("acme", 1536)
+    assert "vector(1024)" not in tenant_ddl("acme", 768)

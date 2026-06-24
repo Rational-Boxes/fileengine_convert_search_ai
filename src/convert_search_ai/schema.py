@@ -62,15 +62,17 @@ CREATE INDEX IF NOT EXISTS idx_documents_content_trgm
 CREATE INDEX IF NOT EXISTS idx_documents_name_trgm
     ON "{schema}".documents USING gin (name gin_trgm_ops);
 
--- Chunked + vectorized content for search and RAG. embedding is vector(1024) to
--- match CSAI_EMBEDDING_DIMENSION's default; a model change is an explicit
--- migration (ALTER + re-embed), never a silent mismatch.
+-- Chunked + vectorized content for search and RAG. The embedding column's
+-- dimension is the deployment's CSAI_EMBEDDING_DIMENSION (must match the chosen
+-- model — e.g. 1024 voyage-3, 768 nomic-embed-text, 1536 text-embedding-3-small).
+-- A model change is an explicit migration (ALTER + re-embed), never a silent
+-- mismatch; the schema is fixed at provisioning time.
 CREATE TABLE IF NOT EXISTS "{schema}".chunks (
     id          BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     file_uid    TEXT        NOT NULL REFERENCES "{schema}".documents (file_uid) ON DELETE CASCADE,
     ordinal     INTEGER     NOT NULL,
     text        TEXT        NOT NULL,
-    embedding   vector(1024),
+    embedding   vector({dimension}),
     fts         tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -83,18 +85,22 @@ CREATE INDEX IF NOT EXISTS idx_chunks_embedding
 '''
 
 
-def tenant_ddl(tenant: str) -> str:
-    """The idempotent DDL that provisions a tenant's schema + tables."""
-    return _TENANT_DDL.format(schema=schema_name(tenant))
+def tenant_ddl(tenant: str, dimension: int = 1024) -> str:
+    """The idempotent DDL that provisions a tenant's schema + tables.
+
+    ``dimension`` is the pgvector embedding width — must match the deployment's
+    CSAI_EMBEDDING_DIMENSION / the chosen embedding model."""
+    return _TENANT_DDL.format(schema=schema_name(tenant), dimension=int(dimension))
 
 
-def ensure_tenant_schema(conn, tenant: str) -> str:
+def ensure_tenant_schema(conn, tenant: str, dimension: int = 1024) -> str:
     """Create the tenant's schema + tables if absent (idempotent).
 
     ``conn`` is an open psycopg connection (the extensions must already exist at
-    the database level). Returns the schema name."""
+    the database level). ``dimension`` sets the embedding column width. Returns
+    the schema name."""
     name = schema_name(tenant)
     with conn.cursor() as cur:
-        cur.execute(tenant_ddl(tenant))
+        cur.execute(tenant_ddl(tenant, dimension))
     conn.commit()
     return name
