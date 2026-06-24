@@ -224,6 +224,12 @@ async def convert_document(file_uid: str, request: Request,
     if not await run_in_threadpool(gate.can_read, user_mf, identity, file_uid):
         return JSONResponse(status_code=403, content={"error": "not permitted"})
 
+    # Ensure the tenant's schema + tables exist (idempotent) before converting —
+    # a never-indexed tenant would otherwise hit "relation documents does not
+    # exist" when the pipeline reads prior status.
+    from .db import provision_tenant
+    await run_in_threadpool(provision_tenant, config, identity.tenant)
+
     # Conversion does blocking I/O (gRPC + tools + embedding) — off the event loop.
     out = await run_in_threadpool(_ingestor(request.app).pipeline.convert, file_uid, identity.tenant)
     return JSONResponse(status_code=200, content={
