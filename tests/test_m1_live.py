@@ -4,10 +4,13 @@ core. Uses a fake store (no Postgres needed) and a deterministic one-rendition
 plugin so the test doesn't depend on LibreOffice/ImageMagick being installed."""
 import time
 
+import pytest
+
 from conftest import live
+from convert_search_ai import tools
 from convert_search_ai.pipeline import ConversionPipeline
 from convert_search_ai.plugins.base import ConversionPlugin, Rendition
-from convert_search_ai.plugins.registry import PluginRegistry
+from convert_search_ai.plugins.registry import PluginRegistry, default_registry
 from fakes import FakeStore
 
 
@@ -58,6 +61,49 @@ def test_rendition_round_trip(config):
         assert again.renditions_written == []
         names2 = {e.name for e in (mf.dir(file_uid, tenant=tenant) or [])}
         assert names2 == names
+    finally:
+        mf.remove(file_uid, tenant=tenant)
+        mf.remove(dir_uid, tenant=tenant)
+        mf.close()
+
+
+@live
+@pytest.mark.skipif(not tools.have("pdftoppm"), reason="pdftoppm (poppler) not installed")
+def test_document_previews_written_via_live_core(config):
+    """The real default registry writes the document preview set (icon-sized
+    thumbnail + larger first-page preview) as hidden children of a PDF, through
+    the live gRPC core — idempotently. Complements the fake-plugin round-trip
+    above by exercising the actual poppler-backed doc_preview path."""
+    fpdf = pytest.importorskip("fpdf")
+    from convert_search_ai.core_client import agent_client
+
+    pdf = fpdf.FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=14)
+    pdf.cell(0, 10, "Live Rendition Pipeline Check")
+    data = bytes(pdf.output())
+
+    mf = agent_client(config)
+    tenant = config.tenant
+    dir_uid = mf.mkdir("", f"csai_docprev_{int(time.time())}", tenant=tenant)
+    file_uid = mf.touch(dir_uid, "report.pdf", tenant=tenant)
+    assert file_uid and mf.put(file_uid, data, tenant=tenant) is not False
+
+    try:
+        pipeline = ConversionPipeline(
+            mf=mf, store=FakeStore(), registry=default_registry(config)
+        )
+        out = pipeline.convert(file_uid, tenant)
+        assert out.status == "converted"
+
+        names = {e.name for e in (mf.dir(file_uid, tenant=tenant) or [])}
+        assert any(n.endswith("-thumbnail.png") for n in names), names
+        assert any(n.endswith("-preview.png") for n in names), names
+
+        # Idempotent: a second conversion of the same version writes nothing new.
+        again = pipeline.convert(file_uid, tenant)
+        assert again.renditions_written == []
+        assert {e.name for e in (mf.dir(file_uid, tenant=tenant) or [])} == names
     finally:
         mf.remove(file_uid, tenant=tenant)
         mf.remove(dir_uid, tenant=tenant)
