@@ -52,10 +52,14 @@ def default_registry(config=None) -> PluginRegistry:
     from .text import TextMarkdownPlugin
     from .video import VideoPlugin
 
+    from .doc_preview import DEFAULT_PREVIEW_PX, DEFAULT_THUMBNAIL_PX
+
     backends = getattr(config, "pdf_backends", None) if config is not None else None
+    thumb_px = getattr(config, "doc_thumbnail_px", DEFAULT_THUMBNAIL_PX) if config is not None else DEFAULT_THUMBNAIL_PX
+    preview_px = getattr(config, "doc_preview_px", DEFAULT_PREVIEW_PX) if config is not None else DEFAULT_PREVIEW_PX
     return PluginRegistry([
-        PdfPlugin(backends=backends),
-        OfficePlugin(pdf_backends=backends),
+        PdfPlugin(backends=backends, thumbnail_px=thumb_px, preview_px=preview_px),
+        OfficePlugin(pdf_backends=backends, thumbnail_px=thumb_px, preview_px=preview_px),
         ImagePlugin(),
         VideoPlugin(),
         TextMarkdownPlugin(),

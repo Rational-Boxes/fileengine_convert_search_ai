@@ -117,15 +117,22 @@ without a running publisher — no consumer changes either way.
     thumbnail)
   - `extract(source) -> Markdown | None` (text content, when extractable)
 - **Initial plugins:**
-  - **PDF** → preview image (poppler) + **structure/table-preserving Markdown**.
-    Retaining headings, lists, and especially **tables** is critical, so
-    extraction uses a fidelity-ordered backend chain (`plugins/pdf_backends`),
-    configurable via `CSAI_PDF_BACKENDS` — first installed wins:
-    **docling** (best structure+tables, MIT, heavy/ML) → **pymupdf4llm** (great;
-    PyMuPDF is AGPL) → **pdfplumber** (solid GFM tables, MIT, light) →
-    **pdftotext** (plain text, last resort only).
-  - **Office / documents** → LibreOffice (headless) → PDF rendition, and text is
-    extracted by **rendering to PDF then running the same advanced backends**, so
+  - **PDF** → page-1 preview images (poppler `pdftoppm`): an icon-sized
+    `thumbnail` and a larger `preview` (sizes via `CSAI_DOC_THUMBNAIL_PX` /
+    `CSAI_DOC_PREVIEW_PX`, default 256 / 1280 px longest edge). The source PDF
+    is itself the inline document preview, so no duplicate `pdf` rendition is
+    emitted. Extraction yields **structure/table-preserving Markdown** —
+    retaining headings, lists, and especially **tables** is critical, so it uses
+    a fidelity-ordered backend chain (`plugins/pdf_backends`), configurable via
+    `CSAI_PDF_BACKENDS` — first installed wins: **docling** (best
+    structure+tables, MIT, heavy/ML) → **pymupdf4llm** (great; PyMuPDF is AGPL)
+    → **pdfplumber** (solid GFM tables, MIT, light) → **pdftotext** (plain text,
+    last resort only).
+  - **Office / documents** → LibreOffice (headless) → an inline **`pdf`**
+    rendition (for in-browser viewing), and from that same PDF the page-1
+    `thumbnail` + `preview` images (poppler) — so every supported document type
+    exposes the same icon/preview/inline-PDF set. Text is extracted by
+    **rendering to PDF then running the same advanced backends**, so
     tables/structure survive (LibreOffice's plain-text export flattens them).
   - **Images** → ImageMagick → thumbnail + web preview.
   - **Video** → FFMPEG → web-optimized preview + poster thumbnail.

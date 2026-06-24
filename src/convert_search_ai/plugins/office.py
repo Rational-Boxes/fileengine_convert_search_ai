@@ -1,10 +1,12 @@
-"""Office documents → web PDF rendition + extracted text (LibreOffice headless)."""
+"""Office documents → inline PDF rendition + page-1 preview images + extracted
+text (LibreOffice headless, then poppler for the previews)."""
 from __future__ import annotations
 
 import os
 from typing import List, Optional
 
 from .base import ConversionPlugin, Rendition
+from .doc_preview import DEFAULT_PREVIEW_PX, DEFAULT_THUMBNAIL_PX, page1_previews
 from .. import tools
 
 # MIME -> a source extension LibreOffice recognizes (helps the import filter).
@@ -26,10 +28,15 @@ _EXT = {
 class OfficePlugin(ConversionPlugin):
     name = "office"
 
-    def __init__(self, pdf_backends=None):
+    def __init__(self, pdf_backends=None,
+                 thumbnail_px: int = DEFAULT_THUMBNAIL_PX,
+                 preview_px: int = DEFAULT_PREVIEW_PX):
         # Office text extraction routes through PDF so tables/structure survive
         # (LibreOffice's plain txt export flattens them); same backend chain as PdfPlugin.
         self.pdf_backends = pdf_backends
+        # Page-1 preview sizes (longest edge, px); see CSAI_DOC_*_PX.
+        self.thumbnail_px = thumbnail_px
+        self.preview_px = preview_px
 
     def supports(self, mime: str) -> bool:
         return mime in _EXT
@@ -55,8 +62,14 @@ class OfficePlugin(ConversionPlugin):
             return tools.read_if_exists(os.path.join(d, f"in.{out_ext}")) if ok else None
 
     def render(self, data: bytes, mime: str, name: str) -> List[Rendition]:
+        # One LibreOffice conversion to PDF serves both the inline document
+        # preview and (via poppler) the page-1 thumbnail + larger preview images.
         pdf = self._convert(data, _EXT.get(mime, "bin"), "pdf", "pdf")
-        return [Rendition("pdf", "pdf", pdf, "application/pdf")] if pdf else []
+        if not pdf:
+            return []
+        out = [Rendition("pdf", "pdf", pdf, "application/pdf")]
+        out.extend(page1_previews(pdf, self.thumbnail_px, self.preview_px))
+        return out
 
     def extract(self, data: bytes, mime: str, name: str) -> Optional[str]:
         # Prefer structure/table-preserving extraction: render to PDF, then run

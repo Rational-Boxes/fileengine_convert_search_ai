@@ -14,6 +14,10 @@ permission. See [`design_documents/`](./design_documents) for the
 - **M1** — conversion + renditions: plugin framework, MIME detection, advanced
   structure/table-preserving PDF/Office extraction, idempotent hidden-child
   rendition writer, the event-driven ingest worker + reconcile sweep.
+  Documents (PDF + Office) get a consistent preview set: an icon-sized
+  `thumbnail` and a larger first-page `preview` image (poppler), plus — for
+  Office formats — an inline `pdf` rendition (LibreOffice) for in-browser
+  viewing; images get thumbnail/preview, video a poster + web clip.
 - **M2** — extraction + search: per-tenant Postgres FTS + `pg_trgm` fuzzy over the
   extracted Markdown, bearer-token auth, a permission-gated search + text-request
   surface, and a permission cache that is both TTL-bounded (≤5 min) and

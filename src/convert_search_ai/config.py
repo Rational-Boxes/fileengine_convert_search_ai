@@ -122,6 +122,12 @@ class Config:
             if b.strip()
         ]
 
+        # Page-1 preview image sizes (longest edge, px) for document types
+        # (PDF + Office): an icon-sized thumbnail and a larger inline preview.
+        # Aligned with the image plugin's thumbnail/preview boxes.
+        self.doc_thumbnail_px = int(_env("CSAI_DOC_THUMBNAIL_PX", "256"))
+        self.doc_preview_px = int(_env("CSAI_DOC_PREVIEW_PX", "1280"))
+
     @property
     def pg_dsn(self) -> str:
         return (
