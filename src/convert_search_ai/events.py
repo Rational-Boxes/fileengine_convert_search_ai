@@ -16,10 +16,12 @@ Entry = Tuple[str, dict]
 
 
 class RedisEventSource:
-    def __init__(self, config: Config, consumer_name: str = "worker-1"):
+    def __init__(self, config: Config, consumer_name: str = "worker-1", group: str = None):
         self.config = config
         self.stream = config.events_stream
-        self.group = config.events_group
+        # A distinct group per independent consumer (the ingest worker and the
+        # permission-cache invalidator each get every event — EVENT_CONTRACT §1).
+        self.group = group or config.events_group
         self.consumer = consumer_name
         self._r = None
 

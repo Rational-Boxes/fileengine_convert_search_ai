@@ -7,12 +7,19 @@ permission. See [`design_documents/`](./design_documents) for the
 [development plan](./design_documents/DEVELOPMENT_PLAN.md), and the
 [event contract](./design_documents/EVENT_CONTRACT.md).
 
-## Status — M0 (scaffolding)
+## Status
 
-This is the M0 skeleton: package layout, environment `Config`, the LDAP auth +
-gRPC core client (reused from the FileEngine ecosystem), a FastAPI app with
-health/readiness, the Postgres baseline migration, and a pytest harness with
-`@live` gating. Conversion (M1), search (M2), and RAG chat (M3) are built on top.
+- **M0** — scaffolding: package, `Config`, LDAP auth + gRPC client, health/readiness,
+  Postgres baseline, `@live`-gated pytest harness.
+- **M1** — conversion + renditions: plugin framework, MIME detection, advanced
+  structure/table-preserving PDF/Office extraction, idempotent hidden-child
+  rendition writer, the event-driven ingest worker + reconcile sweep.
+- **M2** — extraction + search: per-tenant Postgres FTS + `pg_trgm` fuzzy over the
+  extracted Markdown, bearer-token auth (`POST /auth/token`, `GET /whoami`), a
+  permission-gated `POST /search` and `GET /documents/{uid}/text`, and a permission
+  cache that is both TTL-bounded (≤5 min) and **invalidated in real time** by the
+  core's `acl.changed`/`role.*` events.
+- **M3** (next) — vectorization + WebSocket RAG chat.
 
 ## Layout
 

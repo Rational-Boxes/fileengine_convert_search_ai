@@ -47,12 +47,20 @@ CREATE TABLE IF NOT EXISTS "{schema}".documents (
                     CHECK (status IN ('pending','converting','converted','indexed','unsupported','error')),
     error           TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Full-text vector over name + extracted Markdown (M2 search).
+    fts             tsvector GENERATED ALWAYS AS (
+                        to_tsvector('english', coalesce(name, '') || ' ' || coalesce(content_md, ''))
+                    ) STORED
 );
 CREATE INDEX IF NOT EXISTS idx_documents_status
     ON "{schema}".documents (status);
+CREATE INDEX IF NOT EXISTS idx_documents_fts
+    ON "{schema}".documents USING gin (fts);
 CREATE INDEX IF NOT EXISTS idx_documents_content_trgm
     ON "{schema}".documents USING gin (content_md gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_documents_name_trgm
+    ON "{schema}".documents USING gin (name gin_trgm_ops);
 
 -- Chunked + vectorized content for search and RAG. embedding is vector(1024) to
 -- match CSAI_EMBEDDING_DIMENSION's default; a model change is an explicit

@@ -77,6 +77,9 @@ class Config:
         # --- Permission cache (DEVELOPMENT_PLAN §8): cap decisions to this many seconds ---
         self.permission_cache_ttl = int(_env("CSAI_PERMISSION_CACHE_TTL", "300"))
 
+        # --- Bearer-token TTL for the /auth/token HTTP path ---
+        self.token_ttl = int(_env("CSAI_TOKEN_TTL", "3600"))
+
         # --- Pluggable AI providers (DEVELOPMENT_PLAN §7; chosen at deploy time) ---
         self.embedding_provider = _env("CSAI_EMBEDDING_PROVIDER", "")   # e.g. voyage|openai|local
         self.embedding_model = _env("CSAI_EMBEDDING_MODEL", "")
