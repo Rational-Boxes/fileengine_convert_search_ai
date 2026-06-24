@@ -71,7 +71,19 @@ pip install -e ".[dev,pdf]"          # 'pdf' = pdfplumber for table-preserving e
 cp .env.example .env                 # fill in agent creds etc.
 pytest -q                            # unit tests; @live tests need LDAP + core
 convert-search-ai                    # serve the FastAPI app (uvicorn)
+convert-search-ai-worker             # the ingest worker — REQUIRED for auto-previews
 ```
+
+> **The app and the worker are two separate processes.** `convert-search-ai`
+> serves the HTTP API (search, chat, on-demand `POST /documents/{uid}/convert`)
+> and the permission-cache invalidator, but it does **not** consume conversion
+> events. Renditions (thumbnail / preview / inline-PDF) are produced
+> automatically only when `convert-search-ai-worker` is also running — it reads
+> the core's `fileengine:events` stream and converts each `file.created` /
+> `file.updated` / `file.restored`. Without it, files uploaded via WebDAV / sync
+> / other clients get **no previews** until someone hits "Generate preview" or a
+> `POST /ingest/reconcile` sweep is run. This in turn requires the **core** to be
+> emitting events — see the core's `FILEENGINE_EVENTS_ENABLED` (off by default).
 
 Install the database-wide extensions once (needs `pgvector`), then provision a
 tenant's schema + tables on demand (mirrors the core's `tenant_<tenant>` model —
