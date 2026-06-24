@@ -73,12 +73,12 @@ Four internal subsystems:
 - **Serving** — search, text-request, and WebSocket RAG chat, all behind the
   permission gate (§8).
 
-## 4. Event-driven ingestion (depends on core publisher)
+## 4. Event-driven ingestion
 
-Ingestion is **event-driven**. FileEngine core does not yet emit file-activity
-events — adding a **generic, broker-agnostic event publisher to core (Redis in
-dev)** is the agreed **next effort** and a hard dependency for live ingestion.
-The contract both sides build against is specified in
+Ingestion is **event-driven**. The FileEngine core publisher is **implemented and
+merged** — it emits generic, broker-agnostic file-activity events (Redis Streams
+in dev) to a single shared stream, **off by default** and enabled with
+`FILEENGINE_EVENTS_ENABLED=true`. The contract this consumer builds against is
 [`EVENT_CONTRACT.md`](./EVENT_CONTRACT.md). Key properties:
 
 - **Generic & shared:** core publishes file-activity events that *any* consumer
@@ -89,17 +89,23 @@ The contract both sides build against is specified in
   swappable to Kafka/NATS/etc. without touching ingestion logic.
 - **Delivery:** at-least-once; processing is **idempotent** keyed by
   `(file_uid, source_version)`; per-`file_uid` ordering is best-effort.
-- **Events handled:** created / updated (new version) / moved / renamed /
-  deleted / restored. Deletes cascade to this service's rows; moves need no
-  re-index (identity is the stable file UID).
+- **Events handled:** `file.created` / `file.updated` (new version) / `file.moved`
+  / `file.renamed` / `file.deleted` / `file.restored` (plus `dir.*`). Deletes
+  cascade to this service's rows; moves need no re-index (identity is the stable
+  file UID). Rendition-child writes arrive flagged `is_rendition:true` and are
+  **ignored** — they are this service's own output (avoids a feedback loop).
+- **Governance events → cache invalidation:** the publisher also emits
+  `acl.changed` and `role.assigned`/`role.member_removed`/`role.deleted`. This
+  consumer subscribes to them to **proactively invalidate the permission cache**
+  (§8) rather than waiting out the TTL — see §8.
 - **Backfill / reconcile:** because events are go-forward only, a sweep walks
   FileEngine (per tenant) to (a) populate the initial corpus and (b) detect drift
   (files indexed but changed, or present but unindexed). Runs on first start and
   on a schedule.
 
-Until the core publisher lands, ingestion can be developed against a **dev stub
-publisher** emitting the same contract onto Redis, plus the reconcile sweep — no
-consumer changes when core goes live.
+For offline/dev work, ingestion logic can still be exercised by replaying
+contract-shaped events onto a local Redis (or via the reconcile sweep alone)
+without a running publisher — no consumer changes either way.
 
 ## 5. Conversion plugin framework (Milestone 1 focus)
 
@@ -175,6 +181,11 @@ read permission — search hits, text requests, and each RAG chunk/citation:
   or the LLM context.
 - **Cache** decisions per `(user, file_uid)` for **≤ 5 minutes**, then refresh
   (per spec). Cache is fail-closed.
+- **Event-driven invalidation:** consume the publisher's governance events to evict
+  affected entries immediately instead of waiting out the TTL — `acl.changed`
+  evicts the resource (`file_uid`); `role.assigned`/`role.member_removed` evict the
+  `member`; `role.deleted` evicts all members of the role. This tightens the
+  staleness window below 5 min without weakening fail-closed behavior.
 - Indexing uses the service's own agent identity; **retrieval never reuses it** —
   authorization is always evaluated as the end user.
 
@@ -206,17 +217,18 @@ milestone is **conversion + renditions**.
   migrations baseline, CI + pytest harness with `@live` gating.
 - **M1 — Conversion + renditions (first deliverable).** Plugin framework, MIME
   detection, Office/image/video/PDF plugins, rendition writer (hidden children via
-  gRPC), worker/queue (Redis dev), reconcile sweep, **dev stub event publisher**
-  against `EVENT_CONTRACT.md`. Exit: dropping a file results in correct hidden-child
-  renditions, idempotently.
+  gRPC), worker/queue (Redis dev), reconcile sweep, and the **event consumer**
+  against the live core publisher (`EVENT_CONTRACT.md`). Exit: dropping a file
+  results in correct hidden-child renditions, idempotently.
 - **M2 — Extraction + full-text search.** Markdown extraction, `documents` table,
   Postgres FTS + `pg_trgm`, `POST /search` and text-request API, **permission gate
   + 5-min cache**. Exit: permission-correct fuzzy search referencing `file_uid`.
 - **M3 — Vectorization + RAG chat.** Chunking, pluggable embeddings, `pgvector`
   ANN, WebSocket chat with per-conversation system prompt, streamed citations,
   per-user permission scoping. Exit: chat answers only from content the user may read.
-- **Cross-cutting / parallel dependency:** core's generic Redis event publisher
-  (the next effort) replaces the M1 stub with no consumer changes.
+- **Upstream dependency (delivered):** core's generic Redis event publisher is
+  implemented and merged, so M1 consumes real events from day one (it stays off by
+  default — enable with `FILEENGINE_EVENTS_ENABLED=true`).
 
 ## 11. Testing
 
@@ -231,8 +243,10 @@ milestone is **conversion + renditions**.
 
 ## 12. Risks & open items
 
-- **Core event publisher** is a prerequisite for live ingestion (next effort);
-  M1 proceeds on the stub + reconcile sweep until it lands.
+- **Core event publisher** — **resolved** (implemented + merged). It is **off by
+  default**, so deployments must build core with `-DFILEENGINE_ENABLE_EVENTS=ON`
+  and set `FILEENGINE_EVENTS_ENABLED=true` for live ingestion; the reconcile sweep
+  remains the backstop for outages and retention gaps.
 - **`pgvector`** must be present in the Postgres deployment — verify early.
 - **LibreOffice headless** stability/throughput for Office conversion; isolate in
   workers with timeouts.
