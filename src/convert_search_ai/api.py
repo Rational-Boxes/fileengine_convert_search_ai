@@ -64,6 +64,17 @@ def _identity(request: Request) -> Identity:
     return ident
 
 
+def _ingestor(app):
+    """The agent-backed ingestor (gRPC client + pipeline), built lazily and cached
+    on app.state so build_app() stays cheap and import-only for tests."""
+    ing = getattr(app.state, "ingestor", None)
+    if ing is None:
+        from .ingest import build_ingestor
+        ing = build_ingestor(app.state.config)
+        app.state.ingestor = ing
+    return ing
+
+
 # ------------------------------- health ------------------------------------
 @router.get("/healthz")
 def healthz() -> dict:
@@ -193,3 +204,31 @@ def ingest_reconcile(request: Request, tenant: str | None = Query(default=None),
     from .reconcile import reconcile
     counts = reconcile(config, tenant, max_files=max_files)
     return JSONResponse(status_code=200, content={"tenant": tenant or config.tenant, "counts": counts})
+
+
+@router.post("/documents/{file_uid}/convert")
+async def convert_document(file_uid: str, request: Request,
+                           identity: Identity = Depends(_identity)) -> JSONResponse:
+    """(Re)generate a document's renditions (thumbnail / preview / inline PDF) and
+    index it, on demand — e.g. when the SPA opens a file that has no preview yet.
+    The caller must be able to READ the file; conversion itself runs as the
+    indexing agent (which writes the hidden-child renditions)."""
+    config = request.app.state.config
+    if not _check_core(config):
+        return JSONResponse(status_code=503, content={"error": "core not reachable"})
+
+    # Gate: only (re)generate for a file the requesting user can read.
+    from .core_client import client_for
+    gate = request.app.state.permission_gate
+    user_mf = client_for(identity, config)
+    if not await run_in_threadpool(gate.can_read, user_mf, identity, file_uid):
+        return JSONResponse(status_code=403, content={"error": "not permitted"})
+
+    # Conversion does blocking I/O (gRPC + tools + embedding) — off the event loop.
+    out = await run_in_threadpool(_ingestor(request.app).pipeline.convert, file_uid, identity.tenant)
+    return JSONResponse(status_code=200, content={
+        "file_uid": file_uid,
+        "status": out.status,
+        "renditions": out.renditions_written,
+        "has_markdown": out.has_markdown,
+    })
