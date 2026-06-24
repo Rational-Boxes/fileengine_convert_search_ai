@@ -48,16 +48,27 @@ class VoyageEmbeddingProvider(EmbeddingProvider):
 
 
 class OpenAIEmbeddingProvider(EmbeddingProvider):
-    """OpenAI embeddings (e.g. text-embedding-3-*). Requires ``openai``."""
+    """Embeddings via any OpenAI-compatible endpoint — OpenAI, **Ollama**, etc. —
+    selected by ``base_url``. Requires the ``openai`` SDK.
+
+    ``send_dimensions`` controls whether the OpenAI-only ``dimensions`` param is
+    sent (off by default for compatibility; Ollama/local models produce their own
+    native dimension, which must match the pgvector column / CSAI_EMBEDDING_DIMENSION)."""
 
     def __init__(self, model: str = "text-embedding-3-small", dimension: int = 1536,
-                 api_key: str | None = None):
+                 api_key: str | None = None, base_url: str | None = None,
+                 send_dimensions: bool = False):
         self.model_id = model
         self.dimension = dimension
-        self._key = api_key or os.environ.get("OPENAI_API_KEY")
+        self.base_url = base_url or None
+        self.send_dimensions = send_dimensions
+        self._key = api_key or os.environ.get("OPENAI_API_KEY") or "not-needed"
 
     def embed(self, texts: List[str]) -> List[List[float]]:
         from openai import OpenAI
-        client = OpenAI(api_key=self._key)
-        resp = client.embeddings.create(model=self.model_id, input=texts, dimensions=self.dimension)
+        client = OpenAI(api_key=self._key, base_url=self.base_url)
+        kwargs = {"model": self.model_id, "input": texts}
+        if self.send_dimensions and self.dimension:
+            kwargs["dimensions"] = self.dimension
+        resp = client.embeddings.create(**kwargs)
         return [d.embedding for d in resp.data]

@@ -182,13 +182,18 @@ Both embeddings and chat sit behind interfaces, selected by config (mirrors the
 broker-agnostic stance):
 
 - `EmbeddingProvider`: `embed(texts) -> [vector]`, exposes `dimension` and
-  `model_id`. Implementations are deploy-time choices (hosted or self-hosted);
-  the schema adapts to the active `dimension`.
-- `ChatProvider`: streaming chat completion over a list of messages + retrieved
-  context. Anthropic Claude is the ecosystem default and the reference
-  implementation; the interface keeps the door open to others.
-- Config declares the active providers, models, keys, and (for embeddings) the
-  dimension. Switching embedding models triggers a re-embed migration.
+  `model_id`. Implementations: offline `hash` (default, dependency-free), `voyage`,
+  and `openai` — where **`openai` speaks the OpenAI API, so any OpenAI-compatible
+  endpoint works** (OpenAI, **local Ollama**, vLLM, …) via `CSAI_EMBEDDING_BASE_URL`
+  (`ollama` defaults it). The model's output dimension must match the pgvector
+  column.
+- `ChatProvider`: streaming chat completion. Implementations: `anthropic` (Claude,
+  the reference) plus the same **OpenAI-compatible** provider (`openai`/`ollama`/
+  `openai-compatible`) selected by `CSAI_CHAT_BASE_URL`, and an offline `echo` for
+  dev. The system prompt + retrieved context are passed through per provider.
+- Config declares the active providers, models, keys, base URLs, and (for
+  embeddings) the dimension. Switching embedding models triggers a re-embed
+  migration.
 
 ## 8. Permission gating (non-negotiable)
 

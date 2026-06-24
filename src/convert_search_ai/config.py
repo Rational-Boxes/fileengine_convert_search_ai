@@ -33,6 +33,11 @@ def _first(*keys_and_default: str) -> str:
     return default
 
 
+def _bool(key: str, default: bool = False) -> bool:
+    v = os.environ.get(key)
+    return default if v is None else v.strip().lower() in ("1", "true", "yes", "on")
+
+
 class Config:
     def __init__(self) -> None:
         # --- gRPC core (shared with the bridges / mcp) ---
@@ -90,11 +95,23 @@ class Config:
         self.audit_log_file = _env("CSAI_AUDIT_LOG_FILE", "")            # empty -> stderr
 
         # --- Pluggable AI providers (DEVELOPMENT_PLAN §7; chosen at deploy time) ---
-        self.embedding_provider = _env("CSAI_EMBEDDING_PROVIDER", "")   # e.g. voyage|openai|local
+        # Embeddings: hash (offline default) | voyage | openai | ollama | openai-compatible.
+        # The openai/ollama/openai-compatible providers speak the OpenAI API, so any
+        # OpenAI-compatible endpoint (OpenAI, Ollama, vLLM, …) works via *_BASE_URL.
+        self.embedding_provider = _env("CSAI_EMBEDDING_PROVIDER", "")
         self.embedding_model = _env("CSAI_EMBEDDING_MODEL", "")
         self.embedding_dimension = int(_env("CSAI_EMBEDDING_DIMENSION", "1024"))
+        self.embedding_base_url = _env("CSAI_EMBEDDING_BASE_URL", "")
+        self.embedding_api_key = _first("CSAI_EMBEDDING_API_KEY", "OPENAI_API_KEY", "")
+        # Only OpenAI-native models accept the `dimensions` param; off by default for
+        # compatibility (Ollama etc. produce their model's native dimension).
+        self.embedding_send_dimensions = _bool("CSAI_EMBEDDING_SEND_DIMENSIONS", False)
+
+        # Chat: anthropic (default) | openai | ollama | openai-compatible | echo.
         self.chat_provider = _env("CSAI_CHAT_PROVIDER", "anthropic")
         self.chat_model = _env("CSAI_CHAT_MODEL", "claude-sonnet-4-6")
+        self.chat_base_url = _env("CSAI_CHAT_BASE_URL", "")
+        self.chat_api_key = _first("CSAI_CHAT_API_KEY", "OPENAI_API_KEY", "")
 
         # PDF/Office → Markdown extraction backends, fidelity-ordered (the first
         # one installed AND yielding content wins; see plugins/pdf_backends).

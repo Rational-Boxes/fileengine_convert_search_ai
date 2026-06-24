@@ -36,3 +36,42 @@ def test_factory_rejects_unknown(monkeypatch):
     monkeypatch.setenv("CSAI_EMBEDDING_PROVIDER", "bogus")
     with pytest.raises(ValueError):
         make_embedding_provider(Config())
+
+
+def test_openai_compatible_chat_uses_base_url(monkeypatch):
+    monkeypatch.setenv("CSAI_CHAT_PROVIDER", "openai")
+    monkeypatch.setenv("CSAI_CHAT_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("CSAI_CHAT_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("CSAI_CHAT_API_KEY", "sk-test")
+    p = make_chat_provider(Config())
+    assert p.__class__.__name__ == "OpenAICompatibleChatProvider"
+    assert p.model_id == "gpt-4o-mini" and p.base_url == "https://api.example.com/v1"
+    assert p._key == "sk-test"
+
+
+def test_ollama_chat_defaults_base_url_and_needs_no_key(monkeypatch):
+    monkeypatch.setenv("CSAI_CHAT_PROVIDER", "ollama")
+    monkeypatch.setenv("CSAI_CHAT_MODEL", "llama3.2")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    p = make_chat_provider(Config())
+    assert p.base_url == "http://localhost:11434/v1" and p.model_id == "llama3.2"
+    assert p._key == "not-needed"
+
+
+def test_ollama_embeddings_default_base_url(monkeypatch):
+    monkeypatch.setenv("CSAI_EMBEDDING_PROVIDER", "ollama")
+    monkeypatch.setenv("CSAI_EMBEDDING_MODEL", "nomic-embed-text")
+    p = make_embedding_provider(Config())
+    assert p.__class__.__name__ == "OpenAIEmbeddingProvider"
+    assert p.base_url == "http://localhost:11434/v1" and p.model_id == "nomic-embed-text"
+    assert p.send_dimensions is False
+
+
+def test_openai_embeddings_base_url_and_dimensions(monkeypatch):
+    monkeypatch.setenv("CSAI_EMBEDDING_PROVIDER", "openai")
+    monkeypatch.setenv("CSAI_EMBEDDING_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("CSAI_EMBEDDING_SEND_DIMENSIONS", "true")
+    monkeypatch.setenv("CSAI_EMBEDDING_DIMENSION", "1024")
+    p = make_embedding_provider(Config())
+    assert p.base_url == "https://api.example.com/v1"
+    assert p.send_dimensions is True and p.dimension == 1024
