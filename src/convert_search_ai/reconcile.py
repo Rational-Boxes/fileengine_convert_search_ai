@@ -50,12 +50,14 @@ def reconcile_tenant(mf, pipeline, tenant: str, *, max_files: Optional[int] = No
 def reconcile(config, tenant: Optional[str] = None, *, max_files: Optional[int] = None) -> Dict[str, int]:
     """Build the agent client + pipeline and reconcile one tenant (default: config's)."""
     from .core_client import agent_client
+    from .indexing import Indexer
     from .pipeline import ConversionPipeline
     from .store import DocumentStore
 
     tenant = tenant or config.tenant
     mf = agent_client(config)
-    pipeline = ConversionPipeline(mf=mf, store=DocumentStore(config), config=config)
+    pipeline = ConversionPipeline(mf=mf, store=DocumentStore(config), config=config,
+                                  indexer=Indexer(config))
     result = reconcile_tenant(mf, pipeline, tenant, max_files=max_files)
     log.info("reconcile(%s): %s", tenant, result)
     return result

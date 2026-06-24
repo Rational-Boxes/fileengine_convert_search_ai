@@ -1,7 +1,7 @@
 """Endpoint tests for the M2 surface (TestClient + injected fake search + tokens)."""
 from fastapi.testclient import TestClient
 
-import convert_search_ai.app as appmod
+import convert_search_ai.api as apimod
 from convert_search_ai.app import build_app
 from convert_search_ai.config import Config
 from convert_search_ai.ldap_auth import Identity
@@ -69,7 +69,7 @@ def test_auth_token_success_and_failure(monkeypatch):
         return Identity(user=user, roles=["users"], tenant="default",
                         authenticated=(password == "right"))
 
-    monkeypatch.setattr(appmod, "authenticate", fake_auth)
+    monkeypatch.setattr(apimod, "authenticate", fake_auth)
     ok = c.post("/auth/token", json={"username": "alice", "password": "right"})
     assert ok.status_code == 200 and ok.json()["token_type"] == "bearer"
     bad = c.post("/auth/token", json={"username": "alice", "password": "wrong"})

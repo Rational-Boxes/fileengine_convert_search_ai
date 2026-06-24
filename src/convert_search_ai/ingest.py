@@ -68,12 +68,13 @@ def build_ingestor(config: Config) -> Ingestor:
     """Assemble the worker from config: agent gRPC client, store, pipeline, source."""
     from .core_client import agent_client
     from .events import RedisEventSource
+    from .indexing import Indexer
     from .pipeline import ConversionPipeline
     from .store import DocumentStore
 
     mf = agent_client(config)
     store = DocumentStore(config)
-    pipeline = ConversionPipeline(mf=mf, store=store, config=config)
+    pipeline = ConversionPipeline(mf=mf, store=store, config=config, indexer=Indexer(config))
     source = RedisEventSource(config)
     return Ingestor(config, pipeline, store, source)
 

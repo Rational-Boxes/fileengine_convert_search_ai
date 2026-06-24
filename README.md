@@ -15,11 +15,26 @@ permission. See [`design_documents/`](./design_documents) for the
   structure/table-preserving PDF/Office extraction, idempotent hidden-child
   rendition writer, the event-driven ingest worker + reconcile sweep.
 - **M2** — extraction + search: per-tenant Postgres FTS + `pg_trgm` fuzzy over the
-  extracted Markdown, bearer-token auth (`POST /auth/token`, `GET /whoami`), a
-  permission-gated `POST /search` and `GET /documents/{uid}/text`, and a permission
-  cache that is both TTL-bounded (≤5 min) and **invalidated in real time** by the
-  core's `acl.changed`/`role.*` events.
-- **M3** (next) — vectorization + WebSocket RAG chat.
+  extracted Markdown, bearer-token auth, a permission-gated search + text-request
+  surface, and a permission cache that is both TTL-bounded (≤5 min) and
+  **invalidated in real time** by the core's `acl.changed`/`role.*` events.
+- **M3** — vectorization + RAG chat: heading-aware chunking, pluggable embeddings
+  (offline `hash` default; Voyage/OpenAI), pgvector ANN retrieval scoped by the
+  user's read permission, and a WebSocket `/chat` streaming RAG answers + citations
+  via pluggable chat providers (Claude default; offline `echo`).
+
+## API surface (`api.py`)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET  | `/healthz` | liveness |
+| GET  | `/readyz` | readiness (gRPC core + LDAP) |
+| POST | `/auth/token` | LDAP bind → bearer token |
+| GET  | `/whoami` | resolved identity |
+| POST | `/search` | permission-gated full-text + fuzzy search |
+| GET  | `/documents/{uid}/text` | extracted Markdown (READ-gated) |
+| WS   | `/chat` | permission-scoped RAG chat (streamed tokens + citations) |
+| POST | `/ingest/reconcile` | trigger a reconcile sweep |
 
 ## Layout
 
