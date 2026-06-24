@@ -31,6 +31,19 @@ def build_app(config: Config | None = None, *, search: SearchService | None = No
     audit.configure(config.audit_log_file)
     app = FastAPI(title="convert_search_ai", version=__version__)
 
+    # Browser CORS for a SPA on another origin (off unless CSAI_CORS_ORIGINS set).
+    # Explicit origins (never "*") so credentialed requests with the bearer token
+    # + X-Tenant header are allowed. The /chat WebSocket isn't governed by CORS.
+    if config.cors_origins:
+        from fastapi.middleware.cors import CORSMiddleware
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=config.cors_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
     app.state.config = config
     app.state.token_store = token_store or TokenStore(ttl_seconds=config.token_ttl)
     # Auth coordination: accept http_bridge bearer tokens via introspection

@@ -78,6 +78,12 @@ class Config:
         # --- HTTP / WebSocket surface ---
         self.http_host = _env("CSAI_HTTP_HOST", "127.0.0.1")
         self.http_port = int(_env("CSAI_HTTP_PORT", "8092"))
+        # Browser CORS: comma-separated allowed origins for a SPA on another
+        # origin (e.g. the FileEngine frontend). Empty = CORS disabled (no
+        # browser cross-origin access). Mirrors the bridge's HTTP_CORS_ORIGIN.
+        self.cors_origins = [
+            o.strip() for o in _env("CSAI_CORS_ORIGINS", "").split(",") if o.strip()
+        ]
 
         # --- Permission cache (DEVELOPMENT_PLAN §8): cap decisions to this many seconds ---
         self.permission_cache_ttl = int(_env("CSAI_PERMISSION_CACHE_TTL", "300"))
