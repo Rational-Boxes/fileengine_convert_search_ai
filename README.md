@@ -19,9 +19,16 @@ permission. See [`design_documents/`](./design_documents) for the
   surface, and a permission cache that is both TTL-bounded (≤5 min) and
   **invalidated in real time** by the core's `acl.changed`/`role.*` events.
 - **M3** — vectorization + RAG chat: heading-aware chunking, pluggable embeddings
-  (offline `hash` default; Voyage/OpenAI), pgvector ANN retrieval scoped by the
+  (offline `hash` default; Voyage; **any OpenAI-compatible endpoint** via
+  `base_url`, including a local **Ollama**), pgvector ANN retrieval scoped by the
   user's read permission, and a WebSocket `/chat` streaming RAG answers + citations
-  via pluggable chat providers (Claude default; offline `echo`).
+  via pluggable chat providers (Claude or any OpenAI-compatible / Ollama endpoint;
+  offline `echo` default).
+- **Hardening** — production guards on every request surface (query/payload size
+  caps, structured error mapping), a content-/secret-free audit log, and the
+  full-stack `@live` end-to-end test (`tests/test_e2e_live.py`) covering
+  event-driven ingest → pgvector index → permission-gated search → RAG chat →
+  real-time permission-cache invalidation.
 
 ## API surface (`api.py`)
 
