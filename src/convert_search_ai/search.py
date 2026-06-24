@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional
 
+from . import audit, guards
 from .config import Config
 from .permissions import PermissionGate
 
@@ -80,10 +81,12 @@ class SearchService:
         return client_for(identity, self.config)
 
     def search(self, identity, query: str, *, limit: int = 20, fuzzy: bool = True) -> List[Hit]:
-        if not query or not query.strip():
-            return []
+        """Run a permission-gated search. Raises ``guards.GuardError`` for an empty
+        or over-long query."""
+        q = guards.check_query(query, self.config.max_query_chars)
+        limit = guards.cap_limit(limit, self.config.max_results)
         # Over-fetch so the permission filter can't shrink the page below `limit`.
-        rows = self.repo.query(identity.tenant, query, fetch=max(limit * 5, limit), fuzzy=fuzzy)
+        rows = self.repo.query(identity.tenant, q, fetch=max(limit * 5, limit), fuzzy=fuzzy)
         mf = self._client(identity)
         try:
             hits: List[Hit] = []
@@ -93,25 +96,35 @@ class SearchService:
                                     r.get("snippet") or "", float(r.get("score") or 0.0)))
                     if len(hits) >= limit:
                         break
-            return hits
         finally:
             _safe_close(mf)
+        audit.record(action="search", user=identity.user, tenant=identity.tenant,
+                     result="ok", candidates=len(rows), hits=len(hits))
+        return hits
 
-    def get_text(self, identity, file_uid: str) -> str:
-        """Extracted Markdown for a file the identity may read.
+    def get_text(self, identity, file_uid: str):
+        """Extracted Markdown for a file the identity may read, as
+        ``(text, truncated)``.
 
         Raises ``PermissionError`` if not readable, ``FileNotFoundError`` if there
         is no extracted text for it."""
         mf = self._client(identity)
         try:
             if not self.gate.can_read(mf, identity, file_uid):
+                audit.record(action="document_text", user=identity.user, tenant=identity.tenant,
+                             result="denied", file_uid=file_uid)
                 raise PermissionError(file_uid)
             text = self.repo.get_text(identity.tenant, file_uid)
             if text is None:
+                audit.record(action="document_text", user=identity.user, tenant=identity.tenant,
+                             result="missing", file_uid=file_uid)
                 raise FileNotFoundError(file_uid)
-            return text
         finally:
             _safe_close(mf)
+        capped, truncated = guards.cap_text_bytes(text, self.config.max_text_bytes)
+        audit.record(action="document_text", user=identity.user, tenant=identity.tenant,
+                     result="ok", file_uid=file_uid, truncated=truncated)
+        return capped, truncated
 
 
 def _safe_close(mf) -> None:

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Iterator, List, Optional
 
+from . import audit, guards
 from .config import Config
 from .retrieval import Retriever
 from .vectorstore import RetrievedChunk
@@ -38,9 +39,12 @@ class ChatService:
 
     def answer(self, identity, *, message: str, system_prompt: str = "",
                history: Optional[List[dict]] = None, k: int = 8) -> Iterator[dict]:
-        chunks = self.retriever.retrieve(identity, message, k=k)
+        msg = guards.check_query(message, self.config.max_query_chars)
+        k = guards.cap_k(k, self.config.max_chat_k)
+        chunks = self.retriever.retrieve(identity, msg, k=k)
+        chunks, trimmed = guards.trim_context(chunks, self.config.max_context_chars)
         system = self._build_system(system_prompt, chunks)
-        messages = list(history or []) + [{"role": "user", "content": message}]
+        messages = list(history or []) + [{"role": "user", "content": msg}]
 
         for delta in self.chat.stream(messages, system=system):
             yield {"type": "token", "text": delta}
@@ -50,6 +54,8 @@ class ChatService:
             if c.file_uid not in seen:
                 seen.add(c.file_uid)
                 citations.append({"file_uid": c.file_uid, "marker": i + 1})
+        audit.record(action="chat", user=identity.user, tenant=identity.tenant, result="ok",
+                     retrieved=len(chunks), citations=len(citations), context_trimmed=trimmed)
         yield {"type": "citations", "citations": citations}
 
     def _build_system(self, system_prompt: str, chunks: List[RetrievedChunk]) -> str:

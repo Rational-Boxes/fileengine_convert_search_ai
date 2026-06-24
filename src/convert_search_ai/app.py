@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from . import __version__
+from . import __version__, audit
 from .api import router
 from .chat import ChatService
 from .config import Config, load_dotenv
@@ -28,6 +28,7 @@ def build_app(config: Config | None = None, *, search: SearchService | None = No
               chat: ChatService | None = None, token_store: TokenStore | None = None,
               enable_event_invalidation: bool = False) -> FastAPI:
     config = config or Config()
+    audit.configure(config.audit_log_file)
     app = FastAPI(title="convert_search_ai", version=__version__)
 
     app.state.config = config

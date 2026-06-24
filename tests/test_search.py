@@ -58,12 +58,15 @@ def test_search_respects_limit_after_filtering():
     assert len(svc.search(_id(), "q", limit=3)) == 3
 
 
-def test_empty_query_returns_nothing():
-    assert _svc([_row("a")], allowed=["a"]).search(_id(), "   ") == []
+def test_empty_query_rejected():
+    from convert_search_ai.guards import GuardError
+    with pytest.raises(GuardError):
+        _svc([_row("a")], allowed=["a"]).search(_id(), "   ")
 
 
 def test_get_text_ok():
-    assert _svc(text="# Doc", allowed=["x"]).get_text(_id(), "x") == "# Doc"
+    text, truncated = _svc(text="# Doc", allowed=["x"]).get_text(_id(), "x")
+    assert text == "# Doc" and truncated is False
 
 
 def test_get_text_permission_denied():

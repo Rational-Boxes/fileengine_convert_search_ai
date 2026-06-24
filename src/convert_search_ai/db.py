@@ -36,5 +36,9 @@ def connect_for_tenant(config: Config, tenant: str, provision: bool = False):
     name = ensure_tenant_schema(conn, tenant) if provision else schema_name(tenant)
     with conn.cursor() as cur:
         cur.execute(f'SET search_path TO "{name}", public')
+        timeout = int(getattr(config, "db_statement_timeout_ms", 0) or 0)
+        if timeout > 0:
+            # SET does not accept bound params; timeout is an int, so inline it.
+            cur.execute(f"SET statement_timeout = {timeout}")
     conn.commit()
     return conn

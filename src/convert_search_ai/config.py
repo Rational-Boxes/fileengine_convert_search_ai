@@ -80,6 +80,15 @@ class Config:
         # --- Bearer-token TTL for the /auth/token HTTP path ---
         self.token_ttl = int(_env("CSAI_TOKEN_TTL", "3600"))
 
+        # --- Guardrails (production hardening) ---
+        self.max_query_chars = int(_env("CSAI_MAX_QUERY_CHARS", "1000"))
+        self.max_results = int(_env("CSAI_MAX_RESULTS", "100"))           # search hits cap
+        self.max_chat_k = int(_env("CSAI_MAX_CHAT_K", "12"))              # RAG retrieval depth cap
+        self.max_context_chars = int(_env("CSAI_MAX_CONTEXT_CHARS", "12000"))
+        self.max_text_bytes = int(_env("CSAI_MAX_TEXT_BYTES", str(5 * 1024 * 1024)))
+        self.db_statement_timeout_ms = int(_env("CSAI_DB_STATEMENT_TIMEOUT_MS", "5000"))
+        self.audit_log_file = _env("CSAI_AUDIT_LOG_FILE", "")            # empty -> stderr
+
         # --- Pluggable AI providers (DEVELOPMENT_PLAN §7; chosen at deploy time) ---
         self.embedding_provider = _env("CSAI_EMBEDDING_PROVIDER", "")   # e.g. voyage|openai|local
         self.embedding_model = _env("CSAI_EMBEDDING_MODEL", "")

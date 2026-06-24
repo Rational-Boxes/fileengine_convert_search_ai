@@ -10,6 +10,8 @@ from convert_search_ai.search import Hit
 
 class FakeSearch:
     def search(self, identity, query, *, limit=20, fuzzy=True):
+        from convert_search_ai.guards import check_query
+        check_query(query, 0)  # empty -> GuardError -> 400 (mirrors the real service)
         return [Hit("f1", "Doc", "a **hit** here", 1.0)]
 
     def get_text(self, identity, file_uid):
@@ -17,7 +19,7 @@ class FakeSearch:
             raise PermissionError()
         if file_uid == "missing":
             raise FileNotFoundError()
-        return "# Markdown"
+        return "# Markdown", False  # (text, truncated)
 
 
 def _client():

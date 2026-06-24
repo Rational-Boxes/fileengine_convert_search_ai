@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 
 from . import __version__
 from .config import Config
+from .guards import GuardError
 from .http_auth import extract_tenant, resolve_identity
 from .ldap_auth import Identity, authenticate
 
@@ -96,12 +97,13 @@ def whoami(identity: Identity = Depends(_identity)) -> dict:
 # ------------------------------- search ------------------------------------
 @router.post("/search")
 def search(request: Request, body: dict = Body(...), identity: Identity = Depends(_identity)) -> dict:
-    query = (body.get("query") or "").strip()
-    if not query:
-        raise HTTPException(status_code=400, detail="query is required")
-    hits = request.app.state.search.search(
-        identity, query, limit=int(body.get("limit", 20)), fuzzy=bool(body.get("fuzzy", True)))
-    return {"query": query, "tenant": identity.tenant,
+    try:
+        hits = request.app.state.search.search(
+            identity, body.get("query", ""),
+            limit=int(body.get("limit", 20)), fuzzy=bool(body.get("fuzzy", True)))
+    except GuardError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"query": (body.get("query") or "").strip(), "tenant": identity.tenant,
             "hits": [{"file_uid": h.file_uid, "name": h.name, "snippet": h.snippet, "score": h.score}
                      for h in hits]}
 
@@ -109,12 +111,12 @@ def search(request: Request, body: dict = Body(...), identity: Identity = Depend
 @router.get("/documents/{file_uid}/text")
 def document_text(file_uid: str, request: Request, identity: Identity = Depends(_identity)) -> dict:
     try:
-        text = request.app.state.search.get_text(identity, file_uid)
+        text, truncated = request.app.state.search.get_text(identity, file_uid)
     except PermissionError:
         raise HTTPException(status_code=403, detail="not permitted")
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="no extracted text for this file")
-    return {"file_uid": file_uid, "tenant": identity.tenant, "text": text}
+    return {"file_uid": file_uid, "tenant": identity.tenant, "text": text, "truncated": truncated}
 
 
 # -------------------------------- chat -------------------------------------
