@@ -117,10 +117,19 @@ without a running publisher — no consumer changes either way.
     thumbnail)
   - `extract(source) -> Markdown | None` (text content, when extractable)
 - **Initial plugins:**
-  - **Office / documents** → LibreOffice (headless) → PDF + Markdown/text.
+  - **PDF** → preview image (poppler) + **structure/table-preserving Markdown**.
+    Retaining headings, lists, and especially **tables** is critical, so
+    extraction uses a fidelity-ordered backend chain (`plugins/pdf_backends`),
+    configurable via `CSAI_PDF_BACKENDS` — first installed wins:
+    **docling** (best structure+tables, MIT, heavy/ML) → **pymupdf4llm** (great;
+    PyMuPDF is AGPL) → **pdfplumber** (solid GFM tables, MIT, light) →
+    **pdftotext** (plain text, last resort only).
+  - **Office / documents** → LibreOffice (headless) → PDF rendition, and text is
+    extracted by **rendering to PDF then running the same advanced backends**, so
+    tables/structure survive (LibreOffice's plain-text export flattens them).
   - **Images** → ImageMagick → thumbnail + web preview.
   - **Video** → FFMPEG → web-optimized preview + poster thumbnail.
-  - **PDF / text / markdown** → native extractor → Markdown.
+  - **Text / Markdown** → pass-through (already Markdown).
   - Unknown MIME with no plugin → recorded as `unsupported` (no failure).
 - **Renditions are written back as hidden children** of the source file, per
   `file_renditions.md`:

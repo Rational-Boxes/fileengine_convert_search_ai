@@ -9,7 +9,7 @@ chat (M3) surfaces are added on top:
 """
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 
 from . import __version__
@@ -60,6 +60,19 @@ def build_app(config: Config | None = None) -> FastAPI:
             status_code=200 if ready else 503,
             content={"ready": ready, "checks": checks},
         )
+
+    @app.post("/ingest/reconcile")
+    def ingest_reconcile(
+        tenant: str | None = Query(default=None, description="tenant to sweep (default: config)"),
+        max_files: int | None = Query(default=None, description="cap files processed"),
+    ) -> JSONResponse:
+        """Trigger a reconcile sweep (convert anything not up to date). Runs
+        synchronously — pass ``max_files`` to bound it. 503 if services are down."""
+        if not _check_core(config):
+            return JSONResponse(status_code=503, content={"error": "core not reachable"})
+        from .reconcile import reconcile
+        counts = reconcile(config, tenant, max_files=max_files)
+        return JSONResponse(status_code=200, content={"tenant": tenant or config.tenant, "counts": counts})
 
     return app
 

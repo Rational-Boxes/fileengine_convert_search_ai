@@ -20,6 +20,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-cov>=4.0", "httpx>=0.27"]
+# Structure/table-preserving PDF→Markdown backends (see plugins/pdf_backends).
+# `pdf` is the light MIT default; the others are higher-fidelity opt-ins.
+pdf = ["pdfplumber>=0.11"]                 # MIT, light — solid tables
+pdf-docling = ["docling>=2.0"]             # MIT, heavy (ML) — best structure+tables
+pdf-pymupdf = ["pymupdf4llm>=0.0.17"]      # NOTE: PyMuPDF is AGPL-3.0
 # Pluggable AI providers (DEVELOPMENT_PLAN §7) — install the ones a deployment uses.
 anthropic = ["anthropic>=0.40"]
 voyage = ["voyageai>=0.2"]
@@ -27,6 +32,7 @@ openai = ["openai>=1.0"]
 
 [project.scripts]
 convert-search-ai = "convert_search_ai.app:main"
+convert-search-ai-worker = "convert_search_ai.ingest:main"
 
 [build-system]
 requires = ["setuptools>=61"]

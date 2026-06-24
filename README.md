@@ -34,7 +34,7 @@ Containerfile     image with LibreOffice / ImageMagick / FFmpeg
 
 ```bash
 pip install ../python_interface      # the reused FileEngine gRPC client
-pip install -e ".[dev]"
+pip install -e ".[dev,pdf]"          # 'pdf' = pdfplumber for table-preserving extraction
 cp .env.example .env                 # fill in agent creds etc.
 pytest -q                            # unit tests; @live tests need LDAP + core
 convert-search-ai                    # serve the FastAPI app (uvicorn)

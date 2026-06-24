@@ -84,6 +84,15 @@ class Config:
         self.chat_provider = _env("CSAI_CHAT_PROVIDER", "anthropic")
         self.chat_model = _env("CSAI_CHAT_MODEL", "claude-sonnet-4-6")
 
+        # PDF/Office → Markdown extraction backends, fidelity-ordered (the first
+        # one installed AND yielding content wins; see plugins/pdf_backends).
+        # Structure + tables are critical — pdftotext is only the last resort.
+        self.pdf_backends = [
+            b.strip() for b in
+            _env("CSAI_PDF_BACKENDS", "docling,pymupdf4llm,pdfplumber,pdftotext").split(",")
+            if b.strip()
+        ]
+
     @property
     def pg_dsn(self) -> str:
         return (

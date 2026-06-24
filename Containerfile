@@ -27,8 +27,12 @@ COPY convert_search_ai/pyproject.toml convert_search_ai/README.md /app/convert_s
 COPY convert_search_ai/src/ /app/convert_search_ai/src/
 COPY convert_search_ai/migrations/ /app/convert_search_ai/migrations/
 
+# Install with the `pdf` extra (pdfplumber) for table/structure-preserving PDF
+# extraction. For higher fidelity add `pdf-docling` (best, heavy) — build with
+# `--build-arg PDF_EXTRA=pdf,pdf-docling`.
+ARG PDF_EXTRA=pdf
 RUN pip install --no-cache-dir /app/python_interface && \
-    pip install --no-cache-dir /app/convert_search_ai
+    pip install --no-cache-dir "/app/convert_search_ai[${PDF_EXTRA}]"
 
 # Bind all interfaces inside the container.
 ENV CSAI_HTTP_HOST=0.0.0.0 \
