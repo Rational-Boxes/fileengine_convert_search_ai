@@ -85,6 +85,49 @@ python -c "from convert_search_ai.config import Config; \
            provision_tenant(Config(), 'default')"
 ```
 
+## AI providers (embeddings + chat)
+
+Both providers are pluggable (DEVELOPMENT_PLAN §7). Defaults are offline and
+dependency-free — `hash` embeddings + `echo` chat — so dev and tests run with no
+API key. Real providers are opt-in extras:
+
+```bash
+pip install -e ".[openai]"      # the OpenAI SDK — the client for OpenAI, Ollama, vLLM, LM Studio, …
+# or ".[anthropic]" (Claude, the chat default) / ".[voyage]" (Voyage embeddings)
+```
+
+### Local Ollama (or any OpenAI-compatible endpoint)
+
+The `ollama` provider speaks the OpenAI API, so the same `openai` SDK drives it —
+only the base URL differs (it defaults to a local Ollama). Pull the models, then
+configure `.env`:
+
+```bash
+ollama pull nomic-embed-text
+ollama pull llama3.1                   # any chat model you have pulled
+```
+
+```ini
+CSAI_EMBEDDING_PROVIDER=ollama
+CSAI_EMBEDDING_MODEL=nomic-embed-text
+CSAI_EMBEDDING_DIMENSION=768           # MUST equal the model's native output width
+CSAI_CHAT_PROVIDER=ollama
+CSAI_CHAT_MODEL=llama3.1
+# CSAI_{EMBEDDING,CHAT}_BASE_URL default to http://localhost:11434/v1 for `ollama`;
+# point them at OpenAI / vLLM / LM Studio / a remote Ollama instead if needed.
+# CSAI_{EMBEDDING,CHAT}_API_KEY is optional for Ollama (ignored), required for OpenAI.
+```
+
+> **Embedding dimension is load-bearing.** `CSAI_EMBEDDING_DIMENSION` sets the
+> pgvector column width when a tenant is provisioned, and must match the model
+> (nomic-embed-text → **768**, text-embedding-3-small → 1536, voyage-3 → 1024).
+> Set it **before** provisioning a tenant; switching models later is an explicit
+> migration (ALTER the column + re-embed), never a silent mismatch.
+
+Plain `openai` / `openai-compatible` providers work identically — set the
+provider name, `*_BASE_URL`, and `*_API_KEY`. See `.env.example` for the full
+list of provider knobs.
+
 ## Key invariants
 
 - **Permission gating is non-negotiable.** Retrieval is always evaluated as the
