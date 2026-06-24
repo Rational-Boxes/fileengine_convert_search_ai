@@ -139,20 +139,30 @@ without a running publisher — no consumer changes either way.
 
 ## 6. Storage & data model (Postgres)
 
-Its **own** database/schema in the Postgres instance, **per-tenant partitioned**
-(mirroring FileEngine's tenant isolation). Every row references the FileEngine
-`file_uid` + `tenant` — nothing exists without a source document.
+**Per-tenant schema isolation — mirrors the core's tenant↔schema model.** The
+core isolates each tenant in a `tenant_<tenant>` schema (empty → `tenant_default`,
+with `-`/`.`/space sanitized to `_`); this add-on partitions **its own** storage
+the same way. Each tenant gets a `tenant_<tenant>` schema in this service's own
+database holding the tables below. **The schema *is* the tenant**, so tables carry
+**no tenant column** — queries set `search_path` to the tenant's schema. Schemas
+are provisioned **on demand by code** (`schema.ensure_tenant_schema`), exactly as
+the core provisions a tenant schema, not via a static migration.
 
-- `documents` — `file_uid`, `tenant`, `source_version`, `mime`, `content_md`,
-  `status` (`pending`/`converted`/`indexed`/`unsupported`/`error`), timestamps.
-- `chunks` — `id`, `file_uid`, `tenant`, `ordinal`, `text`, `embedding vector(N)`,
-  `fts tsvector`. `N` is provider-dependent (§7) — vector column/dimension is
-  managed per active embedding model; a model change is a migration, not a silent
-  mismatch.
-- `renditions` (optional cache/index) — mirror of what core holds, for status and
-  idempotency; source of truth is FileEngine.
-- Indexes: GIN on `fts` (+ `pg_trgm` for fuzzy), an ANN index (e.g. HNSW/IVFFlat)
-  on `embedding`.
+Database-wide (created once, `migrations/0001_baseline.sql`): the `vector` and
+`pg_trgm` extensions. Per tenant schema:
+
+- `documents` — `file_uid` (PK), `source_version`, `mime`, `name`, `path`,
+  `content_md`, `status` (`pending`/`converting`/`converted`/`indexed`/
+  `unsupported`/`error`), `error`, timestamps.
+- `chunks` — `id`, `file_uid` (FK→`documents`), `ordinal`, `text`,
+  `embedding vector(N)`, `fts tsvector`. `N` is provider-dependent (§7) — the
+  vector column/dimension is managed per active embedding model; a model change is
+  an explicit migration (`ALTER` + re-embed), not a silent mismatch.
+- Indexes: GIN on `fts` and `pg_trgm` on text (fuzzy), an HNSW ANN index on
+  `embedding`.
+
+`renditions` are **not** stored here — FileEngine is the source of truth (hidden
+children); this service only writes/reads them via gRPC.
 
 **Requires the `pgvector` extension** — confirm availability in the deployment
 Postgres (not currently used elsewhere in the ecosystem).

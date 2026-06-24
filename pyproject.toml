@@ -1,0 +1,39 @@
+[project]
+name = "convert-search-ai"
+version = "0.1.0"
+description = "FileEngine conversion, search, and vector-backed RAG chat microservice (permission-gated)"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.30",
+    "ldap3>=2.9",
+    "grpcio>=1.50",
+    "protobuf>=4.21",
+    "pydantic>=2.0",
+    "psycopg[binary]>=3.1",
+    "redis>=5.0",
+]
+# The FileEngine Python client (`fileengine`, from ../python_interface) is reused
+# at runtime for gRPC core access (permission checks + rendition writes), exactly
+# as the MCP server does. Install it (`pip install ../python_interface`) or rely
+# on the sibling-checkout bootstrap in convert_search_ai._client.
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-cov>=4.0", "httpx>=0.27"]
+# Pluggable AI providers (DEVELOPMENT_PLAN §7) — install the ones a deployment uses.
+anthropic = ["anthropic>=0.40"]
+voyage = ["voyageai>=0.2"]
+openai = ["openai>=1.0"]
+
+[project.scripts]
+convert-search-ai = "convert_search_ai.app:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+markers = ["live: integration test that needs LDAP + the gRPC core reachable"]
