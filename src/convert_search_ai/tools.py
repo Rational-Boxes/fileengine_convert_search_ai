@@ -6,6 +6,7 @@ gets ``None``/``[]`` and the pipeline records the file as partially/unsupported
 rather than crashing."""
 from __future__ import annotations
 
+import functools
 import os
 import shutil
 import subprocess
@@ -18,6 +19,26 @@ DEFAULT_TIMEOUT = 120
 def have(tool: str) -> bool:
     """Is an executable available on PATH?"""
     return shutil.which(tool) is not None
+
+
+@functools.lru_cache(maxsize=1)
+def ffmpeg_encoders() -> frozenset[str]:
+    """Encoder names this FFmpeg build supports (e.g. 'libx264', 'libopenh264').
+
+    Distro FFmpeg builds vary in which H.264 encoder is compiled in (Fedora's
+    ffmpeg-free ships libopenh264, not libx264), so callers pick from what's
+    actually available. Result is cached for the process."""
+    out = run_capture(["ffmpeg", "-hide_banner", "-encoders"])
+    if not out:
+        return frozenset()
+    names: set[str] = set()
+    for line in out.decode("utf-8", "replace").splitlines():
+        parts = line.split()
+        # Encoder rows start with a 6-char flag field (e.g. "V....D"); the second
+        # token is the encoder name.
+        if len(parts) >= 2 and len(parts[0]) == 6 and parts[0][0] in "VAS":
+            names.add(parts[1])
+    return frozenset(names)
 
 
 def run(cmd: list[str], timeout: int = DEFAULT_TIMEOUT, input_bytes: bytes | None = None) -> bool:

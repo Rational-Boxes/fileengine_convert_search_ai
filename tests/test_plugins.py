@@ -47,3 +47,42 @@ def test_plugin_exception_is_fail_soft():
 def test_default_registry_has_the_expected_plugins():
     names = {p.name for p in default_registry()._plugins}
     assert names == {"pdf", "office", "image", "video", "text"}
+
+
+# --- video preview encoder selection (open WebM preferred) -------------------
+from convert_search_ai.plugins.video import VideoPlugin
+from convert_search_ai import tools as _tools
+
+
+def _stub_ffmpeg(monkeypatch, encoders):
+    """Make VideoPlugin think ffmpeg exists, every run() succeeds, and outputs
+    are non-empty — without invoking any real tool."""
+    monkeypatch.setattr(_tools, "have", lambda t: True)
+    monkeypatch.setattr(_tools, "ffmpeg_encoders", lambda: frozenset(encoders))
+    monkeypatch.setattr(_tools, "read_if_exists", lambda p: b"BYTES")
+    calls = []
+    monkeypatch.setattr(_tools, "run", lambda cmd, timeout=120, input_bytes=None: (calls.append(cmd), True)[1])
+    return calls
+
+
+def test_video_preview_prefers_open_webm_vp9(monkeypatch):
+    calls = _stub_ffmpeg(monkeypatch, {"libvpx-vp9", "libopenh264"})
+    rends = VideoPlugin().render(b"video-bytes", "video/mp4", "clip.mp4")
+    by = {(r.fmt, r.ext, r.mime) for r in rends}
+    assert ("poster", "png", "image/png") in by
+    assert ("preview", "webm", "video/webm") in by  # open WebM/VP9, not H.264
+    preview_cmd = next(c for c in calls if any(str(x).endswith("preview.webm") for x in c))
+    assert "libvpx-vp9" in preview_cmd
+
+
+def test_video_preview_falls_back_to_h264_when_no_vpx(monkeypatch):
+    _stub_ffmpeg(monkeypatch, {"libopenh264"})
+    rends = VideoPlugin().render(b"v", "video/mp4", "clip.mp4")
+    assert any(r.fmt == "preview" and r.ext == "mp4" and r.mime == "video/mp4" for r in rends)
+
+
+def test_video_emits_poster_only_when_no_usable_encoder(monkeypatch):
+    _stub_ffmpeg(monkeypatch, set())  # no H.264/VPx encoders at all
+    rends = VideoPlugin().render(b"v", "video/mp4", "clip.mp4")
+    fmts = {r.fmt for r in rends}
+    assert fmts == {"poster"}  # still get the poster, just no clip
