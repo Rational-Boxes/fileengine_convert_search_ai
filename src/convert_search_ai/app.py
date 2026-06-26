@@ -109,6 +109,10 @@ def build_app(config: Config | None = None, *, search: SearchService | None = No
 def main() -> None:
     import uvicorn
 
+    # Surface our own INFO logs (the AI-providers banner, etc.) — without this the
+    # root logger defaults to WARNING under uvicorn and the banner is dropped.
+    logging.basicConfig(level=logging.INFO)
+
     load_dotenv()
     config = Config()
     # Real-time permission-cache invalidation from the event stream (§8).

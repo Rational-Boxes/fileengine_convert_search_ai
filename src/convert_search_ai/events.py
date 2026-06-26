@@ -45,9 +45,17 @@ class RedisEventSource:
 
     def read(self, count: int = 32, block_ms: int = 5000) -> List[Entry]:
         """Read up to ``count`` new entries for this group; block up to ``block_ms``."""
-        resp = self._redis().xreadgroup(
-            self.group, self.consumer, {self.stream: ">"}, count=count, block=block_ms
-        )
+        import redis  # lazy
+        try:
+            resp = self._redis().xreadgroup(
+                self.group, self.consumer, {self.stream: ">"}, count=count, block=block_ms
+            )
+        except redis.exceptions.TimeoutError:
+            # A blocking XREADGROUP that returns no new entries within block_ms can
+            # surface as a socket-read timeout (redis-py/RESP3 sets the read timeout
+            # to ~block_ms with no buffer). That just means "no events", so yield an
+            # empty batch and let the poll loop continue instead of crashing.
+            return []
         out: List[Entry] = []
         for _stream, messages in resp or []:
             for msg_id, fields in messages:

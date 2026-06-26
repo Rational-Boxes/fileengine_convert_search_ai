@@ -25,6 +25,17 @@ class Ingestor:
         self.pipeline = pipeline
         self.store = store
         self.source = source
+        self._provisioned: set[str] = set()
+
+    def _ensure_tenant(self, tenant: str) -> None:
+        """Provision the tenant's CSAI schema + tables on its first event
+        (idempotent; cached). The core/CSAI create per-tenant storage on demand —
+        this is CSAI's equivalent for its own pgvector/FTS tables."""
+        if tenant in self._provisioned:
+            return
+        from .db import provision_tenant
+        provision_tenant(self.config, tenant)
+        self._provisioned.add(tenant)
 
     def handle(self, event: dict) -> None:
         if event.get("is_rendition"):
@@ -35,9 +46,11 @@ class Ingestor:
         if not uid:
             return
         if etype in _CONVERT_TYPES:
+            self._ensure_tenant(tenant)
             outcome = self.pipeline.convert(uid, tenant)
             log.info("convert %s -> %s (%s)", uid, outcome.status, outcome.detail)
         elif etype == "file.deleted":
+            self._ensure_tenant(tenant)
             self.store.delete(tenant, uid)
             log.info("deleted document rows for %s", uid)
         # other types are intentionally not conversion concerns
