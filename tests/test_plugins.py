@@ -46,7 +46,16 @@ def test_plugin_exception_is_fail_soft():
 
 def test_default_registry_has_the_expected_plugins():
     names = {p.name for p in default_registry()._plugins}
-    assert names == {"pdf", "office", "image", "video", "text"}
+    assert names == {"pdf", "office", "image", "video", "source", "text"}
+
+
+def test_source_preview_precedes_text_catch_all():
+    # The source/text preview plugin must win over the plain-text plugin for
+    # text/* (it adds renditions), so it is registered first.
+    plugins = default_registry()._plugins
+    order = [p.name for p in plugins]
+    assert order.index("source") < order.index("text")
+    assert PluginRegistry(plugins).for_mime("text/x-python").name == "source"
 
 
 # --- video preview encoder selection (open WebM preferred) -------------------

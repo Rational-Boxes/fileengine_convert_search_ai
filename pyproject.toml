@@ -12,6 +12,8 @@ dependencies = [
     "pydantic>=2.0",
     "psycopg[binary]>=3.1",
     "redis>=5.0",
+    "Pygments>=2.17",     # source/text language detection + syntax highlighting
+    "reportlab>=4.0",     # first-page colour-coded PDF for the text preview
 ]
 # The FileEngine Python client (`fileengine`, from ../python_interface) is reused
 # at runtime for gRPC core access (permission checks + rendition writes), exactly

@@ -49,6 +49,7 @@ def default_registry(config=None) -> PluginRegistry:
     from .image import ImagePlugin
     from .office import OfficePlugin
     from .pdf import PdfPlugin
+    from .source_preview import SourcePreviewPlugin
     from .text import TextMarkdownPlugin
     from .video import VideoPlugin
 
@@ -57,10 +58,16 @@ def default_registry(config=None) -> PluginRegistry:
     backends = getattr(config, "pdf_backends", None) if config is not None else None
     thumb_px = getattr(config, "doc_thumbnail_px", DEFAULT_THUMBNAIL_PX) if config is not None else DEFAULT_THUMBNAIL_PX
     preview_px = getattr(config, "doc_preview_px", DEFAULT_PREVIEW_PX) if config is not None else DEFAULT_PREVIEW_PX
+    code_style = getattr(config, "code_preview_style", "default") if config is not None else "default"
+    code_head = getattr(config, "code_preview_head_lines", 120) if config is not None else 120
     return PluginRegistry([
         PdfPlugin(backends=backends, thumbnail_px=thumb_px, preview_px=preview_px),
         OfficePlugin(pdf_backends=backends, thumbnail_px=thumb_px, preview_px=preview_px),
         ImagePlugin(),
         VideoPlugin(),
+        # Source/text preview (colour-coded first-page PDF + PNGs). Registered
+        # ahead of the plain-text catch-all so text & source files get previews;
+        # the text plugin remains as the final fail-soft text extractor.
+        SourcePreviewPlugin(style=code_style, head_lines=code_head, thumbnail_px=thumb_px, preview_px=preview_px),
         TextMarkdownPlugin(),
     ])

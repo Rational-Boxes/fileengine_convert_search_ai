@@ -134,6 +134,12 @@ class Config:
         self.doc_thumbnail_px = int(_env("CSAI_DOC_THUMBNAIL_PX", "256"))
         self.doc_preview_px = int(_env("CSAI_DOC_PREVIEW_PX", "1280"))
 
+        # Source/text preview: Pygments style for the colour-coded first-page PDF,
+        # and how many leading lines to render (the rest is clipped — it's a
+        # preview, the full text is still extracted for search).
+        self.code_preview_style = _env("CSAI_CODE_PREVIEW_STYLE", "default")
+        self.code_preview_head_lines = int(_env("CSAI_CODE_PREVIEW_HEAD_LINES", "120"))
+
         # --- Auth coordination with the core REST API (http_bridge) ---
         # When set, a bearer token issued by the bridge is accepted here too:
         # this service introspects it against the bridge's /v1/auth/introspect,
