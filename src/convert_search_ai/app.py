@@ -12,6 +12,8 @@ The HTTP/WebSocket surface is defined in ``api.py`` (one explicit APIRouter);
 """
 from __future__ import annotations
 
+import logging
+
 from fastapi import FastAPI
 
 from . import __version__, audit
@@ -23,12 +25,50 @@ from .retrieval import Retriever
 from .search import SearchService
 from .token_store import TokenStore
 
+log = logging.getLogger("convert_search_ai.app")
+
+_OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434/v1"
+
+
+def _endpoint_desc(provider: str, base_url: str) -> str:
+    """Human-readable endpoint for the startup banner (no secrets)."""
+    p = (provider or "").lower()
+    if base_url:
+        return base_url
+    if p == "ollama":
+        return _OLLAMA_DEFAULT_BASE_URL
+    if p == "anthropic":
+        return "anthropic-api"
+    if p == "voyage":
+        return "voyage-api"
+    if p in ("openai", "openai-compatible"):
+        return "openai-api"
+    if p in ("", "hash", "local", "echo", "fake"):
+        return "local/offline"
+    return "default"
+
+
+def _log_ai_config(config: Config) -> None:
+    """Log the resolved embedder and chat providers so operators can confirm the
+    dual configuration took effect — e.g. a CPU-local embedder and an external
+    chat LLM are independent and may target different providers/endpoints."""
+    emb_provider = config.embedding_provider or "hash"
+    chat_provider = config.chat_provider or "anthropic"
+    log.info(
+        "AI providers — embeddings: provider=%s model=%s dim=%s endpoint=%s | "
+        "chat: provider=%s model=%s endpoint=%s",
+        emb_provider, config.embedding_model or "(provider default)",
+        config.embedding_dimension, _endpoint_desc(emb_provider, config.embedding_base_url),
+        chat_provider, config.chat_model, _endpoint_desc(chat_provider, config.chat_base_url),
+    )
+
 
 def build_app(config: Config | None = None, *, search: SearchService | None = None,
               chat: ChatService | None = None, token_store: TokenStore | None = None,
               enable_event_invalidation: bool = False) -> FastAPI:
     config = config or Config()
     audit.configure(config.audit_log_file)
+    _log_ai_config(config)
     app = FastAPI(title="convert_search_ai", version=__version__)
 
     # Browser CORS for a SPA on another origin (off unless CSAI_CORS_ORIGINS set).
