@@ -15,10 +15,13 @@ from .plugins.base import Rendition
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 
 
+def _safe_version(version: str) -> str:
+    return _UNSAFE.sub("_", (version or "0").strip()) or "0"
+
+
 def rendition_name(version: str, fmt: str, ext: str) -> str:
     """``<version>-<fmt>.<ext>`` with the version sanitized for a filename."""
-    v = _UNSAFE.sub("_", (version or "0").strip()) or "0"
-    return f"{v}-{fmt}.{ext}"
+    return f"{_safe_version(version)}-{fmt}.{ext}"
 
 
 class RenditionWriter:
@@ -35,6 +38,13 @@ class RenditionWriter:
         if not entries:
             return set()
         return {e.name for e in entries}
+
+    def names_for_version(self, file_uid: str, version: str, tenant: str) -> List[str]:
+        """All rendition child names already present for ``(file_uid, version)`` —
+        used to report the full current set on an on-demand (re)generate, even
+        when this call wrote nothing new (renditions already existed)."""
+        prefix = f"{_safe_version(version)}-"
+        return sorted(n for n in self.existing_names(file_uid, tenant) if n.startswith(prefix))
 
     def write(self, file_uid: str, version: str, renditions: List[Rendition], tenant: str) -> List[str]:
         """Idempotently write ``renditions`` for ``(file_uid, version)``.

@@ -13,6 +13,8 @@ build_app() wires the shared services onto app.state and includes this router.
 Handlers read those services from request/websocket ``app.state``."""
 from __future__ import annotations
 
+from functools import partial
+
 import anyio
 from fastapi import (APIRouter, Body, Depends, HTTPException, Query, Request,
                      WebSocket, WebSocketDisconnect)
@@ -231,7 +233,11 @@ async def convert_document(file_uid: str, request: Request,
     await run_in_threadpool(provision_tenant, config, identity.tenant)
 
     # Conversion does blocking I/O (gRPC + tools + embedding) — off the event loop.
-    out = await run_in_threadpool(_ingestor(request.app).pipeline.convert, file_uid, identity.tenant)
+    # force=True: this is an explicit user (re)generate, so run the plugins even
+    # if the version was already converted/indexed (e.g. a text file indexed
+    # before the preview plugin existed has no renditions yet).
+    out = await run_in_threadpool(
+        partial(_ingestor(request.app).pipeline.convert, force=True), file_uid, identity.tenant)
     return JSONResponse(status_code=200, content={
         "file_uid": file_uid,
         "status": out.status,

@@ -15,8 +15,8 @@ class FakePipeline:
         self.outcome = outcome
         self.calls = []
 
-    def convert(self, uid, tenant):
-        self.calls.append((uid, tenant))
+    def convert(self, uid, tenant, force=False):
+        self.calls.append((uid, tenant, force))
         return self.outcome
 
 
@@ -58,7 +58,7 @@ def test_convert_provisions_tenant_then_runs_pipeline(monkeypatch):
     assert body["renditions"] == ["v-thumbnail.png", "v-preview.png"]
     assert body["has_markdown"] is True
     assert prov == ["default"]  # schema provisioned (idempotent) before convert
-    assert pipe.calls == [("f1", "default")]
+    assert pipe.calls == [("f1", "default", True)]  # on-demand always forces
 
 
 def test_convert_forbidden_when_not_readable(monkeypatch):

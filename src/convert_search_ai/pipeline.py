@@ -40,7 +40,11 @@ class ConversionPipeline:
         self.writer = writer or RenditionWriter(mf)
         self.indexer = indexer  # optional: chunk+embed+store into pgvector (M3)
 
-    def convert(self, file_uid: str, tenant: str) -> ConvertOutcome:
+    def convert(self, file_uid: str, tenant: str, force: bool = False) -> ConvertOutcome:
+        """Convert + index a file. ``force`` (the on-demand path) re-runs even when
+        the version was already processed — needed for files indexed before a new
+        rendition-producing plugin existed (e.g. text → preview), which the
+        event-driven worker would otherwise skip as up-to-date."""
         info = self.mf.stat(file_uid, tenant=tenant)
         if info is None:
             return ConvertOutcome(file_uid, "missing", [], detail="stat failed / not found")
@@ -49,9 +53,12 @@ class ConversionPipeline:
 
         version = info.version or ""
 
-        # Idempotency: same version already converted/indexed -> nothing to do.
+        # Idempotency: same version already converted/indexed -> nothing to do
+        # (unless forced — an explicit user (re)generate must run the plugins).
         prior = self.store.get_status(tenant, file_uid)
-        if prior and prior.source_version == version and prior.status in ("converted", "indexed"):
+        already_done = bool(prior and prior.source_version == version
+                            and prior.status in ("converted", "indexed"))
+        if already_done and not force:
             return ConvertOutcome(file_uid, "skipped", [], detail="up-to-date")
 
         blob = self.mf.get(file_uid, tenant=tenant)
@@ -70,8 +77,12 @@ class ConversionPipeline:
         written = self.writer.write(file_uid, version, result.renditions, tenant)
 
         # Index for vector retrieval (M3) when wired and there is text to chunk.
-        status = "converted"
-        if self.indexer is not None and result.markdown:
+        # A force re-render of an already-indexed version writes any missing
+        # renditions but does not re-embed unchanged content.
+        already_indexed = bool(prior and prior.source_version == version
+                               and prior.status == "indexed")
+        status = "indexed" if already_indexed else "converted"
+        if self.indexer is not None and result.markdown and not already_indexed:
             try:
                 self.indexer.index(tenant, file_uid, result.markdown, version)
                 status = "indexed"
@@ -80,5 +91,8 @@ class ConversionPipeline:
 
         self.store.upsert(tenant, file_uid, source_version=version, mime=mime,
                           name=info.name, content_md=result.markdown, status=status)
-        return ConvertOutcome(file_uid, status, written,
+        # On-demand callers want the full current set (so a repeat click still
+        # reports the existing renditions); the worker only needs what's new.
+        reported = self.writer.names_for_version(file_uid, version, tenant) if force else written
+        return ConvertOutcome(file_uid, status, reported,
                               has_markdown=bool(result.markdown), detail=mime)

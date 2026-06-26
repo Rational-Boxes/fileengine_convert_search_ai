@@ -50,6 +50,54 @@ def test_idempotent_skip_when_up_to_date():
     assert again.detail == "up-to-date"
 
 
+def _rendition_plugin(fmt, ext, mime, markdown=None):
+    class P(ConversionPlugin):
+        name = "p"
+        def supports(self, m): return True
+        def render(self, d, m, n): return [Rendition(fmt, ext, b"DATA", mime)]
+        def extract(self, d, m, n): return markdown
+    return P()
+
+
+def test_force_reconverts_already_processed_file():
+    mf = FakeMF()
+    mf.add_file("f2", "pic.png", content=b"x", version="v3")
+    store = FakeStore()
+    p = ConversionPipeline(mf=mf, store=store,
+                           registry=PluginRegistry([_rendition_plugin("preview", "png", "image/png")]))
+
+    assert p.convert("f2", "default").status == "converted"
+    # Without force the same version is an idempotent no-op.
+    again = p.convert("f2", "default")
+    assert again.status == "skipped" and again.renditions_written == []
+    # With force it re-runs and reports the full current set (already present).
+    forced = p.convert("f2", "default", force=True)
+    assert forced.status == "converted"
+    assert forced.renditions_written == ["v3-preview.png"]
+
+
+def test_force_backfills_renditions_for_previously_indexed_file():
+    # A text file indexed before the preview plugin existed: status=indexed for
+    # this version, but no rendition children — the on-demand (force) path must
+    # run the plugin and write the missing renditions without re-embedding.
+    mf = FakeMF()
+    mf.add_file("t1", "a.txt", content=b"hello", version="v1")
+    store = FakeStore()
+    store.upsert("default", "t1", source_version="v1", status="indexed")
+    p = ConversionPipeline(mf=mf, store=store,
+                           registry=PluginRegistry([_rendition_plugin("pdf", "pdf", "application/pdf",
+                                                                       markdown="hello")]))
+
+    # Without force: the bug — skipped, no renditions ever written.
+    assert p.convert("t1", "default").status == "skipped"
+    assert mf.renditions.get("t1", {}) == {}
+
+    out = p.convert("t1", "default", force=True)
+    assert out.status == "indexed"                  # stays indexed, no re-embed
+    assert out.renditions_written == ["v1-pdf.pdf"]
+    assert "v1-pdf.pdf" in mf.renditions["t1"]
+
+
 def test_reconverts_on_new_version():
     mf = FakeMF()
     mf.add_file("f1", "notes.txt", content=b"v1", version="v1")
