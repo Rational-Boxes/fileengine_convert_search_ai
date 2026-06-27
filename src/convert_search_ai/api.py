@@ -13,6 +13,7 @@ build_app() wires the shared services onto app.state and includes this router.
 Handlers read those services from request/websocket ``app.state``."""
 from __future__ import annotations
 
+import logging
 from functools import partial
 
 import anyio
@@ -133,13 +134,53 @@ def document_text(file_uid: str, request: Request, identity: Identity = Depends(
     return {"file_uid": file_uid, "tenant": identity.tenant, "text": text, "truncated": truncated}
 
 
+# ---------------------------- conversations --------------------------------
+# Persisted chat history, scoped to the authenticated user within their tenant.
+@router.get("/conversations")
+def list_conversations(request: Request, identity: Identity = Depends(_identity)) -> dict:
+    return {"conversations": request.app.state.conversations.list(identity.tenant, identity.user)}
+
+
+@router.post("/conversations")
+def create_conversation(request: Request, body: dict = Body(default={}),
+                        identity: Identity = Depends(_identity)) -> dict:
+    cid = request.app.state.conversations.create(
+        identity.tenant, identity.user, title=(body or {}).get("title", ""))
+    return {"id": cid}
+
+
+@router.get("/conversations/{conversation_id}")
+def get_conversation(conversation_id: str, request: Request,
+                     identity: Identity = Depends(_identity)) -> dict:
+    convo = request.app.state.conversations.get(identity.tenant, identity.user, conversation_id)
+    if convo is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    return convo
+
+
+@router.delete("/conversations/{conversation_id}")
+def delete_conversation(conversation_id: str, request: Request,
+                        identity: Identity = Depends(_identity)) -> dict:
+    if not request.app.state.conversations.delete(identity.tenant, identity.user, conversation_id):
+        raise HTTPException(status_code=404, detail="conversation not found")
+    return {"deleted": conversation_id}
+
+
+def _title_from(message: str) -> str:
+    """A short conversation title derived from the first user message."""
+    t = " ".join((message or "").split())[:60]
+    return t or "New chat"
+
+
 # -------------------------------- chat -------------------------------------
 @router.websocket("/chat")
 async def chat(ws: WebSocket) -> None:
     """Permission-scoped RAG chat. Authenticate with a bearer token (Authorization
-    header or ``?token=``); each message carries the conversation-specific
-    ``system_prompt`` plus ``message`` (and optional ``history``/``k``). The server
-    streams ``{type: token}`` deltas then ``{type: citations}``."""
+    header or ``?token=``). Each message carries ``message`` (+ optional
+    ``system_prompt``/``history``/``k``/``web_search``/``conversation_id``). The
+    server persists the turn, emits ``{type: conversation, id}`` (so the client can
+    resume later), then streams ``{type: token}`` deltas, tool events, and
+    ``{type: citations}``, finishing with ``{type: done}``."""
     config = ws.app.state.config
     headers = {k.lower(): v for k, v in ws.headers.items()}
     auth = headers.get("authorization", "")
@@ -157,6 +198,7 @@ async def chat(ws: WebSocket) -> None:
         return
 
     chat_service = ws.app.state.chat
+    convos = ws.app.state.conversations
     try:
         while True:
             payload = await ws.receive_json()
@@ -164,15 +206,47 @@ async def chat(ws: WebSocket) -> None:
             if not message:
                 await ws.send_json({"type": "error", "error": "message is required"})
                 continue
-            await _stream_answer(ws, chat_service, identity, payload, message)
+            # Resolve/create the conversation + store the user turn. Best-effort: a
+            # persistence outage must not break the chat (conv_id falls to None).
+            conv_id = await run_in_threadpool(
+                _begin_turn, convos, identity, payload.get("conversation_id"), message)
+            if conv_id:
+                await ws.send_json({"type": "conversation", "id": conv_id})
+            answer, citations = await _stream_answer(ws, chat_service, identity, payload, message)
+            if conv_id:
+                await run_in_threadpool(_end_turn, convos, identity, conv_id, answer, citations)
             await ws.send_json({"type": "done"})
     except WebSocketDisconnect:
         return
 
 
-async def _stream_answer(ws: WebSocket, chat_service, identity, payload: dict, message: str) -> None:
-    """Bridge the sync RAG generator (which does blocking I/O) to the async socket
-    via a worker thread + memory stream, so the event loop is never blocked."""
+def _begin_turn(convos, identity: Identity, conv_id, message: str):
+    """Resolve/create the conversation and store the user message. Returns the
+    conversation id, or None if persistence is unavailable (chat still proceeds)."""
+    try:
+        if not (conv_id and convos.owns(identity.tenant, identity.user, conv_id)):
+            conv_id = convos.create(identity.tenant, identity.user, title=_title_from(message))
+        convos.append(identity.tenant, identity.user, conv_id, "user", message)
+        convos.set_title_if_empty(identity.tenant, identity.user, conv_id, _title_from(message))
+        return conv_id
+    except Exception:
+        logging.getLogger("convert_search_ai.chat").warning(
+            "conversation persist (begin) failed", exc_info=True)
+        return None
+
+
+def _end_turn(convos, identity: Identity, conv_id, answer: str, citations) -> None:
+    try:
+        convos.append(identity.tenant, identity.user, conv_id, "assistant", answer, citations=citations)
+    except Exception:
+        logging.getLogger("convert_search_ai.chat").warning(
+            "conversation persist (end) failed", exc_info=True)
+
+
+async def _stream_answer(ws: WebSocket, chat_service, identity, payload: dict, message: str):
+    """Bridge the sync RAG generator (blocking I/O) to the async socket via a worker
+    thread + memory stream. Forwards every event to the client and returns the
+    accumulated ``(answer_text, citations)`` so the turn can be persisted."""
     send, recv = anyio.create_memory_object_stream(256)
 
     def produce():
@@ -190,11 +264,19 @@ async def _stream_answer(ws: WebSocket, chat_service, identity, payload: dict, m
         finally:
             anyio.from_thread.run(send.aclose)
 
+    parts: list[str] = []
+    citations: list = []
     async with anyio.create_task_group() as tg:
         tg.start_soon(anyio.to_thread.run_sync, produce)
         async with recv:
             async for ev in recv:
+                t = ev.get("type")
+                if t == "token":
+                    parts.append(ev.get("text", ""))
+                elif t == "citations":
+                    citations = ev.get("citations", [])
                 await ws.send_json(ev)
+    return "".join(parts), citations
 
 
 # ----------------------------- ingestion -----------------------------------

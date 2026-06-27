@@ -20,6 +20,7 @@ from . import __version__, audit
 from .api import router
 from .chat import ChatService
 from .config import Config, load_dotenv
+from .conversations import ConversationStore
 from .permissions import PermissionGate
 from .retrieval import Retriever
 from .search import SearchService
@@ -65,6 +66,7 @@ def _log_ai_config(config: Config) -> None:
 
 def build_app(config: Config | None = None, *, search: SearchService | None = None,
               chat: ChatService | None = None, token_store: TokenStore | None = None,
+              conversations: ConversationStore | None = None,
               enable_event_invalidation: bool = False) -> FastAPI:
     config = config or Config()
     audit.configure(config.audit_log_file)
@@ -96,6 +98,7 @@ def build_app(config: Config | None = None, *, search: SearchService | None = No
     app.state.search = search or SearchService(config, gate=gate)
     # Chat retrieval shares the same gate, so real-time cache invalidation applies.
     app.state.chat = chat or ChatService(config, retriever=Retriever(config, gate=gate))
+    app.state.conversations = conversations or ConversationStore(config)
 
     if enable_event_invalidation:
         from .cache_invalidation import PermissionCacheInvalidator
