@@ -106,9 +106,56 @@ class WebSearchTool(Tool):
         return f"{head} ({domain})\n{r.snippet}\nSource: {r.url}"
 
 
+def _default_page_fetch(url: str, *, max_bytes: int, timeout: float):
+    from .webfetch import fetch_text
+    return fetch_text(url, max_bytes=max_bytes, timeout=timeout)
+
+
+class FetchPageTool(Tool):
+    """Fetch and read the full text of a single public web page (SSRF-guarded)."""
+
+    name = "fetch_page"
+    description = (
+        "Fetch and read the full text of a single public web page by its https URL "
+        "(e.g. a URL returned by web_search) when the search snippet is not enough. "
+        "Only public https pages can be read.")
+    schema = {
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "The https URL to fetch."},
+        },
+        "required": ["url"],
+    }
+
+    def __init__(self, *, fetcher=None, max_bytes: int = 2_000_000,
+                 timeout_ms: int = 5000, max_chars: int = 4000):
+        self._fetch = fetcher or _default_page_fetch
+        self.max_bytes = max_bytes
+        self.timeout = max(1.0, timeout_ms / 1000.0)
+        self.max_chars = max_chars
+
+    def run(self, args: dict, ctx: ToolContext) -> ToolOutput:
+        url = str((args or {}).get("url", "")).strip()
+        if not url:
+            return ToolOutput(text="(fetch_page error: url is required)")
+        result = self._fetch(url, max_bytes=self.max_bytes, timeout=self.timeout)
+        audit.record(action="fetch_page", user=getattr(ctx.identity, "user", ""),
+                     tenant=getattr(ctx.identity, "tenant", ""),
+                     result="ok" if result else "error", web=True)
+        if not result:
+            return ToolOutput(
+                text=f"Could not read {url} (blocked, non-text, or unavailable).")
+        title, text = result
+        text = text[:self.max_chars]
+        src = {"kind": "web", "url": url, "title": title, "snippet": text}
+        ctx.sources.append(src)
+        return ToolOutput(text=text, sources=[src])
+
+
 def build_tools(config: Config) -> List[Tool]:
     """The tools to expose to the model for this deployment. Empty unless web
-    search is enabled (OFF by default)."""
+    search is enabled (OFF by default). fetch_page is added only when page fetch
+    is additionally enabled."""
     tools: List[Tool] = []
     if getattr(config, "web_search_enabled", False):
         from .providers import make_web_search_provider
@@ -117,4 +164,9 @@ def build_tools(config: Config) -> List[Tool]:
             max_results=getattr(config, "web_search_results", 5),
             max_chars=getattr(config, "web_max_chars", 4000),
             max_query_chars=getattr(config, "max_query_chars", 1000)))
+        if getattr(config, "web_fetch_pages", False):
+            tools.append(FetchPageTool(
+                max_bytes=getattr(config, "web_fetch_max_bytes", 2_000_000),
+                timeout_ms=getattr(config, "web_timeout_ms", 5000),
+                max_chars=getattr(config, "web_max_chars", 4000)))
     return tools

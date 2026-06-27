@@ -148,6 +148,10 @@ class Config:
         self.web_region = _env("CSAI_WEB_REGION", "wt-wt")
         self.web_safesearch = _env("CSAI_WEB_SAFESEARCH", "moderate")
         self.web_timelimit = _env("CSAI_WEB_TIMELIMIT", "")  # "" | d | w | m | y
+        # Optional fetch_page tool (read full page text; SSRF-guarded). Off by
+        # default and only added when web search is also enabled.
+        self.web_fetch_pages = _bool("CSAI_WEB_FETCH_PAGES", False)
+        self.web_fetch_max_bytes = int(_env("CSAI_WEB_FETCH_MAX_BYTES", str(2 * 1024 * 1024)))
 
         # PDF/Office → Markdown extraction backends, fidelity-ordered (the first
         # one installed AND yielding content wins; see plugins/pdf_backends).

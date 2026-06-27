@@ -2,7 +2,8 @@
 from types import SimpleNamespace
 
 from convert_search_ai.config import Config
-from convert_search_ai.llm_tools import ToolContext, WebSearchTool, build_tools
+from convert_search_ai.llm_tools import (
+    FetchPageTool, ToolContext, WebSearchTool, build_tools)
 from convert_search_ai.providers.websearch import (
     FakeWebSearchProvider, NullWebSearchProvider)
 
@@ -59,3 +60,34 @@ def test_build_tools_includes_web_search_when_enabled():
     tools = build_tools(c)
     assert len(tools) == 1 and tools[0].name == "web_search"
     assert tools[0].schema["required"] == ["query"]
+
+
+# --- fetch_page tool -------------------------------------------------------
+def test_fetch_page_returns_capped_web_source():
+    tool = FetchPageTool(fetcher=lambda url, **k: ("Title", "body " * 100), max_chars=20)
+    out = tool.run({"url": "https://example.com/a"}, _ctx())
+    assert len(out.text) <= 20
+    assert len(out.sources) == 1
+    s = out.sources[0]
+    assert s["kind"] == "web" and s["url"] == "https://example.com/a" and s["title"] == "Title"
+
+
+def test_fetch_page_blocked_or_failed_is_graceful():
+    tool = FetchPageTool(fetcher=lambda url, **k: None)  # blocked / unavailable
+    out = tool.run({"url": "https://10.0.0.1/meta"}, _ctx())
+    assert out.sources == [] and "could not read" in out.text.lower()
+
+
+def test_fetch_page_requires_url():
+    out = FetchPageTool(fetcher=lambda url, **k: ("", "")).run({}, _ctx())
+    assert "url is required" in out.text and out.sources == []
+
+
+def test_build_tools_adds_fetch_page_only_when_enabled():
+    c = Config()
+    c.web_search_enabled = True
+    c.web_search_provider = "fake"
+    c.web_fetch_pages = True
+    assert {t.name for t in build_tools(c)} == {"web_search", "fetch_page"}
+    c.web_fetch_pages = False
+    assert "fetch_page" not in {t.name for t in build_tools(c)}
