@@ -29,12 +29,23 @@ def provision_tenant(config: Config, tenant: str) -> str:
         conn.close()
 
 
+# Tenants whose schema has been ensured in this process. Lets read paths bootstrap
+# a never-ingested tenant (no UndefinedTable / 500) without re-running the
+# idempotent DDL on every single connection.
+_provisioned: set[str] = set()
+
+
 def connect_for_tenant(config: Config, tenant: str, provision: bool = False):
     """A connection whose ``search_path`` is the tenant's schema (then ``public``
-    for the extensions). Set ``provision=True`` to create the schema if missing."""
+    for the extensions). The schema is ensured on the first connection to a tenant
+    in this process (and whenever ``provision=True``), so reads never hit a missing
+    table on a tenant that hasn't been ingested yet."""
     conn = connect(config)
-    name = (ensure_tenant_schema(conn, tenant, config.embedding_dimension)
-            if provision else schema_name(tenant))
+    if provision or tenant not in _provisioned:
+        name = ensure_tenant_schema(conn, tenant, config.embedding_dimension)
+        _provisioned.add(tenant)
+    else:
+        name = schema_name(tenant)
     with conn.cursor() as cur:
         cur.execute(f'SET search_path TO "{name}", public')
         timeout = int(getattr(config, "db_statement_timeout_ms", 0) or 0)
