@@ -61,11 +61,15 @@ def test_convert_provisions_tenant_then_runs_pipeline(monkeypatch):
     assert pipe.calls == [("f1", "default", True)]  # on-demand always forces
 
 
-def test_convert_forbidden_when_not_readable(monkeypatch):
+def test_convert_renders_regardless_of_read_permission(monkeypatch):
+    # Indexing/rendering is an unconditional system operation: even if the caller
+    # could not READ the file, conversion still runs (as the bypass agent). ACLs
+    # gate retrieval (search/chat/text/rendition bytes), not rendering.
     client, tok, pipe, prov = _setup(monkeypatch, allow=False)
     r = client.post("/documents/f1/convert", headers={"Authorization": f"Bearer {tok}"})
-    assert r.status_code == 403
-    assert pipe.calls == [] and prov == []  # never provisioned/converted
+    assert r.status_code == 200, r.text
+    assert pipe.calls == [("f1", "default", True)]  # converted despite no read perm
+    assert prov == ["default"]
 
 
 def test_convert_requires_auth(monkeypatch):
