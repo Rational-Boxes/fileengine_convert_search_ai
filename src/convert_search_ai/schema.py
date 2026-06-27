@@ -82,6 +82,29 @@ CREATE INDEX IF NOT EXISTS idx_chunks_text_trgm
     ON "{schema}".chunks USING gin (text gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding
     ON "{schema}".chunks USING hnsw (embedding vector_cosine_ops);
+
+-- Persisted chat conversations, scoped per user within the tenant schema so a
+-- user can resume past chats. Ids are app-generated (uuid hex).
+CREATE TABLE IF NOT EXISTS "{schema}".conversations (
+    id          TEXT        PRIMARY KEY,
+    user_id     TEXT        NOT NULL,
+    title       TEXT        NOT NULL DEFAULT '',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_conversations_user
+    ON "{schema}".conversations (user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS "{schema}".conversation_messages (
+    id              BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    conversation_id TEXT        NOT NULL REFERENCES "{schema}".conversations (id) ON DELETE CASCADE,
+    role            TEXT        NOT NULL CHECK (role IN ('user','assistant')),
+    content         TEXT        NOT NULL DEFAULT '',
+    citations       JSONB,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_conv_messages
+    ON "{schema}".conversation_messages (conversation_id, id);
 '''
 
 
