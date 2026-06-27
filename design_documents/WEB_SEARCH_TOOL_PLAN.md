@@ -1,10 +1,12 @@
 # convert_search_ai — Web Search Tool for Chat-with-Documents
 
-Status: **In progress** on branch `feature/web-search-tool`. **P1** (search
-backends + tool, off by default) and **P2** (tool-calling providers + the agentic
-loop in `ChatService`) are implemented and tested (P2 live-validated against an
-OpenAI-compatible DeepInfra model). **P3** (frontend) and **P4** (page fetch /
-extra providers) are still design. Companion:
+Status: **In progress**. **P1** (search backends + tool, off by default) and **P2**
+(tool-calling providers + the agentic loop in `ChatService`) are implemented and
+tested on `feature/web-search-tool` (P2 live-validated against an OpenAI-compatible
+DeepInfra model). **P3** (frontend: Web toggle, web citations as links, "searching
+the web" indicator) is implemented in the frontend repo on `feature/chat-web-search-ui`.
+**P4** (page fetch+extract with SSRF guards / extra providers) is still design.
+Companion:
 [`DEVELOPMENT_PLAN.md`](./DEVELOPMENT_PLAN.md) (§7 providers, §8 permission gating,
 §11 testing), [`EVENT_CONTRACT.md`](./EVENT_CONTRACT.md).
 
