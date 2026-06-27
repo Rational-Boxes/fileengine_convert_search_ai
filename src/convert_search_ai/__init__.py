@@ -7,4 +7,4 @@ the Postgres baseline migration, and a pytest harness with ``@live`` gating.
 Conversion/extraction (M1), full-text search (M2), and vector RAG chat (M3) are
 built on top of this skeleton — see design_documents/DEVELOPMENT_PLAN.md."""
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
