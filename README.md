@@ -70,9 +70,16 @@ pip install ../python_interface      # the reused FileEngine gRPC client
 pip install -e ".[dev,pdf]"          # 'pdf' = pdfplumber for table-preserving extraction
 cp .env.example .env                 # fill in agent creds etc.
 pytest -q                            # unit tests; @live tests need LDAP + core
-convert-search-ai                    # serve the FastAPI app (uvicorn)
+convert-search-ai                    # serve the FastAPI app (uvicorn) — loads ./.env
 convert-search-ai-worker             # the ingest worker — REQUIRED for auto-previews
 ```
+
+> Both entrypoints load `./.env` (run them from the directory that holds it). If
+> you launch with uvicorn directly, use the `.env`-loading factory —
+> `uvicorn convert_search_ai.app:create_app --factory` — **not** `build_app`
+> (kept pure for hermetic tests). Skipping `.env` leaves `CSAI_CHAT_PROVIDER` at
+> its `anthropic` default, which then needs the anthropic SDK even if you
+> configured an OpenAI-compatible model (e.g. DeepInfra).
 
 > **The app and the worker are two separate processes.** `convert-search-ai`
 > serves the HTTP API (search, chat, on-demand `POST /documents/{uid}/convert`)

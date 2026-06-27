@@ -5,7 +5,7 @@ API, so any OpenAI-compatible endpoint works by setting ``*_BASE_URL`` (``ollama
 just defaults the base URL to a local Ollama)."""
 from __future__ import annotations
 
-from .base import ChatProvider, EmbeddingProvider
+from .base import ChatProvider, EmbeddingProvider, WebSearchProvider
 
 _OPENAI_COMPATIBLE = ("openai", "ollama", "openai-compatible")
 _OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434/v1"
@@ -47,4 +47,28 @@ def make_chat_provider(config) -> ChatProvider:
     if name in ("echo", "fake"):
         from .chat import EchoChatProvider
         return EchoChatProvider()
+    if name in ("echo-tools", "fake-tools"):
+        from .chat import ToolEchoChatProvider
+        return ToolEchoChatProvider()
     raise ValueError(f"unknown chat provider: {name!r}")
+
+
+def make_web_search_provider(config) -> WebSearchProvider:
+    """Select the chat ``web_search`` backend (WEB_SEARCH_TOOL_PLAN §5). Defaults to
+    DuckDuckGo. This only chooses the *backend*; whether the tool is offered to the
+    model is gated separately by ``web_search_enabled`` (off by default)."""
+    name = (getattr(config, "web_search_provider", "") or "duckduckgo").lower()
+    if name in ("duckduckgo", "ddg", "ddgs"):
+        from .websearch import DuckDuckGoSearchProvider
+        return DuckDuckGoSearchProvider(
+            region=getattr(config, "web_region", "wt-wt"),
+            safesearch=getattr(config, "web_safesearch", "moderate"),
+            timelimit=getattr(config, "web_timelimit", ""),
+            timeout_ms=getattr(config, "web_timeout_ms", 4000))
+    if name in ("fake", "echo"):
+        from .websearch import FakeWebSearchProvider
+        return FakeWebSearchProvider()
+    if name in ("none", "null", ""):
+        from .websearch import NullWebSearchProvider
+        return NullWebSearchProvider()
+    raise ValueError(f"unknown web search provider: {name!r}")

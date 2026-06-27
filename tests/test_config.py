@@ -1,6 +1,19 @@
 """Unit tests for Config — run anywhere, no services needed."""
 import importlib
 
+from convert_search_ai.config import _strip_value
+
+
+def test_strip_value_handles_inline_comments_and_quotes():
+    # .env.example documents values with inline `# ...` comments; the loader must
+    # not fold them into the value (regression: CSAI_EMBEDDING_DIMENSION=768 # ...).
+    assert _strip_value("768          # MUST match the model's dim") == "768"
+    assert _strip_value("https://api.deepinfra.com/v1/openai   # base url") == \
+        "https://api.deepinfra.com/v1/openai"
+    assert _strip_value("plain") == "plain"
+    assert _strip_value('"quoted # not a comment"') == "quoted # not a comment"
+    assert _strip_value("sha256#abc") == "sha256#abc"   # '#' without leading space kept
+
 
 def _fresh_config(monkeypatch, **env):
     for k, v in env.items():

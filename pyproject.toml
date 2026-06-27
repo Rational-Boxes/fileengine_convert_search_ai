@@ -31,6 +31,8 @@ pdf-pymupdf = ["pymupdf4llm>=0.0.17"]      # NOTE: PyMuPDF is AGPL-3.0
 anthropic = ["anthropic>=0.40"]
 voyage = ["voyageai>=0.2"]
 openai = ["openai>=1.0"]
+# Web search tool backend (WEB_SEARCH_TOOL_PLAN) — DuckDuckGo, no API key.
+websearch = ["ddgs>=6.0"]
 
 [project.scripts]
 convert-search-ai = "convert_search_ai.app:main"

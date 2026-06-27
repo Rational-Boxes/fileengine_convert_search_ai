@@ -7,7 +7,8 @@ from convert_search_ai.ldap_auth import Identity
 
 
 class FakeChat:
-    def answer(self, identity, *, message, system_prompt="", history=None, k=8):
+    def answer(self, identity, *, message, system_prompt="", history=None, k=8,
+               web_search=None):
         yield {"type": "token", "text": f"Answer to: {message}"}
         yield {"type": "citations", "citations": [{"file_uid": "f1", "marker": 1}]}
 

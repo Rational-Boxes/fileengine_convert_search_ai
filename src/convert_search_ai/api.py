@@ -182,6 +182,7 @@ async def _stream_answer(ws: WebSocket, chat_service, identity, payload: dict, m
                 system_prompt=payload.get("system_prompt", ""),
                 history=payload.get("history") or [],
                 k=int(payload.get("k", 8)),
+                web_search=payload.get("web_search"),
             ):
                 anyio.from_thread.run(send.send, ev)
         except Exception as e:  # surface, don't crash the socket loop

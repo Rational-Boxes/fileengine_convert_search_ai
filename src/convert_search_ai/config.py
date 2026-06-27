@@ -16,7 +16,21 @@ def load_dotenv(path: str = ".env") -> None:
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, val = line.split("=", 1)
-            os.environ.setdefault(key.strip(), val.strip())
+            os.environ.setdefault(key.strip(), _strip_value(val))
+
+
+def _strip_value(val: str) -> str:
+    """Parse a dotenv value: honor a surrounding quote, else drop an inline
+    `` # …`` comment (the .env.example template documents values inline)."""
+    val = val.strip()
+    if val[:1] in ("'", '"'):
+        q = val[0]
+        end = val.find(q, 1)
+        return val[1:end] if end != -1 else val[1:]
+    hi = val.find(" #")
+    if hi != -1:
+        val = val[:hi]
+    return val.strip()
 
 
 def _env(key: str, default: str = "") -> str:
@@ -118,6 +132,26 @@ class Config:
         self.chat_model = _env("CSAI_CHAT_MODEL", "claude-sonnet-4-6")
         self.chat_base_url = _env("CSAI_CHAT_BASE_URL", "")
         self.chat_api_key = _first("CSAI_CHAT_API_KEY", "OPENAI_API_KEY", "")
+
+        # --- Web search tool (WEB_SEARCH_TOOL_PLAN; OFF by default) ---
+        # The chat web_search tool. `enabled` is the master switch (off by default —
+        # a search sends the query to a third party, see plan §9); `provider`
+        # chooses the backend (DuckDuckGo by default, no API key). The tool-loop
+        # wiring lands in P2; P1 ships the backend + tool only.
+        self.web_search_provider = _env("CSAI_WEB_SEARCH_PROVIDER", "duckduckgo")
+        self.web_search_enabled = _bool("CSAI_WEB_SEARCH_ENABLED", False)
+        self.web_search_default = _bool("CSAI_WEB_SEARCH_DEFAULT", False)
+        self.web_search_results = int(_env("CSAI_WEB_SEARCH_RESULTS", "5"))
+        self.web_max_iterations = int(_env("CSAI_WEB_MAX_ITERATIONS", "3"))
+        self.web_max_chars = int(_env("CSAI_WEB_MAX_CHARS", "4000"))
+        self.web_timeout_ms = int(_env("CSAI_WEB_TIMEOUT_MS", "4000"))
+        self.web_region = _env("CSAI_WEB_REGION", "wt-wt")
+        self.web_safesearch = _env("CSAI_WEB_SAFESEARCH", "moderate")
+        self.web_timelimit = _env("CSAI_WEB_TIMELIMIT", "")  # "" | d | w | m | y
+        # Optional fetch_page tool (read full page text; SSRF-guarded). Off by
+        # default and only added when web search is also enabled.
+        self.web_fetch_pages = _bool("CSAI_WEB_FETCH_PAGES", False)
+        self.web_fetch_max_bytes = int(_env("CSAI_WEB_FETCH_MAX_BYTES", str(2 * 1024 * 1024)))
 
         # PDF/Office → Markdown extraction backends, fidelity-ordered (the first
         # one installed AND yielding content wins; see plugins/pdf_backends).
