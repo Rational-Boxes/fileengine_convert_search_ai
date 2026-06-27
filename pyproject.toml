@@ -1,6 +1,6 @@
 [project]
 name = "convert-search-ai"
-version = "0.1.0"
+version = "0.2.0"
 description = "FileEngine conversion, search, and vector-backed RAG chat microservice (permission-gated)"
 requires-python = ">=3.10"
 dependencies = [
