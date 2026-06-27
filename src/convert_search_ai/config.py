@@ -65,6 +65,13 @@ class Config:
         self.tenant = _env("FILEENGINE_CSAI_TENANT", "default")
         self.agent_user = _first("FILEENGINE_CSAI_USER", "FILEENGINE_LDAP_USER", "")
         self.agent_password = _first("FILEENGINE_CSAI_PASSWORD", "FILEENGINE_LDAP_PASSWORD", "")
+        # Indexing must see ALL content so the vector index is complete; per-user
+        # ACLs are enforced later, at retrieval time (PermissionGate). The core
+        # grants this via the trusted ``system_admin`` role bypass, attached to the
+        # indexing agent only. Disable only if a deployment deliberately wants
+        # index-time ACL filtering (denied content then never enters the index, so
+        # it is invisible to every user regardless of their own permissions).
+        self.index_bypass_acl = _bool("CSAI_INDEX_BYPASS_ACL", True)
 
         # --- LDAP — the auth/role authority (mirrors mcp + the bridges) ---
         self.ldap_uri = _env("FILEENGINE_LDAP_ENDPOINT", "ldap://localhost:1389")

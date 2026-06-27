@@ -214,18 +214,17 @@ async def convert_document(file_uid: str, request: Request,
                            identity: Identity = Depends(_identity)) -> JSONResponse:
     """(Re)generate a document's renditions (thumbnail / preview / inline PDF) and
     index it, on demand — e.g. when the SPA opens a file that has no preview yet.
-    The caller must be able to READ the file; conversion itself runs as the
-    indexing agent (which writes the hidden-child renditions)."""
+
+    Indexing and rendering are unconditional system operations: if data is in the
+    system it gets indexed and rendered, regardless of ACLs. Conversion runs as the
+    indexing agent (system_admin bypass) so it can always read the source and write
+    the hidden-child renditions. Per-user permissions are enforced *later*, when
+    content is actually served — search/chat retrieval and document text are gated
+    as the end user; rendition bytes are gated by the core. So generating a
+    rendition here never leaks content; it only requires an authenticated caller."""
     config = request.app.state.config
     if not _check_core(config):
         return JSONResponse(status_code=503, content={"error": "core not reachable"})
-
-    # Gate: only (re)generate for a file the requesting user can read.
-    from .core_client import client_for
-    gate = request.app.state.permission_gate
-    user_mf = client_for(identity, config)
-    if not await run_in_threadpool(gate.can_read, user_mf, identity, file_uid):
-        return JSONResponse(status_code=403, content={"error": "not permitted"})
 
     # Ensure the tenant's schema + tables exist (idempotent) before converting —
     # a never-indexed tenant would otherwise hit "relation documents does not
