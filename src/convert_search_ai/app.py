@@ -106,6 +106,17 @@ def build_app(config: Config | None = None, *, search: SearchService | None = No
     return app
 
 
+def create_app() -> FastAPI:
+    """ASGI factory that loads ``./.env`` then builds the app — for launching via
+    ``uvicorn convert_search_ai.app:create_app --factory``. The ``convert-search-ai``
+    console script (``main``) does the same. ``build_app`` itself stays pure (no
+    .env side effects) so tests are hermetic; use this when you don't go through
+    ``main``, otherwise CSAI_* settings (e.g. CSAI_CHAT_PROVIDER) won't be read and
+    the chat provider falls back to its ``anthropic`` default."""
+    load_dotenv()
+    return build_app(Config(), enable_event_invalidation=True)
+
+
 def main() -> None:
     import uvicorn
 
@@ -113,11 +124,9 @@ def main() -> None:
     # root logger defaults to WARNING under uvicorn and the banner is dropped.
     logging.basicConfig(level=logging.INFO)
 
-    load_dotenv()
-    config = Config()
-    # Real-time permission-cache invalidation from the event stream (§8).
-    app = build_app(config, enable_event_invalidation=True)
-    uvicorn.run(app, host=config.http_host, port=config.http_port)
+    app = create_app()
+    cfg = app.state.config
+    uvicorn.run(app, host=cfg.http_host, port=cfg.http_port)
 
 
 if __name__ == "__main__":

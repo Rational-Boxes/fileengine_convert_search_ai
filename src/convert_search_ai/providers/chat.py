@@ -1,11 +1,27 @@
 """Chat provider implementations (lazy external imports)."""
 from __future__ import annotations
 
+import importlib
 import json
 import os
 from typing import Iterator, List, Optional
 
 from .base import ChatProvider
+
+
+def _import(module: str, extra: str, *, is_default: bool = False):
+    """Import a provider SDK with an actionable error if it's not installed."""
+    try:
+        return importlib.import_module(module)
+    except ImportError as e:
+        msg = (f"chat provider needs the {module!r} package — "
+               f"pip install 'convert-search-ai[{extra}]'.")
+        if is_default:
+            msg += (" Note: this is the DEFAULT provider, so you may be hitting it "
+                    "because your .env wasn't loaded (CSAI_CHAT_PROVIDER unset). "
+                    "Launch via `convert-search-ai` or app:create_app, and set "
+                    "CSAI_CHAT_PROVIDER (e.g. openai-compatible for DeepInfra).")
+        raise RuntimeError(msg) from e
 
 
 def _last_user(messages: List[dict]) -> str:
@@ -28,7 +44,7 @@ class AnthropicChatProvider(ChatProvider):
         self._key = api_key or os.environ.get("ANTHROPIC_API_KEY")
 
     def stream(self, messages: List[dict], *, system: Optional[str] = None) -> Iterator[str]:
-        import anthropic
+        anthropic = _import('anthropic', 'anthropic', is_default=True)
         client = anthropic.Anthropic(api_key=self._key)
         kwargs = dict(model=self.model_id, max_tokens=self.max_tokens, messages=messages)
         if system:
@@ -39,7 +55,7 @@ class AnthropicChatProvider(ChatProvider):
 
     def run_tools(self, messages, *, system=None, tools=None, execute=None,
                   max_iterations=4) -> Iterator[dict]:
-        import anthropic
+        anthropic = _import('anthropic', 'anthropic', is_default=True)
         client = anthropic.Anthropic(api_key=self._key)
         anth_tools = [{"name": t["name"], "description": t["description"],
                        "input_schema": t["schema"]} for t in (tools or [])]
@@ -89,7 +105,7 @@ class OpenAICompatibleChatProvider(ChatProvider):
         self._key = api_key or os.environ.get("OPENAI_API_KEY") or "not-needed"
 
     def _client(self):
-        from openai import OpenAI
+        OpenAI = _import('openai', 'openai').OpenAI
         return OpenAI(api_key=self._key, base_url=self.base_url)
 
     def stream(self, messages: List[dict], *, system: Optional[str] = None) -> Iterator[str]:

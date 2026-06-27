@@ -3,10 +3,23 @@ import math
 
 import pytest
 
+import convert_search_ai.providers.chat as chat_mod
 from convert_search_ai.config import Config
-from convert_search_ai.providers.chat import EchoChatProvider
+from convert_search_ai.providers.chat import AnthropicChatProvider, EchoChatProvider
 from convert_search_ai.providers.embeddings import HashEmbeddingProvider
 from convert_search_ai.providers.factory import make_chat_provider, make_embedding_provider
+
+
+def test_missing_provider_sdk_raises_actionable_error(monkeypatch):
+    # A bare "No module named anthropic" is replaced by an actionable message that
+    # names the package AND flags the likely unloaded-.env cause for the default.
+    def boom(name):
+        raise ImportError(f"No module named {name!r}")
+    monkeypatch.setattr(chat_mod.importlib, "import_module", boom)
+    with pytest.raises(RuntimeError) as ei:
+        list(AnthropicChatProvider().stream([{"role": "user", "content": "hi"}]))
+    msg = str(ei.value)
+    assert "anthropic" in msg and "pip install" in msg and "CSAI_CHAT_PROVIDER" in msg
 
 
 def test_hash_embeddings_deterministic_and_unit_norm():
