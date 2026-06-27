@@ -20,11 +20,28 @@ class EmbeddingProvider(ABC):
 
 class ChatProvider(ABC):
     model_id: str = "chat"
+    # Whether this provider can drive the tool-calling loop (``run_tools``). When
+    # False, the chat service uses ``stream`` and never offers tools.
+    supports_tools: bool = False
 
     @abstractmethod
     def stream(self, messages: List[dict], *, system: Optional[str] = None) -> Iterator[str]:
         """Stream a completion as text deltas. ``messages`` are ``{role, content}``
         (user/assistant); ``system`` is the system prompt."""
+
+    def run_tools(self, messages: List[dict], *, system: Optional[str] = None,
+                  tools: Optional[List[dict]] = None, execute=None,
+                  max_iterations: int = 4) -> Iterator[dict]:
+        """Drive one agentic answer, optionally calling tools (WEB_SEARCH_TOOL_PLAN
+        §4). Yields event dicts: ``{"type":"text","text":…}`` deltas,
+        ``{"type":"tool_call","name","args"}``, and ``{"type":"tool_result","name"}``.
+
+        ``tools`` are provider-agnostic specs ``{name, description, schema}``;
+        ``execute(name, args) -> str`` runs a tool and returns the result text the
+        model sees. The default (for providers without native tool support) ignores
+        tools and just streams text."""
+        for delta in self.stream(messages, system=system):
+            yield {"type": "text", "text": delta}
 
 
 @dataclass

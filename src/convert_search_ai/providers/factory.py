@@ -47,6 +47,9 @@ def make_chat_provider(config) -> ChatProvider:
     if name in ("echo", "fake"):
         from .chat import EchoChatProvider
         return EchoChatProvider()
+    if name in ("echo-tools", "fake-tools"):
+        from .chat import ToolEchoChatProvider
+        return ToolEchoChatProvider()
     raise ValueError(f"unknown chat provider: {name!r}")
 
 

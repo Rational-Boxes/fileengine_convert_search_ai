@@ -94,7 +94,7 @@ class WebSearchTool(Tool):
                 break
             blocks.append(block)
             total += len(block)
-            src = {"kind": "web", "url": r.url, "title": r.title}
+            src = {"kind": "web", "url": r.url, "title": r.title, "snippet": r.snippet}
             added.append(src)
             ctx.sources.append(src)
         return ToolOutput(text="\n\n".join(blocks), sources=added)

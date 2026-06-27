@@ -16,7 +16,21 @@ def load_dotenv(path: str = ".env") -> None:
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, val = line.split("=", 1)
-            os.environ.setdefault(key.strip(), val.strip())
+            os.environ.setdefault(key.strip(), _strip_value(val))
+
+
+def _strip_value(val: str) -> str:
+    """Parse a dotenv value: honor a surrounding quote, else drop an inline
+    `` # …`` comment (the .env.example template documents values inline)."""
+    val = val.strip()
+    if val[:1] in ("'", '"'):
+        q = val[0]
+        end = val.find(q, 1)
+        return val[1:end] if end != -1 else val[1:]
+    hi = val.find(" #")
+    if hi != -1:
+        val = val[:hi]
+    return val.strip()
 
 
 def _env(key: str, default: str = "") -> str:
