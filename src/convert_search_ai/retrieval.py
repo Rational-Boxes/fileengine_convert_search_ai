@@ -5,11 +5,14 @@ source file the **requesting user** may read (the same PermissionGate as search)
 Over-fetch then filter so the permission step can't starve the context."""
 from __future__ import annotations
 
+import logging
 from typing import List, Optional
 
 from .config import Config
 from .permissions import PermissionGate
 from .vectorstore import ChunkStore, RetrievedChunk
+
+_log = logging.getLogger("convert_search_ai.retrieval")
 
 
 class Retriever:
@@ -38,7 +41,14 @@ class Retriever:
         if not query or not query.strip():
             return []
         qv = self.embedder.embed_query(query)
-        rows = self.chunks.ann_search(identity.tenant, qv, fetch or max(k * 4, k))
+        try:
+            rows = self.chunks.ann_search(identity.tenant, qv, fetch or max(k * 4, k))
+        except Exception as e:
+            # A vector-store outage shouldn't 500 the chat — degrade to no document
+            # context (the answer falls back to general knowledge / web search).
+            _log.warning("vector retrieval unavailable; answering without document "
+                         "context: %s", e)
+            return []
         mf = self._client(identity)
         try:
             out: List[RetrievedChunk] = []
