@@ -119,6 +119,22 @@ class Config:
         self.chat_base_url = _env("CSAI_CHAT_BASE_URL", "")
         self.chat_api_key = _first("CSAI_CHAT_API_KEY", "OPENAI_API_KEY", "")
 
+        # --- Web search tool (WEB_SEARCH_TOOL_PLAN; OFF by default) ---
+        # The chat web_search tool. `enabled` is the master switch (off by default —
+        # a search sends the query to a third party, see plan §9); `provider`
+        # chooses the backend (DuckDuckGo by default, no API key). The tool-loop
+        # wiring lands in P2; P1 ships the backend + tool only.
+        self.web_search_provider = _env("CSAI_WEB_SEARCH_PROVIDER", "duckduckgo")
+        self.web_search_enabled = _bool("CSAI_WEB_SEARCH_ENABLED", False)
+        self.web_search_default = _bool("CSAI_WEB_SEARCH_DEFAULT", False)
+        self.web_search_results = int(_env("CSAI_WEB_SEARCH_RESULTS", "5"))
+        self.web_max_iterations = int(_env("CSAI_WEB_MAX_ITERATIONS", "3"))
+        self.web_max_chars = int(_env("CSAI_WEB_MAX_CHARS", "4000"))
+        self.web_timeout_ms = int(_env("CSAI_WEB_TIMEOUT_MS", "4000"))
+        self.web_region = _env("CSAI_WEB_REGION", "wt-wt")
+        self.web_safesearch = _env("CSAI_WEB_SAFESEARCH", "moderate")
+        self.web_timelimit = _env("CSAI_WEB_TIMELIMIT", "")  # "" | d | w | m | y
+
         # PDF/Office → Markdown extraction backends, fidelity-ordered (the first
         # one installed AND yielding content wins; see plugins/pdf_backends).
         # Structure + tables are critical — pdftotext is only the last resort.
