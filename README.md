@@ -1,5 +1,7 @@
 # convert_search_ai
 
+> ⚠️ **Active development — not production-ready.** This project is under active development and should **not** be considered safe for mission-critical use.
+
 FileEngine microservice for **format conversion**, **search**, and **vector-backed
 RAG chat** — every result and citation gated by the user's FileEngine read
 permission. See [`design_documents/`](./design_documents) for the
