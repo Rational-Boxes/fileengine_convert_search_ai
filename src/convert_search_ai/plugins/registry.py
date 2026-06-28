@@ -52,6 +52,7 @@ def default_registry(config=None) -> PluginRegistry:
     from .source_preview import SourcePreviewPlugin
     from .text import TextMarkdownPlugin
     from .video import VideoPlugin
+    from .xeokit3d import Xeokit3DPlugin
 
     from .doc_preview import DEFAULT_PREVIEW_PX, DEFAULT_THUMBNAIL_PX
 
@@ -65,6 +66,8 @@ def default_registry(config=None) -> PluginRegistry:
         OfficePlugin(pdf_backends=backends, thumbnail_px=thumb_px, preview_px=preview_px),
         ImagePlugin(),
         VideoPlugin(),
+        # 3D / BIM (IFC, glTF/GLB, CityJSON, LAS/LAZ, STL, PLY) → XKT + indexed text.
+        Xeokit3DPlugin(config),
         # Source/text preview (colour-coded first-page PDF + PNGs). Registered
         # ahead of the plain-text catch-all so text & source files get previews;
         # the text plugin remains as the final fail-soft text extractor.

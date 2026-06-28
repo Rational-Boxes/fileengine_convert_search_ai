@@ -181,6 +181,22 @@ class Config:
         self.code_preview_style = _env("CSAI_CODE_PREVIEW_STYLE", "default")
         self.code_preview_head_lines = int(_env("CSAI_CODE_PREVIEW_HEAD_LINES", "120"))
 
+        # --- 3D / BIM conversion + indexing (XEOKIT3D_PLUGIN design doc) ---
+        # Convert open 3D/AEC formats (IFC, glTF/GLB, CityJSON, LAS/LAZ, STL, PLY)
+        # to xeokit's XKT model rendition, and index every human-readable string
+        # for search. Geometry needs Node + convert2xkt; IfcOpenShell/CxConverter
+        # are optional, auto-detected, higher-fidelity IFC backends.
+        self.threed_enabled = _bool("CSAI_3D_ENABLED", True)
+        # auto = detect best installed IFC backend (cxconverter -> ifcopenshell ->
+        # native web-ifc); or pin one / a comma-list: cxconverter|ifcopenshell|webifc.
+        self.threed_ifc_backend = _env("CSAI_3D_IFC_BACKEND", "auto")
+        self.threed_convert2xkt = _env("CSAI_3D_CONVERT2XKT", "convert2xkt")
+        self.threed_ifcconvert = _env("CSAI_3D_IFCCONVERT", "ifcConvert")
+        self.threed_cxconverter = _env("CSAI_3D_CXCONVERTER", "")  # path enables it
+        self.threed_max_input_mb = int(_env("CSAI_3D_MAX_INPUT_MB", "512"))
+        self.threed_timeout_s = int(_env("CSAI_3D_TIMEOUT_S", "600"))
+        self.threed_extract_only = _bool("CSAI_3D_EXTRACT_ONLY", False)
+
         # --- Auth coordination with the core REST API (http_bridge) ---
         # When set, a bearer token issued by the bridge is accepted here too:
         # this service introspects it against the bridge's /v1/auth/introspect,
