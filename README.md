@@ -164,3 +164,10 @@ list of provider knobs.
   authority — no shared secret or common token format — so an SPA logs in once
   and calls both services with the same token. The service still issues its own
   tokens / accepts Basic auth when coordination is off (standalone).
+
+## License
+
+Copyright (C) 2026 James Hickman <james@rationalboxes.com>
+
+This project is licensed under the **GNU General Public License, version 3 (or
+later)** — see the [LICENSE](LICENSE) file for the full text.
