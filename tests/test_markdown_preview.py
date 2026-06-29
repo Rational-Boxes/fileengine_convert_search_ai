@@ -23,9 +23,24 @@ Some **bold** and *italic* and `code` and a [link](https://example.com).
 
 > a quote
 
+A fenced Python code block (should be syntax-highlighted, preformatted):
+
+```python
+def greet(name):
+    # say hello
+    return f"hello {name}"
 ```
-code block
+
+A plain fenced block (preformatted, no language):
+
 ```
+plain preformatted
+    indented line
+```
+
+| col a | col b |
+|-------|-------|
+| 1     | 2     |
 """
 
 
@@ -78,6 +93,44 @@ def test_markdown_to_flowables_builds_headings_lists_and_code():
     # a heading is rendered with a heading style, not left as "# Title"
     heads = [f for f in flow if isinstance(f, Paragraph) and "Title" in f.text]
     assert heads and heads[0].style.fontSize >= 15
+
+
+# --- Markdown -> HTML with highlighted/preformatted code (the headline asks) --
+
+def test_html_render_highlights_fenced_code_and_preserves_preformatting():
+    pytest.importorskip("markdown")
+    pytest.importorskip("pygments")
+    from convert_search_ai.plugins.markdown_preview import render_markdown_html
+
+    html = render_markdown_html(MD.decode(), style="default")
+    # Code blocks go through Pygments (codehilite) — the source formatter.
+    assert "codehilite" in html
+    assert "<pre" in html
+    # Syntax highlighting: noclasses inlines per-token colours onto the code.
+    assert 'style="color' in html
+    # The Python source survives (highlighting splits tokens into spans, so assert
+    # on individual identifiers, not multi-token substrings).
+    assert "greet" in html and "name" in html
+    # Other block formatting renders too (table, heading, list).
+    assert "<table" in html and "<h1" in html and "<li" in html
+
+
+def test_html_render_plain_fenced_block_is_preformatted():
+    pytest.importorskip("markdown")
+    from convert_search_ai.plugins.markdown_preview import render_markdown_html
+
+    html = render_markdown_html("```\nplain\n    indented\n```", style="default")
+    assert "<pre" in html
+    assert "indented" in html  # leading whitespace content preserved
+
+
+def test_html_pdf_path_produces_pdf_with_code_block():
+    pytest.importorskip("markdown")
+    pytest.importorskip("xhtml2pdf")
+    from convert_search_ai.plugins.markdown_preview import render_markdown_pdf_html
+
+    pdf = render_markdown_pdf_html(MD.decode(), "readme.md", "default")
+    assert pdf[:5] == b"%PDF-"
 
 
 # --- rendition output --------------------------------------------------------

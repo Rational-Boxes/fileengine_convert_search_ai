@@ -1,16 +1,21 @@
 """Formatted preview for Markdown files.
 
 A ``.md`` file should preview as the *rendered document* — headings, lists,
-emphasis, links and code blocks — not as raw source. This plugin parses the
-Markdown and renders a **formatted** PDF with reportlab (Platypus), then reuses
-the shared ``page1_previews`` helper (poppler) for the icon/thumbnail PNGs, just
-like every other document type. The extracted text (search/RAG) stays the raw
-Markdown source.
+emphasis, links, tables and code blocks — not as raw source. This plugin renders
+Markdown to a **formatted** PDF, then reuses the shared ``page1_previews`` helper
+(poppler) for the icon/thumbnail PNGs, like every other document type. The
+extracted text (search/RAG) stays the raw Markdown source.
+
+Rendering tiers (each falls back to the next on missing libs / failure):
+  1. Markdown -> HTML -> PDF via ``markdown`` + ``xhtml2pdf`` (preferred). Fenced
+     code blocks are **syntax-highlighted with Pygments** (codehilite — the same
+     formatter the source preview uses) and kept preformatted; body is sans-serif.
+  2. reportlab Platypus flowables (dependency-free).
+  3. the source-style colour-coded PDF (last resort).
 
 Registered ahead of the generic source-preview plugin so it claims
-``text/markdown``. Pure-Python (reportlab is already a dependency); fail-soft —
-if formatted rendering can't run it falls back to the source-style renderer, and
-any failure degrades to ``[]`` / the ``pdf`` alone rather than raising."""
+``text/markdown``. Fail-soft — any failure degrades to ``[]`` / the ``pdf`` alone
+rather than raising."""
 from __future__ import annotations
 
 import html as _html
@@ -137,7 +142,8 @@ def markdown_to_flowables(text: str):
 
 
 def render_markdown_pdf(text: str, title: str = "") -> bytes:
-    """Render Markdown ``text`` into a formatted PDF. Returns ``b""`` on failure."""
+    """Render Markdown ``text`` into a formatted PDF with reportlab (the
+    dependency-free fallback). Returns ``b""`` on failure."""
     try:
         from io import BytesIO
 
@@ -148,6 +154,72 @@ def render_markdown_pdf(text: str, title: str = "") -> bytes:
         doc = SimpleDocTemplate(buf, pagesize=letter, title=title or "Markdown",
                                 leftMargin=42, rightMargin=42, topMargin=42, bottomMargin=42)
         doc.build(markdown_to_flowables(text))
+        return buf.getvalue()
+    except Exception:
+        return b""
+
+
+# --- preferred path: Markdown -> HTML -> PDF (faithful formatting) -----------
+
+# Sans body, monospace code; tables, block quotes. The Pygments highlighter
+# (codehilite, noclasses) inlines per-token colour styles onto the code spans so
+# fenced code blocks render syntax-highlighted — the same formatter the source
+# preview uses. `pre` keeps whitespace (preformatted) and wraps long lines.
+_CSS = """
+@page { size: letter; margin: 1.5cm; }
+body { font-family: Helvetica, Arial, sans-serif; font-size: 11pt; line-height: 1.4; color: #1f2933; }
+h1, h2, h3, h4, h5, h6 { font-family: Helvetica, Arial, sans-serif; font-weight: bold; }
+h1 { font-size: 19pt; } h2 { font-size: 16pt; } h3 { font-size: 14pt; }
+h4, h5, h6 { font-size: 12pt; }
+a { color: #2563eb; }
+code { font-family: "Courier New", Courier, monospace; font-size: 9.5pt; background: #f3f4f6; }
+pre { font-family: "Courier New", Courier, monospace; font-size: 9pt; line-height: 1.25;
+      background: #f6f8fa; border: 1px solid #e5e7eb; padding: 8px;
+      white-space: pre-wrap; word-wrap: break-word; }
+pre code { background: transparent; }
+blockquote { color: #555; border-left: 3px solid #ddd; margin-left: 0; padding-left: 10px; }
+table { border-collapse: collapse; }
+th, td { border: 1px solid #cccccc; padding: 3px 6px; }
+th { background: #f3f4f6; }
+"""
+
+
+def render_markdown_html(text: str, style: str = "default") -> str:
+    """Markdown -> HTML, with fenced code blocks syntax-highlighted by Pygments
+    (codehilite). Tables, sane lists and fenced code are enabled."""
+    import markdown
+
+    return markdown.markdown(
+        text,
+        extensions=["fenced_code", "codehilite", "tables", "sane_lists"],
+        extension_configs={
+            # noclasses -> inline per-token colours (xhtml2pdf has no CSS-class
+            # cascade for Pygments); guess_lang off so prose-only ``` blocks stay
+            # plain preformatted text rather than being mis-highlighted.
+            "codehilite": {"noclasses": True, "guess_lang": False, "pygments_style": style or "default"},
+        },
+        output_format="html5",
+    )
+
+
+def render_markdown_pdf_html(text: str, title: str = "", style: str = "default") -> bytes:
+    """Preferred renderer: Markdown -> HTML (Pygments-highlighted code) -> PDF via
+    xhtml2pdf, sans body font. Returns ``b""`` if the libraries are unavailable or
+    rendering fails (the caller then falls back)."""
+    try:
+        from io import BytesIO
+
+        from xhtml2pdf import pisa
+
+        body = render_markdown_html(text, style)
+        doc = (
+            '<html><head><meta charset="utf-8"><style>' + _CSS + "</style></head><body>"
+            + body + "</body></html>"
+        )
+        buf = BytesIO()
+        result = pisa.CreatePDF(src=doc, dest=buf, encoding="utf-8")
+        if result.err:
+            return b""
         return buf.getvalue()
     except Exception:
         return b""
@@ -179,10 +251,14 @@ class MarkdownPlugin(ConversionPlugin):
         text = data.decode("utf-8", "replace")
         if not text.strip():
             return []
-        pdf = render_markdown_pdf(text, name or "Markdown")
+        # Preferred: Markdown -> HTML -> PDF (faithful formatting; fenced code
+        # blocks are Pygments-highlighted via codehilite).
+        pdf = render_markdown_pdf_html(text, name or "Markdown", self.style)
+        # Fallback 1: reportlab flowables (no markdown/xhtml2pdf libs needed).
         if not pdf:
-            # Formatted rendering unavailable — fall back to the source-style PDF
-            # so a Markdown file still gets a preview.
+            pdf = render_markdown_pdf(text, name or "Markdown")
+        # Fallback 2: source-style colour-coded PDF (last resort).
+        if not pdf:
             from .source_preview import _detect_lexer, render_code_pdf
             lexer = _detect_lexer(text, mime, name)
             pdf = render_code_pdf(text, lexer, self.style, name or "markdown", self.head_lines)
