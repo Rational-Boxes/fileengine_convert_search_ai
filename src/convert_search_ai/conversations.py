@@ -19,12 +19,12 @@ class ConversationStore:
     def __init__(self, config: Config):
         self.config = config
 
-    def _conn(self, tenant: str, provision: bool = False):
+    def _conn(self, tenant: str, provision: bool = False, readonly: bool = False):
         from .db import connect_for_tenant
-        return connect_for_tenant(self.config, tenant, provision=provision)
+        return connect_for_tenant(self.config, tenant, provision=provision, readonly=readonly)
 
     def list(self, tenant: str, user: str, *, limit: int = 200) -> List[dict]:
-        with self._conn(tenant) as conn, conn.cursor() as cur:
+        with self._conn(tenant, readonly=True) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT id, title, updated_at FROM conversations "
                 "WHERE user_id = %s ORDER BY updated_at DESC LIMIT %s",
@@ -43,7 +43,7 @@ class ConversationStore:
 
     def get(self, tenant: str, user: str, conversation_id: str) -> Optional[dict]:
         """The conversation + its messages, or None if it isn't the user's."""
-        with self._conn(tenant) as conn, conn.cursor() as cur:
+        with self._conn(tenant, readonly=True) as conn, conn.cursor() as cur:
             cur.execute("SELECT id, title FROM conversations WHERE id = %s AND user_id = %s",
                         (conversation_id, user))
             row = cur.fetchone()
@@ -57,7 +57,7 @@ class ConversationStore:
             return {"id": row[0], "title": row[1], "messages": messages}
 
     def owns(self, tenant: str, user: str, conversation_id: str) -> bool:
-        with self._conn(tenant) as conn, conn.cursor() as cur:
+        with self._conn(tenant, readonly=True) as conn, conn.cursor() as cur:
             cur.execute("SELECT 1 FROM conversations WHERE id = %s AND user_id = %s",
                         (conversation_id, user))
             return cur.fetchone() is not None

@@ -22,12 +22,12 @@ class DocumentStore:
     def __init__(self, config: Config):
         self.config = config
 
-    def _conn(self, tenant: str, provision: bool = False):
+    def _conn(self, tenant: str, provision: bool = False, readonly: bool = False):
         from .db import connect_for_tenant
-        return connect_for_tenant(self.config, tenant, provision=provision)
+        return connect_for_tenant(self.config, tenant, provision=provision, readonly=readonly)
 
     def get_status(self, tenant: str, file_uid: str) -> Optional[DocStatus]:
-        with self._conn(tenant) as conn, conn.cursor() as cur:
+        with self._conn(tenant, readonly=True) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT source_version, status FROM documents WHERE file_uid = %s",
                 (file_uid,),

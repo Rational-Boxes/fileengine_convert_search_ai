@@ -50,8 +50,9 @@ class DocumentSearchRepo:
         self.config = config
 
     def _conn(self, tenant: str):
+        # Search is read-only — eligible for replica fallback during a master outage.
         from .db import connect_for_tenant
-        return connect_for_tenant(self.config, tenant)
+        return connect_for_tenant(self.config, tenant, readonly=True)
 
     def query(self, tenant: str, q: str, *, fetch: int, fuzzy: bool) -> List[dict]:
         with self._conn(tenant) as conn, conn.cursor() as cur:
