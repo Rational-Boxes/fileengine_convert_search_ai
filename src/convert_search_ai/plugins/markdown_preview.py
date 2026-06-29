@@ -101,6 +101,55 @@ def highlight_code_markup(code: str, lang: str, style_name: str = "default") -> 
     return "".join(parts).rstrip("\n")
 
 
+# --- GFM tables -------------------------------------------------------------
+
+def _table_cells(line: str) -> List[str]:
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [c.strip() for c in s.split("|")]
+
+
+def _is_table_separator(line: str) -> bool:
+    if "-" not in line:
+        return False
+    cells = _table_cells(line)
+    return bool(cells) and all(re.match(r"^:?-{1,}:?$", c) for c in cells if c != "")
+
+
+def _build_table(header: List[str], rows: List[List[str]], aligns: List[str], body_style):
+    from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import Paragraph, Table, TableStyle
+
+    ncols = max([len(header)] + [len(r) for r in rows])
+    cell = ParagraphStyle("md_td", parent=body_style, fontSize=9, leading=11, spaceAfter=0)
+    hcell = ParagraphStyle("md_th", parent=cell, fontName="Helvetica-Bold")
+
+    def _row(cells, st):
+        cells = cells + [""] * (ncols - len(cells))
+        return [Paragraph(inline_markup(c), st) for c in cells]
+
+    data = [_row(header, hcell)] + [_row(r, cell) for r in rows]
+    usable = 612.0 - 84.0  # letter width minus the document margins
+    table = Table(data, colWidths=[usable / ncols] * ncols)
+    style = [
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f3f4f6")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]
+    for ci, a in enumerate(aligns[:ncols]):
+        style.append(("ALIGN", (ci, 0), (ci, -1), a))
+    table.setStyle(TableStyle(style))
+    return table
+
+
 def markdown_to_flowables(text: str, style_name: str = "default"):
     """Parse Markdown into reportlab flowables: headings, paragraphs, lists, block
     quotes, rules, and **syntax-highlighted** fenced code blocks."""
@@ -174,12 +223,26 @@ def markdown_to_flowables(text: str, style_name: str = "default"):
                 i += 1
             flow.append(ListFlowable(items, bulletType="1" if ordered else "bullet"))
             continue
+        if "|" in line and i + 1 < n and _is_table_separator(lines[i + 1]):  # GFM table
+            header = _table_cells(line)
+            aligns = []
+            for c in _table_cells(lines[i + 1]):
+                left, right = c.startswith(":"), c.endswith(":")
+                aligns.append("CENTER" if left and right else "RIGHT" if right else "LEFT")
+            i += 2
+            rows = []
+            while i < n and lines[i].strip() and "|" in lines[i] and not re.match(r"^\s*```", lines[i]):
+                rows.append(_table_cells(lines[i]))
+                i += 1
+            flow.append(_build_table(header, rows, aligns, body))
+            continue
         # paragraph: gather consecutive plain lines
         buf = []
         while i < n and lines[i].strip() and not (
             re.match(r"^\s*```", lines[i]) or re.match(r"^#{1,6}\s", lines[i])
             or re.match(r"^\s*>\s?", lines[i]) or re.match(r"^\s*([-*+]|\d+[.)])\s", lines[i])
             or re.match(r"^\s*([-*_])(?:\s*\1){2,}\s*$", lines[i])
+            or ("|" in lines[i] and i + 1 < n and _is_table_separator(lines[i + 1]))
         ):
             buf.append(lines[i].strip())
             i += 1

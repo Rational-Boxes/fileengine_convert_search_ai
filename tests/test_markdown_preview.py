@@ -124,6 +124,29 @@ def test_flowables_highlight_fenced_code_and_keep_other_blocks():
     assert "<font color=" in code.text
 
 
+def test_flowables_render_gfm_table():
+    pytest.importorskip("reportlab")
+    from convert_search_ai.plugins.markdown_preview import markdown_to_flowables
+    from reportlab.platypus import Table
+
+    flow = markdown_to_flowables(MD.decode())
+    tables = [f for f in flow if isinstance(f, Table)]
+    assert tables, "the Markdown table was not rendered as a Table flowable"
+    # header + one data row, two columns; cell text parsed into the table
+    flat = [c.text for row in tables[0]._cellvalues for c in row]
+    assert any("col a" in x for x in flat) and any("col b" in x for x in flat)
+    assert "1" in flat and "2" in flat
+
+
+def test_render_pdf_with_table_builds():
+    pytest.importorskip("reportlab")
+    from convert_search_ai.plugins.markdown_preview import render_markdown_pdf
+
+    md = "# T\n\n| name | qty |\n|:-----|----:|\n| apples | 3 |\n| pears | 12 |\n"
+    pdf = render_markdown_pdf(md, "table.md", "default")
+    assert pdf[:5] == b"%PDF-" and len(pdf) > 800
+
+
 def test_render_pdf_builds_with_highlighted_code():
     pytest.importorskip("reportlab")
     pytest.importorskip("pygments")
