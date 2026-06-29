@@ -83,54 +83,56 @@ def test_inline_markup_does_not_format_inside_code_spans():
 def test_markdown_to_flowables_builds_headings_lists_and_code():
     pytest.importorskip("reportlab")
     from convert_search_ai.plugins.markdown_preview import markdown_to_flowables
-    from reportlab.platypus import ListFlowable, Paragraph, Preformatted
+    from reportlab.platypus import Paragraph
 
     flow = markdown_to_flowables(MD.decode())
     kinds = [type(f).__name__ for f in flow]
-    assert "Paragraph" in kinds      # headings + paragraphs
-    assert "ListFlowable" in kinds   # the bullet/ordered lists
-    assert "Preformatted" in kinds   # the fenced code block
+    assert "Paragraph" in kinds         # headings + paragraphs
+    assert "ListFlowable" in kinds      # the bullet/ordered lists
+    assert "XPreformatted" in kinds     # the fenced code block (highlighted, preformatted)
     # a heading is rendered with a heading style, not left as "# Title"
     heads = [f for f in flow if isinstance(f, Paragraph) and "Title" in f.text]
     assert heads and heads[0].style.fontSize >= 15
 
 
-# --- Markdown -> HTML with highlighted/preformatted code (the headline asks) --
+# --- embedded code blocks: source formatter (Pygments) integration -----------
 
-def test_html_render_highlights_fenced_code_and_preserves_preformatting():
-    pytest.importorskip("markdown")
+def test_highlight_code_markup_uses_pygments_colours():
     pytest.importorskip("pygments")
-    from convert_search_ai.plugins.markdown_preview import render_markdown_html
+    from convert_search_ai.plugins.markdown_preview import highlight_code_markup
 
-    html = render_markdown_html(MD.decode(), style="default")
-    # Code blocks go through Pygments (codehilite) — the source formatter.
-    assert "codehilite" in html
-    assert "<pre" in html
-    # Syntax highlighting: noclasses inlines per-token colours onto the code.
-    assert 'style="color' in html
-    # The Python source survives (highlighting splits tokens into spans, so assert
-    # on individual identifiers, not multi-token substrings).
-    assert "greet" in html and "name" in html
-    # Other block formatting renders too (table, heading, list).
-    assert "<table" in html and "<h1" in html and "<li" in html
+    markup = highlight_code_markup('def greet(name):\n    return name\n', "python", "default")
+    # Tokens wrapped in reportlab colour markup (the source-code formatter).
+    assert "<font color=" in markup
+    assert "<b>" in markup            # keywords styled bold by the Pygments style
+    # source preserved (escaped, tokenised) — identifiers still present
+    assert "greet" in markup and "name" in markup
 
 
-def test_html_render_plain_fenced_block_is_preformatted():
-    pytest.importorskip("markdown")
-    from convert_search_ai.plugins.markdown_preview import render_markdown_html
+def test_flowables_highlight_fenced_code_and_keep_other_blocks():
+    pytest.importorskip("reportlab")
+    pytest.importorskip("pygments")
+    from convert_search_ai.plugins.markdown_preview import markdown_to_flowables
+    from reportlab.platypus import ListFlowable, Paragraph, XPreformatted
 
-    html = render_markdown_html("```\nplain\n    indented\n```", style="default")
-    assert "<pre" in html
-    assert "indented" in html  # leading whitespace content preserved
+    flow = markdown_to_flowables(MD.decode())
+    kinds = [type(f).__name__ for f in flow]
+    assert "XPreformatted" in kinds   # fenced code rendered as highlighted preformatted
+    assert "ListFlowable" in kinds and "Paragraph" in kinds
+    # the highlighted code flowable carries colour markup for the Python keywords
+    code = next(f for f in flow if isinstance(f, XPreformatted))
+    assert "<font color=" in code.text
 
 
-def test_html_pdf_path_produces_pdf_with_code_block():
-    pytest.importorskip("markdown")
-    pytest.importorskip("xhtml2pdf")
-    from convert_search_ai.plugins.markdown_preview import render_markdown_pdf_html
+def test_render_pdf_builds_with_highlighted_code():
+    pytest.importorskip("reportlab")
+    pytest.importorskip("pygments")
+    from convert_search_ai.plugins.markdown_preview import render_markdown_pdf
 
-    pdf = render_markdown_pdf_html(MD.decode(), "readme.md", "default")
-    assert pdf[:5] == b"%PDF-"
+    # The highlighted code is XPreformatted colour markup; reportlab raises on
+    # malformed markup, so a non-empty %PDF proves the coloured code was accepted.
+    pdf = render_markdown_pdf(MD.decode(), "readme.md", "default")
+    assert pdf[:5] == b"%PDF-" and len(pdf) > 800
 
 
 # --- rendition output --------------------------------------------------------
