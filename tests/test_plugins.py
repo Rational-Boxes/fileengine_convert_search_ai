@@ -46,7 +46,7 @@ def test_plugin_exception_is_fail_soft():
 
 def test_default_registry_has_the_expected_plugins():
     names = {p.name for p in default_registry()._plugins}
-    assert names == {"pdf", "office", "image", "video", "model3d", "source", "text"}
+    assert names == {"pdf", "office", "image", "video", "model3d", "markdown", "source", "text"}
 
 
 def test_source_preview_precedes_text_catch_all():
