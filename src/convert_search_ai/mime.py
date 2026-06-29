@@ -24,7 +24,26 @@ _MAGIC = [
     (0, b"\x1a\x45\xdf\xa3", "video/x-matroska"),
     (0, b"OggS", "video/ogg"),
     (0, b"%!PS", "application/postscript"),
+    # 3D / AEC binary formats (XEOKIT3D_PLUGIN).
+    (0, b"glTF", "model/gltf-binary"),     # GLB (binary glTF)
+    (0, b"LASF", "application/vnd.las"),   # LAS/LAZ point cloud (LAZ refined by ext)
+    (0, b"ply\n", "model/ply"),
+    (0, b"ply\r", "model/ply"),
 ]
+
+# Extension map for 3D/AEC types many of which libmagic/mimetypes don't know.
+_EXT_3D = {
+    ".ifcxml": "application/x-ifc+xml",
+    ".ifczip": "application/x-ifc-zip",
+    ".ifc": "application/x-ifc",
+    ".gltf": "model/gltf+json",
+    ".glb": "model/gltf-binary",
+    ".city.json": "application/city+json",
+    ".laz": "application/vnd.laz",
+    ".las": "application/vnd.las",
+    ".stl": "model/stl",
+    ".ply": "model/ply",
+}
 
 # Office Open XML / OpenDocument are ZIP containers — disambiguate by member.
 _ZIP_SIG = b"PK\x03\x04"
@@ -47,6 +66,29 @@ def _sniff(data: bytes) -> str | None:
     # ftyp box near the start => ISO base media (mp4 / mov / m4v)
     if data[4:8] == b"ftyp":
         return "video/mp4"
+    return _sniff_text_3d(data, head)
+
+
+def _sniff_text_3d(data: bytes, head: bytes) -> str | None:
+    """Content sniffing for text-based 3D/AEC formats: IFC (STEP), glTF/CityJSON
+    (JSON), and ASCII STL — none of which have a fixed binary magic."""
+    stripped = head.lstrip()
+    # IFC is a STEP/Part-21 physical file; require an IFC FILE_SCHEMA to avoid
+    # claiming arbitrary STEP (.stp) files.
+    if stripped.startswith(b"ISO-10303-21"):
+        window = data[:4096]
+        if b"FILE_SCHEMA" in window and b"IFC" in window:
+            return "application/x-ifc"
+    # JSON: glTF and CityJSON share the .json/JSON shape — peek at marker keys.
+    if stripped[:1] == b"{":
+        window = data[:4096].decode("utf-8", "replace")
+        if '"CityJSON"' in window:
+            return "application/city+json"
+        if '"asset"' in window and '"version"' in window:
+            return "model/gltf+json"
+    # ASCII STL: "solid <name>" followed by facet records (binary STL has no magic).
+    if stripped.startswith(b"solid ") and b"facet" in data[:512]:
+        return "model/stl"
     return None
 
 
@@ -82,6 +124,10 @@ def detect(data: bytes, name: str = "") -> str:
         except Exception:
             pass
     if name:
+        lower = name.lower()
+        for ext, mime in _EXT_3D.items():
+            if lower.endswith(ext):
+                return mime
         guess, _ = mimetypes.guess_type(name)
         if guess:
             return guess
