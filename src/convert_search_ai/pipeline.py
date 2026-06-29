@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from . import mime as mimelib
+from ._client import NotFoundError
 from .plugins.registry import PluginRegistry, default_registry
 from .renditions import RenditionWriter
 
@@ -45,8 +46,9 @@ class ConversionPipeline:
         the version was already processed — needed for files indexed before a new
         rendition-producing plugin existed (e.g. text → preview), which the
         event-driven worker would otherwise skip as up-to-date."""
-        info = self.mf.stat(file_uid, tenant=tenant)
-        if info is None:
+        try:
+            info = self.mf.stat(file_uid, tenant=tenant)
+        except NotFoundError:
             return ConvertOutcome(file_uid, "missing", [], detail="stat failed / not found")
         if info.is_dir:                          # FileInfo.is_dir is a property
             return ConvertOutcome(file_uid, "skipped", [], detail="directory")
@@ -61,8 +63,11 @@ class ConversionPipeline:
         if already_done and not force:
             return ConvertOutcome(file_uid, "skipped", [], detail="up-to-date")
 
-        blob = self.mf.get(file_uid, tenant=tenant)
-        data = blob.read() if blob else b""
+        try:
+            blob = self.mf.get(file_uid, tenant=tenant)
+        except NotFoundError:
+            return ConvertOutcome(file_uid, "missing", [], detail="content not found")
+        data = blob.read()
         mime = mimelib.detect(data, info.name)
 
         self.store.upsert(tenant, file_uid, source_version=version, mime=mime,

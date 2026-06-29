@@ -108,6 +108,10 @@ class Config:
         self.pg_replica_password = _env("CSAI_PG_REPLICA_PASSWORD", self.pg_password)
         # Circuit-breaker cooldown before the primary is re-probed (seconds).
         self.failover_cooldown_s = int(_env("CSAI_FAILOVER_COOLDOWN_S", "30"))
+        # Sleep/poll back-off when the core is read-only (writes rejected during a
+        # primary-DB failover): the ingest worker pauses this long between retries
+        # of its un-acked events instead of dropping them. See ingest.py.
+        self.failover_poll_interval_s = float(_env("CSAI_FAILOVER_POLL_INTERVAL_S", "5"))
 
         # --- Event ingestion — consumes the core publisher's stream (EVENT_CONTRACT.md) ---
         self.redis_host = _first("FILEENGINE_REDIS_HOST", "REDDIS_HOST", "localhost")

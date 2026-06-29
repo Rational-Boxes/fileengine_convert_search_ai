@@ -88,9 +88,20 @@ without restriction; there is no write path to gate.
 
 ## 6. Operational notes
 
-- Indexing/ingest (writes) pauses during a master outage (events redeliver later;
-  ingest is idempotent), while search and chat retrieval keep serving from the
-  replica. Chat *history writes* fail during the outage; reads of history work.
+- **Disconnected sleep/poll mode (ingest).** The FileEngine core itself also has
+  a read-only failover mode (its own primary/replica); when active it rejects
+  writes. The FileEngine Python client surfaces that as a typed, transient
+  `WriteUnavailableError` (subclass of `ServiceUnavailableError`, `.transient is
+  True`). The ingest worker (`ingest.Ingestor.run_once`) catches it, **leaves the
+  in-flight event(s) un-acked** (they remain in the consumer's pending list), and
+  enters a sleep/poll loop — pausing `CSAI_FAILOVER_POLL_INTERVAL_S` (default 5s)
+  between retries of its pending events via `EventSource.read_pending` — until the
+  core accepts writes again, then acks and resumes normal `>` reads. Events are
+  therefore not dropped to reconcile during a core failover; `Ingestor.degraded`
+  reflects the paused state.
+- Indexing/ingest (writes) pauses during a master outage (events are retried, not
+  lost; ingest is idempotent), while search and chat retrieval keep serving from
+  the replica. Chat *history writes* fail during the outage; reads of history work.
 - The replica must be a real Postgres standby / syncrepl consumer; the app relies
   on it being physically read-only and current.
 
@@ -102,3 +113,7 @@ without restriction; there is no write path to gate.
   recovery resets the breaker. (psycopg.connect monkeypatched.)
 - `ldap_auth` falls back to the replica URI when the master bind raises a
   connection error.
+- Ingest read-only sleep/poll: a `WriteUnavailableError` on convert leaves the
+  event un-acked, sets `degraded`, sleeps (stubbed clock), retries from the
+  pending list, and recovers + acks once writes succeed
+  (`tests/test_ingest.py::test_read_only_failover_pauses_polls_and_recovers`).

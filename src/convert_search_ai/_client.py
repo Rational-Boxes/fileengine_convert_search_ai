@@ -32,6 +32,8 @@ def _ensure_on_path() -> None:
 
 _ensure_on_path()
 
-from fileengine import ManagedFiles  # noqa: E402
+from fileengine import (  # noqa: E402
+    ManagedFiles, FileEngineError, NotFoundError, WriteUnavailableError,
+)
 
-__all__ = ["ManagedFiles"]
+__all__ = ["ManagedFiles", "FileEngineError", "NotFoundError", "WriteUnavailableError"]

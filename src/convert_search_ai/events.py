@@ -62,6 +62,25 @@ class RedisEventSource:
                 out.append((_decode(msg_id), _parse_payload(fields)))
         return out
 
+    def read_pending(self, count: int = 32) -> List[Entry]:
+        """Re-read this consumer's already-delivered, un-acked entries (its PEL).
+
+        Used by the ingest worker's read-only sleep/poll mode to retry events it
+        deliberately left un-acked while the core was read-only — reading id "0"
+        returns the consumer's pending entries rather than new (">") ones."""
+        import redis  # lazy
+        try:
+            resp = self._redis().xreadgroup(
+                self.group, self.consumer, {self.stream: "0"}, count=count
+            )
+        except redis.exceptions.TimeoutError:
+            return []
+        out: List[Entry] = []
+        for _stream, messages in resp or []:
+            for msg_id, fields in messages:
+                out.append((_decode(msg_id), _parse_payload(fields)))
+        return out
+
     def ack(self, msg_ids: List[str]) -> None:
         if msg_ids:
             self._redis().xack(self.stream, self.group, *msg_ids)
