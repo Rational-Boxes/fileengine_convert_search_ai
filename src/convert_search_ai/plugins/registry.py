@@ -47,6 +47,7 @@ def default_registry(config=None) -> PluginRegistry:
     ``config`` (optional) supplies the PDF/Office extraction backend order via
     ``config.pdf_backends``."""
     from .image import ImagePlugin
+    from .markdown_preview import MarkdownPlugin
     from .office import OfficePlugin
     from .pdf import PdfPlugin
     from .source_preview import SourcePreviewPlugin
@@ -68,6 +69,9 @@ def default_registry(config=None) -> PluginRegistry:
         VideoPlugin(),
         # 3D / BIM (IFC, glTF/GLB, CityJSON, LAS/LAZ, STL, PLY) → XKT + indexed text.
         Xeokit3DPlugin(config),
+        # Markdown → a *formatted* PDF + previews (rendered document, not raw
+        # source). Registered ahead of the source plugin so .md is claimed here.
+        MarkdownPlugin(style=code_style, head_lines=code_head, thumbnail_px=thumb_px, preview_px=preview_px),
         # Source/text preview (colour-coded first-page PDF + PNGs). Registered
         # ahead of the plain-text catch-all so text & source files get previews;
         # the text plugin remains as the final fail-soft text extractor.
