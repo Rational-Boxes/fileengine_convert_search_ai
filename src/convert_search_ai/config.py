@@ -21,12 +21,18 @@ def load_dotenv(path: str = ".env") -> None:
 
 def _strip_value(val: str) -> str:
     """Parse a dotenv value: honor a surrounding quote, else drop an inline
-    `` # …`` comment (the .env.example template documents values inline)."""
+    `` # …`` comment (the .env.example template documents values inline).
+
+    A value that is *entirely* a comment (``KEY=# note``) yields an empty string —
+    otherwise the comment text becomes the value (e.g. ``CSAI_AUDIT_LOG_FILE=#
+    empty -> stderr`` would be taken as a literal file path)."""
     val = val.strip()
     if val[:1] in ("'", '"'):
         q = val[0]
         end = val.find(q, 1)
         return val[1:end] if end != -1 else val[1:]
+    if val.startswith("#"):           # whole value is a comment -> empty
+        return ""
     hi = val.find(" #")
     if hi != -1:
         val = val[:hi]

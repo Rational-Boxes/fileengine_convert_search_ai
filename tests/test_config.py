@@ -13,6 +13,10 @@ def test_strip_value_handles_inline_comments_and_quotes():
     assert _strip_value("plain") == "plain"
     assert _strip_value('"quoted # not a comment"') == "quoted # not a comment"
     assert _strip_value("sha256#abc") == "sha256#abc"   # '#' without leading space kept
+    # A value that is entirely a comment -> empty (regression: a copied template
+    # comment, CSAI_AUDIT_LOG_FILE=# empty -> stderr, became a literal file path).
+    assert _strip_value("# empty -> stderr") == ""
+    assert _strip_value("#  just a note") == ""
 
 
 def _fresh_config(monkeypatch, **env):
