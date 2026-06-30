@@ -185,7 +185,14 @@ class Config:
         self.web_search_enabled = _bool("CSAI_WEB_SEARCH_ENABLED", False)
         self.web_search_default = _bool("CSAI_WEB_SEARCH_DEFAULT", False)
         self.web_search_results = int(_env("CSAI_WEB_SEARCH_RESULTS", "5"))
-        self.web_max_iterations = int(_env("CSAI_WEB_MAX_ITERATIONS", "3"))
+        # Cap on tool-loop rounds per answer. Governs ALL tools, not just web
+        # search — incl. list_folders + create_document. Must be generous: a
+        # report workflow explores folders (and may web-research) BEFORE it calls
+        # create_document, and once the cap is hit the loop forces a tool-free
+        # final answer (which can falsely claim a save it never made). Too low and
+        # the document never gets written.
+        self.web_max_iterations = int(_first("CSAI_TOOL_MAX_ITERATIONS",
+                                             "CSAI_WEB_MAX_ITERATIONS", "8"))
         self.web_max_chars = int(_env("CSAI_WEB_MAX_CHARS", "4000"))
         self.web_timeout_ms = int(_env("CSAI_WEB_TIMEOUT_MS", "4000"))
         self.web_region = _env("CSAI_WEB_REGION", "wt-wt")
