@@ -277,7 +277,13 @@ OCCT "DRAW" Tcl CLI) first. A generated batch script reads the file into an XDE
 document, **tessellates** exact BRep geometry (`incmesh`, relative deflection so
 one setting fits any model scale — STEP/IGES/BREP only; OBJ/VRML already carry
 meshes), and writes a binary glTF (`WriteGltf`); that glTF then feeds the same
-`convert2xkt` hop above. `DRAWEXE` runs headless via the existing `tools` helpers
+`convert2xkt` hop above. By default the model is **recentred** — a translation
+moving its bounding-box centre to the world origin is baked into the vertices and
+triangulation (`ttranslate -copy -copymesh`; a plain location is stripped by
+`WriteGltf`) — because STEP/IGES parts are routinely defined far from the origin,
+which otherwise leaves the xeokit camera framing empty space (it also improves
+float precision). `CSAI_3D_CAD_RECENTER=false` disables this and exports the read
+document as-is. `DRAWEXE` runs headless via the existing `tools` helpers
 (`workdir`/`write_temp`/`run`/`read_if_exists`) with all paths confined to a
 private temp dir. Required system package: `opencascade-draw` (+ `-modeling`,
 `-ocaf`, `-visualization`). Optional/auto-detected exactly like the IFC backends —
@@ -430,6 +436,7 @@ same pattern as existing options):
 | `CSAI_3D_DRAWEXE` | `DRAWEXE` | Path/command for the OpenCASCADE DRAW CLI (the CAD→glTF backend for STEP/IGES/BREP/OBJ/VRML; auto-detected, optional). |
 | `CSAI_3D_CAD_DEFLECTION` | `0.001` | Relative linear tessellation deflection (fraction of bounding box) for exact CAD geometry. |
 | `CSAI_3D_CAD_ANGLE` | `20` | Angular tessellation deflection in degrees for exact CAD geometry. |
+| `CSAI_3D_CAD_RECENTER` | `true` | Bake a translation moving the model's bounding-box centre to the world origin (CAD parts often sit far from origin, leaving the viewer camera on empty space). Off preserves original coordinates + assembly structure. |
 
 **Auto-detection.** With the `auto` default the plugin **probes for IfcOpenShell**
 (can `import ifcopenshell` / is `ifcConvert` on PATH?) and CxConverter

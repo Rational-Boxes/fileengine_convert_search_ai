@@ -231,6 +231,11 @@ class Config:
         # one value suits models of any scale; angular deflection is in degrees.
         self.threed_cad_deflection = _env("CSAI_3D_CAD_DEFLECTION", "0.001")
         self.threed_cad_angle = _env("CSAI_3D_CAD_ANGLE", "20")
+        # STEP/IGES parts are routinely defined far from the world origin, which
+        # leaves the xeokit camera framing empty space (geometry off-screen). Bake
+        # a translation that moves the model's bounding-box centre to the origin so
+        # the viewer gets a sane default view (also improves float precision).
+        self.threed_cad_recenter = _bool("CSAI_3D_CAD_RECENTER", True)
 
         # --- Auth coordination with the core REST API (http_bridge) ---
         # When set, a bearer token issued by the bridge is accepted here too:

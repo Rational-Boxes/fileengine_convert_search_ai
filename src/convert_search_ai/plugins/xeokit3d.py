@@ -596,6 +596,7 @@ class Xeokit3DPlugin(ConversionPlugin):
         self.drawexe = getattr(config, "threed_drawexe", "DRAWEXE")
         self.cad_deflection = _as_float(getattr(config, "threed_cad_deflection", "0.001"), 0.001)
         self.cad_angle = _as_float(getattr(config, "threed_cad_angle", "20"), 20.0)
+        self.cad_recenter = getattr(config, "threed_cad_recenter", True)
 
     def supports(self, mime: str) -> bool:
         return mime in self._MIMES
@@ -737,20 +738,37 @@ class Xeokit3DPlugin(ConversionPlugin):
             return tools.read_if_exists(glb)
 
     def _occt_script(self, spec: "_OcctSpec", src: str, glb: str) -> str:
-        """A batch DRAW (Tcl) script: read → (tessellate) → WriteGltf. Paths are in
-        our private workdir and wrapped in braces so Tcl performs no substitution."""
+        """A batch DRAW (Tcl) script: read → (tessellate) → (recenter) → WriteGltf.
+
+        Recentering bakes a translation that moves the model's bounding-box centre
+        to the world origin (``ttranslate -copy -copymesh`` rewrites the actual
+        vertex + triangle coordinates — a plain location is stripped by WriteGltf).
+        STEP/IGES parts often sit far from the origin, which leaves the xeokit
+        camera framing empty space; this gives a sane default view. Recentering
+        re-wraps the single shape in a fresh document, so when it is disabled the
+        original read document is exported as-is (preserving assembly structure).
+        Paths are in our private workdir and brace-quoted so Tcl does no
+        substitution."""
         lines = ["pload MODELING XDE OCAF"]
         if spec.into_doc:
-            lines.append(f"{spec.read} D {{{src}}}")
-            if spec.mesh:
-                lines.append("XGetOneShape _s D")
-                lines.append(f"incmesh _s {self.cad_deflection} -relative -a {self.cad_angle}")
-        else:  # shape-level read (BREP) → wrap in a fresh XDE document
+            lines.append(f"{spec.read} _doc {{{src}}}")
+            lines.append("XGetOneShape _s _doc")
+        else:  # shape-level read (BREP)
             lines.append(f"{spec.read} {{{src}}} _s")
-            if spec.mesh:
-                lines.append(f"incmesh _s {self.cad_deflection} -relative -a {self.cad_angle}")
-            lines.append("XNewDoc D")
-            lines.append("XAddShape D _s")
-        lines.append(f"WriteGltf D {{{glb}}}")
-        lines.append("exit")
+        if spec.mesh:  # exact BRep geometry needs tessellation before export
+            lines.append(f"incmesh _s {self.cad_deflection} -relative -a {self.cad_angle}")
+        out_doc = "_doc" if spec.into_doc else None
+        if self.cad_recenter:
+            lines += [
+                "set _bb [bounding _s]",
+                "set _tx [expr {([lindex $_bb 0]+[lindex $_bb 3])/-2.0}]",
+                "set _ty [expr {([lindex $_bb 1]+[lindex $_bb 4])/-2.0}]",
+                "set _tz [expr {([lindex $_bb 2]+[lindex $_bb 5])/-2.0}]",
+                "ttranslate _s $_tx $_ty $_tz -copy -copymesh",
+            ]
+            out_doc = None  # the centred shape must be re-wrapped in a fresh doc
+        if out_doc is None:
+            lines += ["XNewDoc _out", "XAddShape _out _s"]
+            out_doc = "_out"
+        lines += [f"WriteGltf {out_doc} {{{glb}}}", "exit"]
         return "\n".join(lines) + "\n"

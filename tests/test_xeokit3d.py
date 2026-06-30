@@ -264,6 +264,51 @@ def test_render_cad_needs_drawexe(monkeypatch):
     assert _plugin().render(fx("box.step"), "model/step", "box.step") == []
 
 
+def test_occt_script_recenters_geometry_by_default():
+    from convert_search_ai.plugins.xeokit3d import _OCCT_SPECS
+    p = _plugin()
+    assert p.cad_recenter is True
+    script = p._occt_script(_OCCT_SPECS["model/step"], "/w/in.step", "/w/out.glb")
+    # Bakes the recentre translation into vertices + mesh (a plain location is
+    # stripped by WriteGltf), keyed off the model's bounding box.
+    assert "bounding _s" in script
+    assert "ttranslate _s" in script and "-copy -copymesh" in script
+
+
+def test_occt_script_recenter_can_be_disabled(monkeypatch):
+    from convert_search_ai.config import Config
+    from convert_search_ai.plugins.xeokit3d import Xeokit3DPlugin, _OCCT_SPECS
+    monkeypatch.setenv("CSAI_3D_CAD_RECENTER", "false")
+    p = Xeokit3DPlugin(Config())
+    assert p.cad_recenter is False
+    # STEP reads into a document; with recentre off that document is exported
+    # as-is (assembly structure preserved), with no translation baked in.
+    script = p._occt_script(_OCCT_SPECS["model/step"], "/w/in.step", "/w/out.glb")
+    assert "ttranslate" not in script
+    assert "WriteGltf _doc" in script
+
+
+@pytest.mark.live
+def test_occt_recenters_far_from_origin_model():
+    """Real OpenCASCADE conversion of a part defined far from the world origin:
+    the produced glTF must be recentred near the origin so the xeokit camera can
+    frame it. Skipped when DRAWEXE is not installed."""
+    import json
+    import struct
+    if not _tools.have(_plugin().drawexe):
+        pytest.skip("DRAWEXE (OpenCASCADE) not installed")
+    glb = _plugin()._occt_to_glb(fx("box_far.step"), "model/step")
+    assert glb and glb[:4] == b"glTF"
+    jlen = struct.unpack("<I", glb[12:16])[0]
+    doc = json.loads(glb[20:20 + jlen])
+    pos = [a for a in doc["accessors"] if a.get("min") and len(a["min"]) == 3]
+    gmin = [min(c) for c in zip(*[a["min"] for a in pos])]
+    gmax = [max(c) for c in zip(*[a["max"] for a in pos])]
+    center = [(a + b) / 2 for a, b in zip(gmin, gmax)]
+    # Source part sits ~120 m from the origin; after recentring it must be ~0.
+    assert all(abs(c) < 1.0 for c in center), f"not recentred: {center}"
+
+
 @pytest.mark.live
 @pytest.mark.parametrize("fname,mime", CAD_CASES)
 def test_occt_produces_real_gltf_geometry(fname, mime):
@@ -333,6 +378,7 @@ def test_config_defaults():
     assert c.threed_drawexe == "DRAWEXE"
     assert c.threed_cad_deflection == "0.001"
     assert c.threed_cad_angle == "20"
+    assert c.threed_cad_recenter is True
 
 
 # --------------------------------------------------------------------------- #
