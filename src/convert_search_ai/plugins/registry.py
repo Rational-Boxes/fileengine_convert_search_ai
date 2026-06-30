@@ -67,7 +67,8 @@ def default_registry(config=None) -> PluginRegistry:
         OfficePlugin(pdf_backends=backends, thumbnail_px=thumb_px, preview_px=preview_px),
         ImagePlugin(),
         VideoPlugin(),
-        # 3D / BIM (IFC, glTF/GLB, CityJSON, LAS/LAZ, STL, PLY) → XKT + indexed text.
+        # 3D / BIM / CAD (IFC, glTF/GLB, CityJSON, LAS/LAZ, STL, PLY, and via
+        # OpenCASCADE: STEP, IGES, BREP, OBJ, VRML) → XKT + indexed text.
         Xeokit3DPlugin(config),
         # Markdown → a *formatted* PDF + previews (rendered document, not raw
         # source). Registered ahead of the source plugin so .md is claimed here.

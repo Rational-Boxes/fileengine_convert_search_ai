@@ -191,6 +191,95 @@ def test_render_returns_nothing_without_convert2xkt(monkeypatch):
     assert _plugin().render(fx("box.glb"), "model/gltf-binary", "box.glb") == []
 
 
+# --------------------------------------------------------------------------- #
+# CAD via OpenCASCADE (STEP/IGES/BREP/OBJ/VRML) → DRAWEXE → glTF → XKT
+# --------------------------------------------------------------------------- #
+
+CAD_CASES = [
+    ("box.step", "model/step"),
+    ("box.iges", "model/iges"),
+    ("box.brep", "model/x-brep"),
+    ("box.obj", "model/obj"),
+    ("box.wrl", "model/vrml"),
+]
+
+
+@pytest.mark.parametrize("fname,mime", CAD_CASES)
+def test_mime_cad_by_content(fname, mime):
+    # Detected from content alone (OBJ has no magic — it resolves by extension).
+    assert detect(fx(fname), fname) == mime
+    if mime != "model/obj":
+        assert detect(fx(fname)) == mime
+
+
+def test_step_is_distinguished_from_ifc():
+    # An IFC file is also Part-21 but must stay application/x-ifc, not model/step.
+    assert detect(fx("ifc4.ifc")) == "application/x-ifc"
+    assert detect(fx("box.step")) == "model/step"
+
+
+def test_plugin_supports_cad_mimes():
+    p = _plugin()
+    for _, mime in CAD_CASES:
+        assert p.supports(mime), mime
+
+
+def test_extract_step_text_pulls_schema_and_strings():
+    from convert_search_ai.plugins.xeokit3d import extract_step_text
+    md = extract_step_text(fx("box.step"))
+    assert md and "STEP CAD model" in md
+    assert "AUTOMOTIVE_DESIGN" in md          # AP214 schema surfaces
+    assert "Open CASCADE" in md               # authoring system / header strings
+    assert extract_step_text(b"not a step file") is None
+
+
+def test_extract_iges_obj_vrml_text():
+    from convert_search_ai.plugins.xeokit3d import (
+        extract_iges_text, extract_obj_text, extract_vrml_text)
+    assert "IGES CAD model" in extract_iges_text(fx("box.iges"))
+    obj = extract_obj_text(fx("box.obj"))
+    assert "OBJ mesh" in obj and "SOLID" in obj   # object name from the OBJ
+    assert "VRML model" in extract_vrml_text(fx("box.wrl"))
+
+
+def test_extract_brep_has_no_text():
+    # BREP is pure geometry — the plugin contributes nothing to the text index.
+    assert _plugin().extract(fx("box.brep"), "model/x-brep", "box.brep") is None
+
+
+@pytest.mark.parametrize("fname,mime", CAD_CASES)
+def test_render_cad_chains_drawexe_then_convert2xkt(monkeypatch, fname, mime):
+    calls = _stub_tools(monkeypatch, {"convert2xkt", "DRAWEXE"})
+    rends = _plugin().render(fx(fname), mime, fname)
+    assert len(rends) == 1
+    assert rends[0].fmt == "model" and rends[0].ext == "xkt"
+    # OpenCASCADE produces the glTF, then convert2xkt produces the XKT.
+    assert any("DRAWEXE" in c[0] for c in calls)
+    assert any("convert2xkt" in c[0] for c in calls)
+
+
+def test_render_cad_needs_drawexe(monkeypatch):
+    # convert2xkt alone can't ingest CAD: without DRAWEXE there is no geometry.
+    _stub_tools(monkeypatch, {"convert2xkt"})
+    assert _plugin().render(fx("box.step"), "model/step", "box.step") == []
+
+
+@pytest.mark.live
+@pytest.mark.parametrize("fname,mime", CAD_CASES)
+def test_occt_produces_real_gltf_geometry(fname, mime):
+    """Real OpenCASCADE (DRAWEXE) conversion: CAD source → a valid binary glTF
+    carrying actual mesh geometry. Skipped when DRAWEXE is not installed."""
+    if not _tools.have(_plugin().drawexe):
+        pytest.skip("DRAWEXE (OpenCASCADE) not installed")
+    glb = _plugin()._occt_to_glb(fx(fname), mime)
+    assert glb and glb[:4] == b"glTF"          # GLB magic
+    import json
+    import struct
+    jlen = struct.unpack("<I", glb[12:16])[0]
+    doc = json.loads(glb[20:20 + jlen])
+    assert doc.get("meshes"), f"{fname}: glTF has no mesh geometry"
+
+
 def test_ifc_backend_auto_prefers_ifcopenshell_when_present(monkeypatch):
     from convert_search_ai.plugins.xeokit3d import Xeokit3DPlugin
     calls = _stub_tools(monkeypatch, {"convert2xkt", "ifcConvert"})
@@ -241,6 +330,9 @@ def test_config_defaults():
     assert c.threed_max_input_mb == 512
     assert c.threed_timeout_s == 600
     assert c.threed_extract_only is False
+    assert c.threed_drawexe == "DRAWEXE"
+    assert c.threed_cad_deflection == "0.001"
+    assert c.threed_cad_angle == "20"
 
 
 # --------------------------------------------------------------------------- #

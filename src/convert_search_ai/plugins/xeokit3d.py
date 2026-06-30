@@ -1,14 +1,18 @@
-"""3D / BIM conversion + searchable-text extraction (XEOKIT3D_PLUGIN design doc).
+"""3D / BIM / CAD conversion + searchable-text extraction (XEOKIT3D_PLUGIN doc).
 
-For open 3D/AEC formats (IFC, glTF/GLB, CityJSON, LAS/LAZ, STL, PLY) this plugin:
+For open 3D/AEC + CAD formats (IFC, glTF/GLB, CityJSON, LAS/LAZ, STL, PLY, plus
+STEP, IGES, BREP, OBJ and VRML) this plugin:
 
 - **extracts** every human-readable string (names, descriptions, property sets,
   attributes, header metadata) as Markdown for FTS + vector search — with **no
-  hard dependency** (IFC uses a built-in STEP/Part-21 scanner; richer output via
-  the optional ``ifcopenshell``);
+  hard dependency** (IFC/STEP use a built-in STEP/Part-21 scanner; richer IFC
+  output via the optional ``ifcopenshell``);
 - **renders** an XKT model rendition via xeokit's ``convert2xkt`` (Node). For IFC
   the geometry backend is auto-detected and degrades gracefully:
   CxConverter → IfcOpenShell (``ifcConvert``) → native ``web-ifc`` (convert2xkt).
+  True-CAD/mesh formats that ``convert2xkt`` cannot ingest (STEP, IGES, BREP, OBJ,
+  VRML) are routed through **OpenCASCADE** (``DRAWEXE``): read → tessellate →
+  glTF, then chained through the same ``convert2xkt`` → XKT final hop.
 
 Everything is fail-soft: missing tools/libraries yield ``[]``/``None`` rather than
 errors, exactly like the other plugins.
@@ -18,7 +22,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import List, Optional
+from typing import List, NamedTuple, Optional
 
 from .base import ConversionPlugin, Rendition
 from .. import tools
@@ -28,6 +32,15 @@ from .. import tools
 # --------------------------------------------------------------------------- #
 
 _MAX_STRINGS = 20000  # safety cap on extracted strings per file
+
+
+def _as_float(val, default: float) -> float:
+    """Coerce a config value to float (defends DRAWEXE script interpolation against
+    a malformed env override); falls back to ``default``."""
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
 
 
 def _dedupe(seq) -> List[str]:
@@ -229,6 +242,172 @@ def extract_ifc_text(data: bytes) -> Optional[str]:
 
 
 # --------------------------------------------------------------------------- #
+# STEP (ISO-10303-21) — generic CAD, reuses the IFC/Part-21 scanner
+# --------------------------------------------------------------------------- #
+
+def _pretty_step_type(typ: str) -> str:
+    """``PRODUCT_DEFINITION`` -> ``Product definition`` (readable, search-friendly)."""
+    return typ.replace("_", " ").strip().capitalize() or typ
+
+
+def extract_step_text(data: bytes) -> Optional[str]:
+    """Human-readable strings from a generic STEP (AP203/AP214/AP242) file.
+
+    STEP is the same Part-21 physical file as IFC, so the dependency-free Part-21
+    scanner (``_split_statements``/``_quoted_strings``) applies directly: it pulls
+    the header (author, organization, originating system) and every entity's quoted
+    strings — product names, descriptions, person/organization names, units — for
+    FTS + vector search. Returns ``None`` for non-STEP input."""
+    if not data:
+        return None
+    text = data.decode("utf-8", "replace")
+    if not text.lstrip().startswith("ISO-10303-21"):
+        return None
+
+    schema = ""
+    m = _SCHEMA_RE.search(text)
+    if m:
+        schema = m.group(1)
+
+    groups: "dict[str, List[str]]" = {}
+    header: List[str] = []
+    for st in _split_statements(text):
+        em = _ENTITY_RE.match(st)
+        if em:
+            typ = em.group(1).upper()
+            strings = _quoted_strings(em.group(2))
+            if strings:
+                groups.setdefault(typ, []).extend(strings)
+        else:
+            up = st.lstrip().upper()
+            if up.startswith("FILE_NAME") or up.startswith("FILE_DESCRIPTION"):
+                header.extend(_quoted_strings(st))
+
+    if not groups and not schema:
+        return None
+
+    lines: List[str] = ["# STEP CAD model" + (f" (schema {schema})" if schema else "")]
+    header = _dedupe(header)
+    if header:
+        lines += ["", "## Document"] + [f"- {h}" for h in header]
+    for typ, strings in groups.items():
+        vals = _dedupe(strings)
+        if not vals:
+            continue
+        lines += ["", f"## {_pretty_step_type(typ)}"] + [f"- {v}" for v in vals]
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# IGES (fixed 80-column records; Start + Global sections carry the text)
+# --------------------------------------------------------------------------- #
+
+_HOLLERITH_RE = re.compile(r"(\d+)H")
+
+
+def _hollerith_strings(s: str) -> List[str]:
+    """Hollerith-encoded strings (``<count>H<chars>``) used in the IGES Global
+    section, e.g. ``31HOpen CASCADE IGES processor 7.9``."""
+    out: List[str] = []
+    for m in _HOLLERITH_RE.finditer(s):
+        try:
+            n = int(m.group(1))
+        except ValueError:
+            continue
+        start = m.end()
+        out.append(s[start:start + n])
+    return out
+
+
+def extract_iges_text(data: bytes) -> Optional[str]:
+    """Free text from an IGES file: the Start section (cols 1–72 of ``S`` records)
+    and the Hollerith strings of the Global section (``G`` records). ``None`` for
+    non-IGES input."""
+    if not data:
+        return None
+    start: List[str] = []
+    glob: List[str] = []
+    for ln in data.decode("latin-1", "replace").splitlines():
+        if len(ln) < 73:
+            continue
+        sec = ln[72]
+        if sec == "S":
+            body = ln[:72].strip()
+            if body:
+                start.append(body)
+        elif sec == "G":
+            glob.append(ln[:72])
+    if not start and not glob:
+        return None
+    out: List[str] = ["# IGES CAD model"]
+    start = _dedupe(start)
+    if start:
+        out += ["", "## Start section"] + [f"- {s}" for s in start]
+    holl = [h for h in _hollerith_strings("".join(glob))
+            if h.strip() and not h.replace(".", "").replace("-", "").isdigit()]
+    holl = _dedupe(holl)
+    if holl:
+        out += ["", "## Global"] + [f"- {h}" for h in holl]
+    return "\n".join(out) if len(out) > 1 else None
+
+
+# --------------------------------------------------------------------------- #
+# OBJ (Wavefront) / VRML — names + comments
+# --------------------------------------------------------------------------- #
+
+def extract_obj_text(data: bytes) -> Optional[str]:
+    """Object/group/material names and comments from a Wavefront OBJ file."""
+    if not data:
+        return None
+    names: List[str] = []
+    comments: List[str] = []
+    for ln in data.decode("utf-8", "replace").splitlines():
+        ln = ln.strip()
+        if ln.startswith("#"):
+            c = ln[1:].strip()
+            if c:
+                comments.append(c)
+        elif ln[:2] in ("o ", "g "):
+            names.append(ln[2:].strip())
+        elif ln.startswith(("usemtl", "mtllib")):
+            parts = ln.split(None, 1)
+            if len(parts) == 2:
+                names.append(parts[1].strip())
+    names = _dedupe(names)
+    comments = _dedupe(comments)
+    if not names and not comments:
+        return None
+    out: List[str] = ["# OBJ mesh"]
+    if comments:
+        out += ["", "## Comments"] + [f"- {c}" for c in comments]
+    if names:
+        out += ["", "## Names"] + [f"- {n}" for n in names]
+    return "\n".join(out)
+
+
+_VRML_DEF_RE = re.compile(r"\bDEF\s+([A-Za-z0-9_]+)")
+_VRML_STR_RE = re.compile(r'"([^"]*)"')
+
+
+def extract_vrml_text(data: bytes) -> Optional[str]:
+    """Node ``DEF`` names and quoted strings (WorldInfo title/info, URLs) from a
+    VRML/X3D world. ``None`` when nothing readable is present."""
+    if not data:
+        return None
+    text = data.decode("utf-8", "replace")
+    defs = _dedupe(_VRML_DEF_RE.findall(text))
+    strs = _dedupe([s for s in _VRML_STR_RE.findall(text) if s.strip()])
+    if not defs and not strs:
+        return None
+    out: List[str] = ["# VRML model"]
+    if defs:
+        out += ["", "## Names"] + [f"- {d}" for d in defs]
+    if strs:
+        out += ["", "## Strings"] + [f"- {s}" for s in strs]
+    return "\n".join(out)
+
+
+# --------------------------------------------------------------------------- #
 # glTF / GLB
 # --------------------------------------------------------------------------- #
 
@@ -365,6 +544,7 @@ def extract_ply_text(data: bytes) -> Optional[str]:
 # Geometry backends (-> XKT) and the plugin
 # --------------------------------------------------------------------------- #
 
+# Formats convert2xkt ingests directly (no intermediate step).
 _EXT_BY_MIME = {
     "application/x-ifc": "ifc",
     "model/gltf+json": "gltf",
@@ -377,10 +557,32 @@ _EXT_BY_MIME = {
 }
 
 
+class _OcctSpec(NamedTuple):
+    """How OpenCASCADE (DRAWEXE) reads a CAD/mesh format on the way to glTF."""
+    ext: str        # temp-file extension DRAWEXE expects
+    read: str       # DRAW read command
+    into_doc: bool  # True: read straight into an XDE document; False: read a shape
+    mesh: bool      # True: exact BRep geometry needing tessellation before export
+
+
+# CAD/mesh formats convert2xkt cannot ingest, reachable via DRAWEXE → glTF.
+_OCCT_SPECS = {
+    "model/step":   _OcctSpec("step", "ReadStep", True, True),
+    "model/iges":   _OcctSpec("iges", "ReadIges", True, True),
+    "model/x-brep": _OcctSpec("brep", "readbrep", False, True),
+    "model/obj":    _OcctSpec("obj", "ReadObj", True, False),
+    "model/vrml":   _OcctSpec("wrl", "ReadVrml", True, False),
+}
+
+
 class Xeokit3DPlugin(ConversionPlugin):
     name = "model3d"
 
-    _MIMES = frozenset(_EXT_BY_MIME) | {"application/x-ifc+xml", "application/x-ifc-zip"}
+    _MIMES = (
+        frozenset(_EXT_BY_MIME)
+        | frozenset(_OCCT_SPECS)
+        | {"application/x-ifc+xml", "application/x-ifc-zip"}
+    )
 
     def __init__(self, config=None):
         self.enabled = getattr(config, "threed_enabled", True)
@@ -391,6 +593,9 @@ class Xeokit3DPlugin(ConversionPlugin):
         self.max_input_mb = getattr(config, "threed_max_input_mb", 512)
         self.timeout_s = getattr(config, "threed_timeout_s", 600)
         self.extract_only = getattr(config, "threed_extract_only", False)
+        self.drawexe = getattr(config, "threed_drawexe", "DRAWEXE")
+        self.cad_deflection = _as_float(getattr(config, "threed_cad_deflection", "0.001"), 0.001)
+        self.cad_angle = _as_float(getattr(config, "threed_cad_angle", "20"), 20.0)
 
     def supports(self, mime: str) -> bool:
         return mime in self._MIMES
@@ -411,6 +616,15 @@ class Xeokit3DPlugin(ConversionPlugin):
                 return extract_stl_text(data)
             if mime == "model/ply":
                 return extract_ply_text(data)
+            if mime == "model/step":
+                return extract_step_text(data)
+            if mime == "model/iges":
+                return extract_iges_text(data)
+            if mime == "model/obj":
+                return extract_obj_text(data)
+            if mime == "model/vrml":
+                return extract_vrml_text(data)
+            # model/x-brep is pure geometry — no human-readable text to index.
         except Exception:
             return None
         return None
@@ -436,6 +650,8 @@ class Xeokit3DPlugin(ConversionPlugin):
                 if xkt:
                     return xkt
             return None
+        if mime in _OCCT_SPECS:
+            return self._occt_to_xkt(data, mime)
         return self._convert2xkt_direct(data, _EXT_BY_MIME.get(mime, "bin"))
 
     def _ifc_backend_order(self) -> List[str]:
@@ -490,3 +706,51 @@ class Xeokit3DPlugin(ConversionPlugin):
         if not tools.run([self.convert2xkt, "-s", src, "-o", out], timeout=self.timeout_s):
             return None
         return tools.read_if_exists(out)
+
+    # --- OpenCASCADE CAD/mesh backend (STEP/IGES/BREP/OBJ/VRML → glTF) ---- #
+
+    def _occt_to_xkt(self, data: bytes, mime: str) -> Optional[bytes]:
+        """Convert a CAD/mesh format convert2xkt can't read into XKT via a glTF
+        produced by OpenCASCADE (DRAWEXE), then the standard convert2xkt hop."""
+        glb = self._occt_to_glb(data, mime)
+        if not glb:
+            return None
+        with tools.workdir() as d:
+            src = tools.write_temp(d, "occt.glb", glb)
+            return self._convert2xkt_at(d, src)
+
+    def _occt_to_glb(self, data: bytes, mime: str) -> Optional[bytes]:
+        """Read ``data`` with DRAWEXE, tessellate exact geometry where needed, and
+        write a binary glTF. ``None`` if DRAWEXE is absent or produces no output."""
+        spec = _OCCT_SPECS.get(mime)
+        if not spec or not tools.have(self.drawexe):
+            return None
+        with tools.workdir() as d:
+            src = tools.write_temp(d, f"in.{spec.ext}", data)
+            glb = os.path.join(d, "out.glb")
+            script = tools.write_temp(
+                d, "convert.tcl", self._occt_script(spec, src, glb).encode("utf-8")
+            )
+            # DRAWEXE can exit 0 even after a Tcl-level error, so success is judged
+            # by the presence of a non-empty glTF rather than the return code.
+            tools.run([self.drawexe, "-b", "-f", script], timeout=self.timeout_s)
+            return tools.read_if_exists(glb)
+
+    def _occt_script(self, spec: "_OcctSpec", src: str, glb: str) -> str:
+        """A batch DRAW (Tcl) script: read → (tessellate) → WriteGltf. Paths are in
+        our private workdir and wrapped in braces so Tcl performs no substitution."""
+        lines = ["pload MODELING XDE OCAF"]
+        if spec.into_doc:
+            lines.append(f"{spec.read} D {{{src}}}")
+            if spec.mesh:
+                lines.append("XGetOneShape _s D")
+                lines.append(f"incmesh _s {self.cad_deflection} -relative -a {self.cad_angle}")
+        else:  # shape-level read (BREP) → wrap in a fresh XDE document
+            lines.append(f"{spec.read} {{{src}}} _s")
+            if spec.mesh:
+                lines.append(f"incmesh _s {self.cad_deflection} -relative -a {self.cad_angle}")
+            lines.append("XNewDoc D")
+            lines.append("XAddShape D _s")
+        lines.append(f"WriteGltf D {{{glb}}}")
+        lines.append("exit")
+        return "\n".join(lines) + "\n"

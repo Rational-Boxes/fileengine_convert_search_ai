@@ -12,5 +12,12 @@ detection and searchable-text extraction. Each is unmodified from its source.
 | `cube.ply` | PLY (ASCII) | PyMesh/PyMesh `tests/data/cube.ply` | BSD (PyMesh) |
 | `cube.stl` | STL (ASCII) | PyMesh/PyMesh `tests/data/cube.stl` | BSD (PyMesh) |
 | `points.las` | LAS 1.x point cloud | PDAL/PDAL `test/data/las/simple.las` | per upstream repo |
+| `box.step` | STEP AP214 | generated with OpenCASCADE `DRAWEXE` (a 10×20×30 box) | CC0 (trivial generated solid) |
+| `box.iges` | IGES | generated with OpenCASCADE `DRAWEXE` (same box) | CC0 |
+| `box.brep` | OpenCASCADE BREP | generated with OpenCASCADE `DRAWEXE` (same box) | CC0 |
+| `box.obj` | Wavefront OBJ | generated with OpenCASCADE `DRAWEXE` (same box, tessellated) | CC0 |
+| `box.wrl` | VRML 2.0 | generated with OpenCASCADE `DRAWEXE` (same box, tessellated) | CC0 |
 
-These are test inputs only; they are not distributed as part of the service.
+These are test inputs only; they are not distributed as part of the service. The
+`box.*` CAD fixtures are trivial machine-generated solids (no third-party IP) used
+to exercise the OpenCASCADE CAD→glTF→XKT chain and CAD text extraction.

@@ -221,6 +221,16 @@ class Config:
         self.threed_max_input_mb = int(_env("CSAI_3D_MAX_INPUT_MB", "512"))
         self.threed_timeout_s = int(_env("CSAI_3D_TIMEOUT_S", "600"))
         self.threed_extract_only = _bool("CSAI_3D_EXTRACT_ONLY", False)
+        # CAD geometry backend (OpenCASCADE "DRAW" CLI). True-CAD/mesh formats —
+        # STEP, IGES, BREP, OBJ, VRML — are read by DRAWEXE, tessellated, written
+        # to glTF, then chained through convert2xkt → XKT (same final hop as the
+        # other formats). When DRAWEXE is absent these are text-indexed only.
+        self.threed_drawexe = _env("CSAI_3D_DRAWEXE", "DRAWEXE")
+        # BRep tessellation quality for exact-geometry formats (STEP/IGES/BREP):
+        # linear deflection is relative (fraction of each shape's bounding box) so
+        # one value suits models of any scale; angular deflection is in degrees.
+        self.threed_cad_deflection = _env("CSAI_3D_CAD_DEFLECTION", "0.001")
+        self.threed_cad_angle = _env("CSAI_3D_CAD_ANGLE", "20")
 
         # --- Auth coordination with the core REST API (http_bridge) ---
         # When set, a bearer token issued by the bridge is accepted here too:

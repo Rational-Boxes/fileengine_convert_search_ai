@@ -29,6 +29,7 @@ _MAGIC = [
     (0, b"LASF", "application/vnd.las"),   # LAS/LAZ point cloud (LAZ refined by ext)
     (0, b"ply\n", "model/ply"),
     (0, b"ply\r", "model/ply"),
+    (0, b"#VRML", "model/vrml"),           # VRML world (#VRML V2.0 utf8 / V1.0)
 ]
 
 # Extension map for 3D/AEC types many of which libmagic/mimetypes don't know.
@@ -43,6 +44,15 @@ _EXT_3D = {
     ".las": "application/vnd.las",
     ".stl": "model/stl",
     ".ply": "model/ply",
+    # CAD formats reachable through the OpenCASCADE (DRAWEXE) → glTF → XKT chain.
+    ".step": "model/step",
+    ".stp": "model/step",
+    ".iges": "model/iges",
+    ".igs": "model/iges",
+    ".brep": "model/x-brep",
+    ".obj": "model/obj",
+    ".wrl": "model/vrml",
+    ".vrml": "model/vrml",
 }
 
 # Office Open XML / OpenDocument are ZIP containers — disambiguate by member.
@@ -70,15 +80,24 @@ def _sniff(data: bytes) -> str | None:
 
 
 def _sniff_text_3d(data: bytes, head: bytes) -> str | None:
-    """Content sniffing for text-based 3D/AEC formats: IFC (STEP), glTF/CityJSON
-    (JSON), and ASCII STL — none of which have a fixed binary magic."""
+    """Content sniffing for text-based 3D/AEC + CAD formats: IFC/STEP (Part-21),
+    IGES, OpenCASCADE BREP, glTF/CityJSON (JSON), and ASCII STL — none of which
+    have a fixed binary magic."""
     stripped = head.lstrip()
-    # IFC is a STEP/Part-21 physical file; require an IFC FILE_SCHEMA to avoid
-    # claiming arbitrary STEP (.stp) files.
+    # OpenCASCADE BREP shape dump (native or DRAW-saved).
+    if stripped.startswith(b"DBRep_DrawableShape") or stripped.startswith(b"CASCADE Topology"):
+        return "model/x-brep"
+    # IGES: 80-column fixed records; the section letter sits in column 73 and the
+    # Start section ("S") is first, followed by a 7-digit sequence number.
+    if data[72:73] == b"S" and data[73:80].isdigit():
+        return "model/iges"
+    # IFC is a STEP/Part-21 physical file; an IFC FILE_SCHEMA marks it as IFC,
+    # otherwise it is generic CAD STEP (AP203/AP214/AP242, …).
     if stripped.startswith(b"ISO-10303-21"):
         window = data[:4096]
         if b"FILE_SCHEMA" in window and b"IFC" in window:
             return "application/x-ifc"
+        return "model/step"
     # JSON: glTF and CityJSON share the .json/JSON shape — peek at marker keys.
     if stripped[:1] == b"{":
         window = data[:4096].decode("utf-8", "replace")

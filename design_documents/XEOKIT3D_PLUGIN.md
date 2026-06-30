@@ -46,7 +46,7 @@ Plus a cross-cutting requirement:
 | # | Decision | Choice |
 |---|----------|--------|
 | D1 | IFC engine | A **pluggable backend chain** (mirrors `pdf_backends`). The **native xeokit/web-ifc path** — bundled in convert2xkt, needs only Node, **no extra install** — is the **always-available fallback** for geometry *and* metadata. **IfcOpenShell** is an **optional** higher-fidelity backend (it can be complicated to install, so it must never be required). **CxConverter** is an optional proprietary backend. Selection is config-driven and degrades automatically to whatever is installed. |
-| D2 | Format scope | **Full xeokit-convert range**: IFC, glTF/GLB, CityJSON, LAS/LAZ, STL, PLY. |
+| D2 | Format scope | **Full xeokit-convert range**: IFC, glTF/GLB, CityJSON, LAS/LAZ, STL, PLY — **extended** via an OpenCASCADE backend to true-CAD/mesh formats convert2xkt can't read: STEP, IGES, BREP, OBJ, VRML (§6.2, §11). |
 | D3 | SDK / model format | **xeokit-sdk v2 + XKT** (the stable, production viewer/format today). The next-gen V3 SDK / XGF format is alpha and deferred. |
 | D4 | Licensing | **Accept AGPL-3.0** and stay open-source. The viewer and converter are AGPLv3; CSAI is GPL-3.0-or-later and the frontend is GPL-3.0. See §9. |
 
@@ -184,6 +184,16 @@ if importable, else the native extractor. Both are fail-soft.
   free text (point clouds are mostly numeric). Index the header metadata only.
 - **STL** — the 80-byte ASCII header comment / solid name (ASCII STL).
 - **PLY** — `comment` / `obj_info` header lines and named element/property labels.
+- **STEP** — generic Part-21, so the same dependency-free STEP scanner used for IFC
+  (§5.1a) applies directly: header (author/organization/originating system) plus
+  every entity's quoted strings (product names, descriptions, units), grouped by
+  type.
+- **IGES** — the Start section free text and the Hollerith strings of the Global
+  section (authoring system, file name, units).
+- **OBJ** — object/group names (`o`/`g`), material references (`usemtl`/`mtllib`),
+  and `#` comments.
+- **VRML** — node `DEF` names and quoted strings (WorldInfo title/info, URLs).
+- **BREP** — pure geometry; no human-readable text (contributes nothing to FTS).
 
 When a format carries no meaningful text, `extract()` returns `None` (the file is
 still viewable; it just contributes nothing to the text index). Guard output size
@@ -216,6 +226,11 @@ the file.
 | LAZ | LAZ-compressed LAS (`LASF` + compression vlr) / `.laz` | `application/vnd.laz` |
 | STL | ASCII `solid ` prefix, or 84-byte binary header heuristic + `.stl` | `model/stl` |
 | PLY | magic `ply\n` | `model/ply` |
+| STEP | Part-21 (`ISO-10303-21;`) whose `FILE_SCHEMA` is **not** IFC, or `.step`/`.stp` | `model/step` |
+| IGES | section letter `S` in column 73 + 7-digit sequence, or `.iges`/`.igs` | `model/iges` |
+| BREP | text begins `DBRep_DrawableShape` / `CASCADE Topology`, or `.brep` | `model/x-brep` |
+| OBJ | `.obj` (Wavefront has no reliable magic) | `model/obj` |
+| VRML | magic `#VRML`, or `.wrl`/`.vrml` | `model/vrml` |
 
 Extension fallback (`.ifc`, `.ifczip`, `.glb`, `.gltf`, `.json`/`.city.json`,
 `.las`, `.laz`, `.stl`, `.ply`) covers the rest. Distinguishing plain glTF JSON
@@ -254,6 +269,19 @@ no other code changes.
 CityJSON, LAS/LAZ, STL, PLY are first-class convert2xkt inputs). Metadata from
 §5.2 is passed via `-m` where the format carries it (glTF/CityJSON). These need
 **only** convert2xkt — never IfcOpenShell.
+
+**CAD formats → glTF → XKT (OpenCASCADE backend):** STEP (`.step`/`.stp`), IGES
+(`.iges`/`.igs`), OpenCASCADE BREP (`.brep`), Wavefront OBJ and VRML are **not**
+convert2xkt inputs, so they are routed through **OpenCASCADE's `DRAWEXE`** (the
+OCCT "DRAW" Tcl CLI) first. A generated batch script reads the file into an XDE
+document, **tessellates** exact BRep geometry (`incmesh`, relative deflection so
+one setting fits any model scale — STEP/IGES/BREP only; OBJ/VRML already carry
+meshes), and writes a binary glTF (`WriteGltf`); that glTF then feeds the same
+`convert2xkt` hop above. `DRAWEXE` runs headless via the existing `tools` helpers
+(`workdir`/`write_temp`/`run`/`read_if_exists`) with all paths confined to a
+private temp dir. Required system package: `opencascade-draw` (+ `-modeling`,
+`-ocaf`, `-visualization`). Optional/auto-detected exactly like the IFC backends —
+when `DRAWEXE` is missing the file is text-indexed only.
 
 convert2xkt is invoked as a subprocess via the existing
 [`tools`](../src/convert_search_ai/tools.py) helpers (`tools.workdir()`,
@@ -357,6 +385,7 @@ Repo: `frontend/` (Vue 3 + TS). Plugs into the existing preview surface
 |------------|-------|-----------|
 | **Node.js ≥18 + `@xeokit/xeokit-convert` (convert2xkt)** | CSAI image | **Required** for any geometry→XKT (incl. native IFC via web-ifc). |
 | **IfcOpenShell** (`ifcopenshell` + `ifcConvert`) | CSAI image (optional layer) | Optional — auto-detected; enriches IFC fidelity + metadata + text. |
+| **OpenCASCADE** (`DRAWEXE`, pkg `opencascade-draw`) | CSAI image (optional layer) | Optional — auto-detected; enables STEP/IGES/BREP/OBJ/VRML → glTF → XKT. LGPL-2.1 (with OCCT exception). |
 | **CxConverter** (`ifc2gltfcxconverter`) | operator-supplied | Optional — proprietary; not bundled/distributed. |
 | **`@xeokit/xeokit-sdk`** | frontend bundle | Required for the viewer (lazy-loaded). |
 
@@ -398,6 +427,9 @@ same pattern as existing options):
 | `CSAI_3D_MAX_INPUT_MB` | `512` | Reject/skip source files larger than this (resource guard). |
 | `CSAI_3D_TIMEOUT_S` | `600` | Per-conversion subprocess timeout. |
 | `CSAI_3D_EXTRACT_ONLY` | `false` | Index text but skip geometry→XKT (e.g. nodes without Node). |
+| `CSAI_3D_DRAWEXE` | `DRAWEXE` | Path/command for the OpenCASCADE DRAW CLI (the CAD→glTF backend for STEP/IGES/BREP/OBJ/VRML; auto-detected, optional). |
+| `CSAI_3D_CAD_DEFLECTION` | `0.001` | Relative linear tessellation deflection (fraction of bounding box) for exact CAD geometry. |
+| `CSAI_3D_CAD_ANGLE` | `20` | Angular tessellation deflection in degrees for exact CAD geometry. |
 
 **Auto-detection.** With the `auto` default the plugin **probes for IfcOpenShell**
 (can `import ifcopenshell` / is `ifcConvert` on PATH?) and CxConverter
@@ -421,10 +453,12 @@ contract.
   the registry already isolates `render` and `extract` exceptions per file.
 - **Idempotency / reconcile.** Inherited from the rendition writer — a re-run finds
   `<version>-model.xkt` present and writes nothing.
-- **Unsupported true-CAD.** STEP/IGES/native CAD are not convertible here; they
-  fall through to the text/source-preview plugin (no XKT). Document this so users
-  aren't surprised. A future backend (e.g. via OpenCASCADE/`ifcConvert` siblings)
-  could extend coverage.
+- **True-CAD via OpenCASCADE.** STEP/IGES/BREP (plus OBJ/VRML, which convert2xkt
+  also can't ingest) are converted through the **OpenCASCADE `DRAWEXE`** backend
+  (§6.2): read → tessellate exact BRep geometry → glTF, then the standard
+  convert2xkt → XKT hop. When `DRAWEXE` is absent these formats are text-indexed
+  only, like every other geometry path. Genuinely proprietary native CAD
+  (SolidWorks/CATIA/Parasolid) is still out of scope.
 
 ## 12. Implementation phases
 
