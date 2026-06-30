@@ -11,12 +11,24 @@ FROM python:3.12-slim
 
 # Conversion toolchain: LibreOffice (Office -> PDF/text), ImageMagick (image
 # thumbnails/previews), FFmpeg (video previews), libmagic (MIME detection).
+# 3D/CAD: occt-draw is OpenCASCADE's DRAW CLI (STEP/IGES/BREP/OBJ/VRML -> glTF);
+# nodejs/npm host convert2xkt (glTF/IFC/... -> XKT) for the xeokit viewer.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress \
         imagemagick \
         ffmpeg \
         libmagic1 \
-    && rm -rf /var/lib/apt/lists/*
+        occt-draw \
+        nodejs npm \
+    && npm install -g @xeokit/xeokit-convert@1.3.2 \
+    && ln -sf "$(npm root -g)/@xeokit/xeokit-convert/convert2xkt.js" /usr/local/bin/convert2xkt \
+    && chmod +x "$(npm root -g)/@xeokit/xeokit-convert/convert2xkt.js" \
+    && npm cache clean --force \
+    && rm -rf /var/lib/apt/lists/* /root/.npm
+
+# On Debian the OpenCASCADE DRAW binary is named "occt-draw" (Fedora ships it as
+# "DRAWEXE", the CSAI default), so point the CAD backend at it here.
+ENV CSAI_3D_DRAWEXE=occt-draw
 
 WORKDIR /app
 
