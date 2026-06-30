@@ -56,11 +56,12 @@ _INSTRUCTIONS_DOCUMENT = (
     "   ...the full report as Markdown or HTML (headings, paragraphs, tables, lists)...\n"
     "   [[/SAVE_REPORT]]\n"
     "Everything between the markers is saved automatically to that path as an HTML "
-    "document with a PDF preview — you do NOT need a separate tool call. Always emit "
-    "the closing [[/SAVE_REPORT]] marker, and put the destination in the opening "
-    "marker whenever you intend to save. Do not claim a report is saved unless you "
-    "emitted the markers (or the create_document tool, still available, returned "
-    "success)."
+    "document with a PDF preview — this is the ONLY way to save; there is no save "
+    "tool to call. Put the ENTIRE report between the markers: write the opening "
+    "marker, then the complete report, then the closing [[/SAVE_REPORT]] marker — do "
+    "not place report content after the closing marker, and do not emit the markers "
+    "around just a preamble. Do not claim a report is saved unless you actually "
+    "emitted the full marked block."
 )
 
 
@@ -133,9 +134,8 @@ class ChatService:
             et = ev.get("type")
             if et == "text":
                 answer_parts.append(ev.get("text", ""))
-                # Keep the running reply on the context so create_document can save
-                # the report the model wrote inline (executed mid-stream, before the
-                # tool_call event below is processed).
+                # Keep the running reply on the context so the marked report can be
+                # extracted and saved after the stream completes.
                 ctx.answer_text = "".join(answer_parts)
                 yield {"type": "token", "text": ev.get("text", "")}
             elif et == "tool_call":
@@ -143,8 +143,7 @@ class ChatService:
             elif et == "tool_result":
                 yield {"type": "tool_result", "name": ev.get("name")}
 
-        # Divert any marker-wrapped report into a saved file (skips targets that a
-        # create_document tool call already wrote this turn).
+        # Divert any marker-wrapped report into a saved file.
         yield from self._save_marked_reports(identity, ctx.answer_text, ctx.saved)
 
         citations = doc_citations + web_citations
@@ -157,7 +156,7 @@ class ChatService:
         to a file in the user's storage — the destination travels in the START
         marker (set before the report), and the closing marker OR a stream cutoff
         triggers the save. Deterministic: no tool call required. Yields confirmation
-        token events. ``saved`` dedupes against create_document tool writes."""
+        token events. ``saved`` dedupes locations already written this turn."""
         from .llm_tools import (ReportSaveError, parse_report_markers,
                                 report_location, save_report_document)
         for rep in parse_report_markers(answer_text):
@@ -167,7 +166,8 @@ class ChatService:
             try:
                 uid, loc, nbytes = save_report_document(
                     identity, self.config, path=rep.path, filename=rep.filename,
-                    title=rep.title, body=rep.body, create_folders=True)
+                    title=rep.title, body=rep.body, create_folders=True,
+                    max_bytes=getattr(self.config, "chat_document_max_bytes", 5_000_000))
             except ReportSaveError as e:
                 audit.record(action="save_report", user=identity.user, tenant=identity.tenant,
                              result="error", reason=e.kind)
@@ -186,7 +186,8 @@ class ChatService:
     def _select_tools(self, web_search: Optional[bool]):
         """Decide which tools to offer this turn. Requires provider tool support.
         Web tools need the global enable + per-message opt-in (or the configured
-        default); create_document is offered whenever it's enabled, independently."""
+        default); the folder-exploration tool is offered whenever the document
+        feature is enabled (saving itself is marker-driven, not a tool)."""
         if not getattr(self.chat, "supports_tools", False):
             return []
         include_web = False
@@ -218,7 +219,9 @@ class ChatService:
         if system_prompt and system_prompt.strip():
             parts.append(system_prompt.strip())
         parts.append(_INSTRUCTIONS_WEB if "web_search" in names else _INSTRUCTIONS)
-        if "create_document" in names:
+        # Marker-driven report saving works in any path; offer the guidance whenever
+        # the document feature is enabled (not tied to a specific tool being present).
+        if getattr(self.config, "chat_document_tool_enabled", True):
             parts.append(_INSTRUCTIONS_DOCUMENT)
         parts.append("Context:\n" + context)
         return "\n\n".join(parts)

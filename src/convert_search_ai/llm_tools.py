@@ -24,8 +24,8 @@ log = logging.getLogger("convert_search_ai.llm_tools")
 class ToolContext:
     """Per-answer context handed to a tool: who is asking, plus a ``sources``
     accumulator the chat loop reads back to build citations, and ``answer_text``
-    — the assistant's reply streamed so far this turn, so create_document can save
-    the report the model wrote inline even when it omits the ``html`` argument."""
+    — the assistant's reply streamed so far this turn, from which a SAVE_REPORT
+    marker block is extracted and saved after the stream completes."""
     identity: object
     config: Config
     sources: List[dict] = field(default_factory=list)  # {kind:"web", url, title}
@@ -162,7 +162,7 @@ class FetchPageTool(Tool):
 
 
 # --------------------------------------------------------------------------- #
-# create_document — save a chat-generated report into FileEngine
+# Report saving — write a chat-generated report into FileEngine (marker-driven)
 # --------------------------------------------------------------------------- #
 
 # Characters disallowed in a single file/folder name (path separators, control,
@@ -304,8 +304,7 @@ def save_report_document(identity, config, *, path: str, filename: str, title: s
                          max_bytes: int = 5_000_000):
     """Persist a report (Markdown or HTML ``body``) as an HTML file in the user's
     storage, written *as the user*. Returns ``(uid, location, byte_len)``; raises
-    :class:`ReportSaveError`. Shared by the create_document tool and the marker-
-    driven save path so both behave identically."""
+    :class:`ReportSaveError`. Used by the marker-driven save path (chat.py)."""
     client_factory = client_factory or _default_client
     safe = _safe_name(filename or "")
     if not safe:
@@ -442,120 +441,13 @@ class ListFoldersTool(Tool):
         return ToolOutput(text="\n".join(lines))
 
 
-class CreateDocumentTool(Tool):
-    """Save a report generated from the conversation as a formatted HTML document
-    in the user's FileEngine storage (written *as the user*, so ACLs apply)."""
-
-    name = "create_document"
-    description = (
-        "Save a report you produced in this conversation as a formatted document in "
-        "the user's file storage (an HTML file with an automatic PDF preview). "
-        "IMPORTANT: writing a report in your chat reply does NOT save it — you must "
-        "call this tool. The simplest reliable way: write the full report in your "
-        "reply, then call create_document with just 'path' and 'filename' — your "
-        "reply's report content is saved automatically (you can omit 'html'). "
-        "Optionally pass 'html' to save specific HTML instead of your reply. Confirm "
-        "the destination folder + file name with the user before calling. Returns "
-        "the saved file's location.")
-    schema = {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string", "description":
-                     "Destination folder path in the user's storage, e.g. '/Reports' "
-                     "or 'Projects/Q3'. Use '/' for the top level."},
-            "filename": {"type": "string", "description":
-                         "File name without extension ('.html' is appended), e.g. "
-                         "'q3-summary'."},
-            "title": {"type": "string", "description":
-                      "Report title (used as the document <title> and heading)."},
-            "html": {"type": "string", "description":
-                     "OPTIONAL. The report body as HTML/Markdown. If omitted, the "
-                     "report you wrote in your reply this turn is saved — prefer "
-                     "omitting it and writing the report in your reply."},
-            "create_folders": {"type": "boolean", "description":
-                               "Create the destination folder (and any missing "
-                               "parents) if it does not exist. Only set true after "
-                               "the user confirms creating a new folder."},
-        },
-        "required": ["path", "filename"],
-    }
-
-    def __init__(self, *, max_bytes: int = 5_000_000, client_factory=None):
-        self.max_bytes = max_bytes
-        self._client_factory = client_factory or _default_client
-
-    def run(self, args: dict, ctx: ToolContext) -> ToolOutput:
-        args = args or {}
-        user = getattr(ctx.identity, "user", "")
-        tenant = getattr(ctx.identity, "tenant", "") or getattr(ctx.config, "tenant", "")
-        filename = _safe_name(str(args.get("filename", "")))
-        arg_html = str(args.get("html") or "")
-        # Fall back to the report the model wrote in its reply this turn — the common
-        # case is the model shows the report in chat and calls this with only a
-        # destination. Convert that (usually Markdown) to HTML so formatting survives.
-        used_fallback = False
-        if arg_html.strip():
-            body = arg_html
-        else:
-            reply = (getattr(ctx, "answer_text", "") or "").strip()
-            body = markdown_to_html(reply) if reply else ""
-            used_fallback = bool(reply)
-        # Diagnostic: every invocation, with sizes + whether the reply fallback was
-        # used — so a "no file written" never lacks a trace.
-        log.info("create_document called: filename=%r path=%r html_arg_len=%d "
-                 "reply_len=%d fallback=%s", filename, args.get("path"), len(arg_html),
-                 len(getattr(ctx, "answer_text", "") or ""), used_fallback)
-        if not filename or not str(body).strip():
-            audit.record(action="create_document", user=user, tenant=tenant,
-                         result="error", reason="missing_content",
-                         html_arg_len=len(arg_html), reply_len=len(getattr(ctx, "answer_text", "") or ""))
-            return ToolOutput(text=(
-                "(create_document error: no report content to save. Write the report "
-                "in your reply and call create_document again with 'path' and "
-                "'filename', or pass the report in the 'html' argument.)"))
-        # The reply may carry stream markers (the model wrapped the report); strip
-        # the delimiters so they don't end up inside the saved document.
-        if used_fallback:
-            body = strip_report_markers(body)
-        title = str(args.get("title", "") or filename).strip()
-        path = str(args.get("path", "") or "/")
-        create = bool(args.get("create_folders", False))
-        if not str(body).strip():
-            audit.record(action="create_document", user=user, tenant=tenant,
-                         result="error", reason="missing_content")
-            return ToolOutput(text=(
-                "(create_document error: no report content to save. Write the report "
-                "in your reply, then call create_document with 'path' and 'filename'.)"))
-
-        try:
-            uid, loc, nbytes = save_report_document(
-                ctx.identity, ctx.config, path=path, filename=filename, title=title,
-                body=body, create_folders=create, client_factory=self._client_factory,
-                max_bytes=self.max_bytes)
-        except ReportSaveError as e:
-            if e.kind == "missing_folder":
-                return ToolOutput(text=(
-                    f"The folder '{e.missing_path}' does not exist. Ask the user to confirm "
-                    f"the destination, or call create_document again with create_folders=true "
-                    f"to create it."))
-            audit.record(action="create_document", user=user, tenant=tenant,
-                         result="error", reason=e.kind)
-            return ToolOutput(text=f"(create_document error: {e.message})")
-
-        ctx.saved.append(loc)
-        audit.record(action="create_document", user=user, tenant=tenant, result="ok",
-                     bytes=nbytes, source="reply" if used_fallback else "html_arg")
-        return ToolOutput(text=(
-            f"Saved the report to {loc} (file id {uid}). A PDF preview is being "
-            f"generated automatically. Let the user know it's ready in their files."))
-
-
 def build_tools(config: Config, *, include_web: bool = True) -> List[Tool]:
     """The tools to expose to the model for this deployment.
 
-    ``create_document`` is included whenever it's enabled (default on). The web
-    tools are added only when web search is enabled AND ``include_web`` (the chat
-    layer passes the per-turn opt-in); fetch_page needs its own extra enable."""
+    Document saving is handled by the SAVE_REPORT stream markers (see chat.py),
+    not a tool, so only the folder-exploration tool is offered for documents. The
+    web tools are added only when web search is enabled AND ``include_web`` (the
+    chat layer passes the per-turn opt-in); fetch_page needs its own extra enable."""
     tools: List[Tool] = []
     if include_web and getattr(config, "web_search_enabled", False):
         from .providers import make_web_search_provider
@@ -570,9 +462,7 @@ def build_tools(config: Config, *, include_web: bool = True) -> List[Tool]:
                 timeout_ms=getattr(config, "web_timeout_ms", 5000),
                 max_chars=getattr(config, "web_max_chars", 4000)))
     if getattr(config, "chat_document_tool_enabled", True):
-        # Exploration tool first so the model can browse + suggest a location, then
-        # the writer.
+        # Folder exploration so the model can browse + suggest a destination; the
+        # save itself is deterministic via the SAVE_REPORT markers.
         tools.append(ListFoldersTool())
-        tools.append(CreateDocumentTool(
-            max_bytes=getattr(config, "chat_document_max_bytes", 5_000_000)))
     return tools

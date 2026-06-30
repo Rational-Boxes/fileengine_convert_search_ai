@@ -170,10 +170,9 @@ class Config:
         self.chat_model = _env("CSAI_CHAT_MODEL", "claude-sonnet-4-6")
         self.chat_base_url = _env("CSAI_CHAT_BASE_URL", "")
         self.chat_api_key = _first("CSAI_CHAT_API_KEY", "OPENAI_API_KEY", "")
-        # Max output tokens per completion. Must be generous: the create_document
-        # tool emits the whole HTML report as a tool-call argument, and a small cap
-        # silently truncates that JSON (the report then fails to save). 1024 was far
-        # too low for report generation.
+        # Max output tokens per completion. Must be generous: a saved report is
+        # streamed inline (wrapped in SAVE_REPORT markers), so a small cap truncates
+        # the report before its closing marker. 1024 was far too low for reports.
         self.chat_max_tokens = int(_env("CSAI_CHAT_MAX_TOKENS", "8192"))
 
         # --- Web search tool (WEB_SEARCH_TOOL_PLAN; OFF by default) ---
@@ -186,11 +185,10 @@ class Config:
         self.web_search_default = _bool("CSAI_WEB_SEARCH_DEFAULT", False)
         self.web_search_results = int(_env("CSAI_WEB_SEARCH_RESULTS", "5"))
         # Cap on tool-loop rounds per answer. Governs ALL tools, not just web
-        # search — incl. list_folders + create_document. Must be generous: a
-        # report workflow explores folders (and may web-research) BEFORE it calls
-        # create_document, and once the cap is hit the loop forces a tool-free
-        # final answer (which can falsely claim a save it never made). Too low and
-        # the document never gets written.
+        # search — incl. list_folders. Must be generous: a report workflow explores
+        # folders (and may web-research) before streaming the report, and once the
+        # cap is hit the loop forces a final answer. Too low and the model runs out
+        # of rounds before producing the report.
         self.web_max_iterations = int(_first("CSAI_TOOL_MAX_ITERATIONS",
                                              "CSAI_WEB_MAX_ITERATIONS", "8"))
         self.web_max_chars = int(_env("CSAI_WEB_MAX_CHARS", "4000"))
@@ -203,11 +201,12 @@ class Config:
         self.web_fetch_pages = _bool("CSAI_WEB_FETCH_PAGES", False)
         self.web_fetch_max_bytes = int(_env("CSAI_WEB_FETCH_MAX_BYTES", str(2 * 1024 * 1024)))
 
-        # The chat `create_document` tool: lets the model save a report generated
-        # from the conversation as an HTML document in the user's own storage
-        # (written as the user, so ACLs apply), with a PDF rendition produced by
-        # the HTML→PDF converter. On by default (still requires a tool-capable chat
-        # provider); set false to disable. Caps the report size.
+        # Document save feature: the model saves a report from the conversation as
+        # an HTML document in the user's own storage (written as the user, so ACLs
+        # apply; PDF rendition produced by the HTML→PDF converter). Saving is driven
+        # by SAVE_REPORT stream markers (deterministic) plus a folder-exploration
+        # tool — there is no save tool the model can misfire. On by default; caps
+        # the saved report size.
         self.chat_document_tool_enabled = _bool("CSAI_CHAT_DOCUMENT_TOOL", True)
         self.chat_document_max_bytes = int(_env("CSAI_CHAT_DOCUMENT_MAX_BYTES", str(5 * 1024 * 1024)))
 

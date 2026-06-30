@@ -52,8 +52,8 @@ def test_web_tools_off_by_default():
     assert c.web_search_enabled is False
     names = {t.name for t in build_tools(c)}
     assert "web_search" not in names and "fetch_page" not in names
-    # create_document is on by default (covered in test_create_document_tool.py).
-    assert "create_document" in names
+    # the document feature (folder exploration; marker-driven save) is on by default.
+    assert "list_folders" in names
 
 
 def test_build_tools_includes_web_search_when_enabled():

@@ -1,6 +1,6 @@
 """HTML documents → inline PDF rendition + page-1 preview images + extracted text.
 
-A full-document HTML file (incl. the reports the chat ``create_document`` tool
+A full-document HTML file (incl. chat-generated reports the SAVE_REPORT markers
 writes) is rendered to PDF so it gets the same inline preview surface as PDF and
 Office files. Two backends, fidelity-ordered:
 

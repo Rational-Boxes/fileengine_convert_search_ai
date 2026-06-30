@@ -1,11 +1,11 @@
-"""Unit tests for the create_document chat tool (writes an HTML report to
-FileEngine as the user). Uses an in-memory fake ManagedFiles."""
-import pytest
-
+"""Unit tests for the document-save layer: folder exploration (list_folders),
+the SAVE_REPORT stream-marker parser, and the shared save helper that writes a
+report into FileEngine as the user. Saving is marker-driven (no save tool)."""
 from convert_search_ai.config import Config
 from convert_search_ai.llm_tools import (
-    CreateDocumentTool, ListFoldersTool, ToolContext, build_tools,
-    wrap_html_document, _norm_path, _safe_name,
+    ListFoldersTool, ToolContext, build_tools, markdown_to_html, parse_report_markers,
+    report_location, save_report_document, wrap_html_document, ReportSaveError,
+    _norm_path, _safe_name,
 )
 
 
@@ -19,7 +19,7 @@ class _Entry:
 
 
 class FakeMF:
-    """Mimics the ManagedFiles bits the tool uses: dir/mkdir/touch/put/close."""
+    """Mimics the ManagedFiles bits used: dir/mkdir/touch/put/close."""
     def __init__(self):
         self.tree = {"": [_Entry("rep", "Reports")]}   # root has a Reports folder
         self.files = {}      # uid -> name
@@ -55,109 +55,69 @@ class _Ident:
     user, tenant, roles = "alice", "default", []
 
 
-def _tool(mf):
-    return CreateDocumentTool(client_factory=lambda identity, config: mf)
-
-
 def _ctx():
     return ToolContext(identity=_Ident(), config=Config())
 
 
 # --------------------------------------------------------------------------- #
-# Happy path
+# Shared save helper (used by the marker path)
 # --------------------------------------------------------------------------- #
 
-def test_writes_html_report_to_existing_folder():
+def test_save_report_document_writes_and_creates_folders():
     mf = FakeMF()
-    out = _tool(mf).run(
-        {"path": "/Reports", "filename": "q3", "title": "Q3",
-         "html": "<h1>Q3</h1><p>Body</p>"}, _ctx())
-    assert "/Reports/q3.html" in out.text
-    uid, data = mf.puts[-1]
-    assert mf.files[uid] == "q3.html"
-    assert data.startswith(b"<!doctype html>")     # wrapped into a full document
-    assert b"<h1>Q3</h1>" in data
-    assert mf.closed is True                        # client cleaned up
-
-
-def test_appends_html_extension_only_when_missing():
-    mf = FakeMF()
-    _tool(mf).run({"path": "/Reports", "filename": "report.html",
-                   "html": "<p>x</p>"}, _ctx())
-    assert mf.files[mf.puts[-1][0]] == "report.html"   # not report.html.html
-
-
-# --------------------------------------------------------------------------- #
-# Destination confirmation / folder creation
-# --------------------------------------------------------------------------- #
-
-def test_missing_folder_asks_instead_of_writing():
-    mf = FakeMF()
-    out = _tool(mf).run({"path": "/Nope", "filename": "x", "html": "<p>y</p>"}, _ctx())
-    assert "does not exist" in out.text and "create_folders" in out.text
-    assert mf.puts == []                            # nothing written
-
-
-def test_create_folders_makes_missing_path():
-    mf = FakeMF()
-    out = _tool(mf).run(
-        {"path": "/New/Sub", "filename": "x", "html": "<p>y</p>",
-         "create_folders": True}, _ctx())
-    assert "/New/Sub/x.html" in out.text
-    assert len(mf.puts) == 1
-    # both path segments were created
+    uid, loc, n = save_report_document(
+        _Ident(), Config(), path="/New/Deep", filename="r", title="R",
+        body="# H\n\n**b**", create_folders=True, client_factory=lambda i, c: mf)
+    assert loc == report_location("/New/Deep", "r") == "/New/Deep/r.html"
+    assert n > 0
+    saved = mf.puts[-1][1].decode()
+    assert saved.startswith("<!doctype html>") and "<h1>" in saved and "<strong>b</strong>" in saved
+    assert mf.closed is True
     names = {e.name for entries in mf.tree.values() for e in entries}
-    assert {"New", "Sub"} <= names
+    assert {"New", "Deep"} <= names
 
 
-def test_root_path_writes_at_top_level():
+def test_save_report_document_appends_html_extension_only_when_missing():
     mf = FakeMF()
-    out = _tool(mf).run({"path": "/", "filename": "top", "html": "<p>y</p>"}, _ctx())
-    assert "/top.html" in out.text
-    assert mf.puts and mf.files[mf.puts[-1][0]] == "top.html"
+    _, loc, _ = save_report_document(_Ident(), Config(), path="/Reports", filename="report.html",
+                                     title="", body="<p>x</p>", create_folders=False,
+                                     client_factory=lambda i, c: mf)
+    assert loc == "/Reports/report.html" and mf.files[mf.puts[-1][0]] == "report.html"
 
 
-# --------------------------------------------------------------------------- #
-# Validation + safety
-# --------------------------------------------------------------------------- #
-
-def test_requires_filename_and_some_content():
+def test_save_report_document_missing_folder_raises():
     mf = FakeMF()
-    # no filename -> error
-    assert "error" in _tool(mf).run({"path": "/", "filename": "", "html": "x"}, _ctx()).text
-    # filename but no html AND no inline reply to fall back to -> error
-    assert "error" in _tool(mf).run({"path": "/", "filename": "a"}, _ctx()).text
+    try:
+        save_report_document(_Ident(), Config(), path="/Nope", filename="r", title="R",
+                             body="x", create_folders=False, client_factory=lambda i, c: mf)
+        assert False, "expected ReportSaveError"
+    except ReportSaveError as e:
+        assert e.kind == "missing_folder" and "/Nope" in e.missing_path
+
+
+def test_save_report_document_rejects_empty_and_oversized():
+    mf = FakeMF()
+    for body in ("", "   "):
+        try:
+            save_report_document(_Ident(), Config(), path="/Reports", filename="r", title="",
+                                 body=body, create_folders=False, client_factory=lambda i, c: mf)
+            assert False
+        except ReportSaveError as e:
+            assert e.kind == "empty"
+    try:
+        save_report_document(_Ident(), Config(), path="/Reports", filename="r", title="",
+                             body="x" * 5000, create_folders=False,
+                             client_factory=lambda i, c: mf, max_bytes=100)
+        assert False
+    except ReportSaveError as e:
+        assert e.kind == "too_large"
     assert mf.puts == []
 
 
-# --------------------------------------------------------------------------- #
-# Reply fallback — save the report the model wrote inline (no html arg)
-# --------------------------------------------------------------------------- #
-
-def test_saves_inline_reply_when_html_omitted():
-    mf = FakeMF()
-    ctx = _ctx()
-    ctx.answer_text = "# Q3 Report\n\nRevenue is **up**.\n\n- north\n- south\n"
-    out = _tool(mf).run({"path": "/Reports", "filename": "q3"}, ctx)   # no html arg
-    assert "/Reports/q3.html" in out.text
-    saved = mf.puts[-1][1].decode()
-    assert "<h1>" in saved and "<strong>up</strong>" in saved and "<li>north</li>" in saved
-
-
-def test_explicit_html_arg_takes_precedence_over_reply():
-    mf = FakeMF()
-    ctx = _ctx()
-    ctx.answer_text = "fallback text that should be ignored"
-    _tool(mf).run({"path": "/Reports", "filename": "q3", "html": "<h2>Explicit</h2>"}, ctx)
-    saved = mf.puts[-1][1].decode()
-    assert "<h2>Explicit</h2>" in saved and "fallback text" not in saved
-
-
-def test_markdown_to_html_converts_and_passes_through_html():
-    from convert_search_ai.llm_tools import markdown_to_html
-    assert "<h1>" in markdown_to_html("# Title")
-    assert "<table>" in markdown_to_html("| a | b |\n|---|---|\n| 1 | 2 |")
-    assert markdown_to_html("<h1>already</h1>") == "<h1>already</h1>"
+def test_filename_cannot_traverse_paths():
+    assert _safe_name("../../etc/passwd") == "etcpasswd"
+    assert _safe_name("a/b\\c.html") == "abc.html"
+    assert _safe_name("   ") == ""
 
 
 # --------------------------------------------------------------------------- #
@@ -165,7 +125,6 @@ def test_markdown_to_html_converts_and_passes_through_html():
 # --------------------------------------------------------------------------- #
 
 def test_parse_report_markers_extracts_target_and_body():
-    from convert_search_ai.llm_tools import parse_report_markers
     text = ('preamble\n[[SAVE_REPORT path="/A/B" file="rep" title="My Report"]]\n'
             '# Body\n\ntext\n[[/SAVE_REPORT]]\npostamble')
     reps = parse_report_markers(text)
@@ -176,86 +135,26 @@ def test_parse_report_markers_extracts_target_and_body():
 
 
 def test_parse_report_markers_cutoff_is_incomplete():
-    from convert_search_ai.llm_tools import parse_report_markers
     reps = parse_report_markers('[[SAVE_REPORT path="/A" file="x"]]\n# Partial')
     assert len(reps) == 1 and reps[0].complete is False and reps[0].body == "# Partial"
 
 
 def test_parse_report_markers_ignores_blocks_missing_file_or_body():
-    from convert_search_ai.llm_tools import parse_report_markers
     assert parse_report_markers('[[SAVE_REPORT path="/A"]]\nbody\n[[/SAVE_REPORT]]') == []  # no file
     assert parse_report_markers('[[SAVE_REPORT file="x"]]\n[[/SAVE_REPORT]]') == []          # empty body
 
 
-def test_save_report_document_writes_and_creates_folders():
-    from convert_search_ai.llm_tools import save_report_document, report_location
-    mf = FakeMF()
-    uid, loc, n = save_report_document(
-        _Ident(), Config(), path="/New/Deep", filename="r", title="R",
-        body="# H\n\n**b**", create_folders=True, client_factory=lambda i, c: mf)
-    assert loc == report_location("/New/Deep", "r") == "/New/Deep/r.html"
-    assert n > 0 and "<h1>" in mf.puts[-1][1].decode()
+def test_markdown_to_html_converts_and_passes_through_html():
+    assert "<h1>" in markdown_to_html("# Title")
+    assert "<table>" in markdown_to_html("| a | b |\n|---|---|\n| 1 | 2 |")
+    assert markdown_to_html("<h1>already</h1>") == "<h1>already</h1>"
 
-
-def test_save_report_document_missing_folder_raises():
-    from convert_search_ai.llm_tools import save_report_document, ReportSaveError
-    mf = FakeMF()
-    try:
-        save_report_document(_Ident(), Config(), path="/Nope", filename="r", title="R",
-                             body="x", create_folders=False, client_factory=lambda i, c: mf)
-        assert False, "expected ReportSaveError"
-    except ReportSaveError as e:
-        assert e.kind == "missing_folder" and "/Nope" in e.missing_path
-
-
-def test_filename_cannot_traverse_paths():
-    # Path separators / traversal are stripped from the file name.
-    assert _safe_name("../../etc/passwd") == "etcpasswd"
-    assert _safe_name("a/b\\c.html") == "abc.html"
-    assert _safe_name("   ") == ""
-
-
-def test_oversized_report_is_rejected():
-    mf = FakeMF()
-    tool = CreateDocumentTool(max_bytes=100, client_factory=lambda i, c: mf)
-    out = tool.run({"path": "/", "filename": "big", "html": "<p>" + "x" * 500 + "</p>"}, _ctx())
-    assert "too large" in out.text
-    assert mf.puts == []
-
-
-def test_write_failure_is_fail_soft():
-    mf = FakeMF()
-
-    def boom(*a, **k):
-        raise RuntimeError("core read-only")
-    mf.put = boom
-    out = _tool(mf).run({"path": "/Reports", "filename": "x", "html": "<p>y</p>"}, _ctx())
-    assert "error" in out.text.lower()
-    assert mf.closed is True            # still cleaned up
-
-
-# --------------------------------------------------------------------------- #
-# Document wrapping + tool registration
-# --------------------------------------------------------------------------- #
 
 def test_wrap_passes_through_complete_documents():
     full = "<!DOCTYPE html><html><body>already</body></html>"
     assert wrap_html_document("T", full) == full
     wrapped = wrap_html_document("My Title", "<p>body</p>")
-    assert wrapped.startswith("<!doctype html>")
-    assert "<title>My Title</title>" in wrapped
-    assert "<p>body</p>" in wrapped
-
-
-def test_build_tools_includes_document_tools_without_web():
-    names = {t.name for t in build_tools(Config(), include_web=False)}
-    assert {"list_folders", "create_document"} <= names
-
-
-def test_build_tools_can_disable_document_tools(monkeypatch):
-    monkeypatch.setenv("CSAI_CHAT_DOCUMENT_TOOL", "false")
-    names = {t.name for t in build_tools(Config(), include_web=False)}
-    assert "create_document" not in names and "list_folders" not in names
+    assert wrapped.startswith("<!doctype html>") and "<title>My Title</title>" in wrapped
 
 
 # --------------------------------------------------------------------------- #
@@ -278,8 +177,7 @@ def _lister(mf):
 
 def test_list_folders_lists_subfolders_and_files():
     out = _lister(_browse_mf()).run({"path": "/"}, _ctx())
-    assert "Projects" in out.text and "Reports" in out.text
-    assert "notes.txt" in out.text
+    assert "Projects" in out.text and "Reports" in out.text and "notes.txt" in out.text
 
 
 def test_list_folders_drills_into_subfolder():
@@ -293,11 +191,25 @@ def test_list_folders_missing_path_is_guided_not_fatal():
 
 
 def test_list_folders_defaults_to_root():
-    out = _lister(_browse_mf()).run({}, _ctx())
-    assert "Contents of /" in out.text
+    assert "Contents of /" in _lister(_browse_mf()).run({}, _ctx()).text
 
 
 def test_norm_path_drops_traversal_and_blanks():
     assert _norm_path("//Projects/../Alpha/") == "/Projects/Alpha"
-    assert _norm_path("") == "/"
-    assert _norm_path("/") == "/"
+    assert _norm_path("") == "/" and _norm_path("/") == "/"
+
+
+# --------------------------------------------------------------------------- #
+# Tool set — saving is marker-driven, no save tool is offered
+# --------------------------------------------------------------------------- #
+
+def test_build_tools_offers_only_folder_exploration_for_documents():
+    names = {t.name for t in build_tools(Config(), include_web=False)}
+    assert "list_folders" in names
+    assert "create_document" not in names      # obsolete tool removed
+
+
+def test_build_tools_can_disable_document_feature(monkeypatch):
+    monkeypatch.setenv("CSAI_CHAT_DOCUMENT_TOOL", "false")
+    names = {t.name for t in build_tools(Config(), include_web=False)}
+    assert "list_folders" not in names
