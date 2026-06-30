@@ -75,6 +75,12 @@ class Config:
 
         # --- LDAP — the auth/role authority (mirrors mcp + the bridges) ---
         self.ldap_uri = _env("FILEENGINE_LDAP_ENDPOINT", "ldap://localhost:1389")
+        # Read-only replica directory for failover (REPLICATION_FAILOVER.md). When the
+        # master directory is unreachable, auth falls back to this replica. Failover is
+        # OFF unless set (or FILEENGINE_LDAP_REPLICA_ENABLED -> ldap://localhost:1389).
+        self.ldap_uri_replica = _env("FILEENGINE_LDAP_ENDPOINT_REPLICA", "")
+        if not self.ldap_uri_replica and _bool("FILEENGINE_LDAP_REPLICA_ENABLED", False):
+            self.ldap_uri_replica = "ldap://localhost:1389"
         self.ldap_domain = _env("FILEENGINE_LDAP_DOMAIN", "dc=rationalboxes,dc=com")
         self.ldap_user_base = _env("FILEENGINE_LDAP_USER_BASE", "ou=users,dc=rationalboxes,dc=com")
         self.ldap_tenant_base = _env("FILEENGINE_LDAP_TENANT_BASE", "ou=tenants,dc=rationalboxes,dc=com")
@@ -87,6 +93,25 @@ class Config:
         self.pg_database = _env("CSAI_PG_DATABASE", "convert_search_ai")
         self.pg_user = _env("CSAI_PG_USER", "fileengine_user")
         self.pg_password = _env("CSAI_PG_PASSWORD", "fileengine_password")
+
+        # --- Read-only replica (disconnect fault tolerance; REPLICATION_FAILOVER.md) ---
+        # The master (above) is the primary for all reads + writes. When it is
+        # unreachable, reads fall back to this on-prem replica (read-only) and writes
+        # are rejected. Failover is OFF unless a replica host is configured; the host
+        # defaults to localhost when enabled. Replica creds default to the master's.
+        self.pg_replica_host = _env("CSAI_PG_REPLICA_HOST", "")
+        if not self.pg_replica_host and _bool("CSAI_PG_REPLICA_ENABLED", False):
+            self.pg_replica_host = "localhost"
+        self.pg_replica_port = int(_env("CSAI_PG_REPLICA_PORT", str(self.pg_port)))
+        self.pg_replica_database = _env("CSAI_PG_REPLICA_DATABASE", self.pg_database)
+        self.pg_replica_user = _env("CSAI_PG_REPLICA_USER", self.pg_user)
+        self.pg_replica_password = _env("CSAI_PG_REPLICA_PASSWORD", self.pg_password)
+        # Circuit-breaker cooldown before the primary is re-probed (seconds).
+        self.failover_cooldown_s = int(_env("CSAI_FAILOVER_COOLDOWN_S", "30"))
+        # Sleep/poll back-off when the core is read-only (writes rejected during a
+        # primary-DB failover): the ingest worker pauses this long between retries
+        # of its un-acked events instead of dropping them. See ingest.py.
+        self.failover_poll_interval_s = float(_env("CSAI_FAILOVER_POLL_INTERVAL_S", "5"))
 
         # --- Event ingestion — consumes the core publisher's stream (EVENT_CONTRACT.md) ---
         self.redis_host = _first("FILEENGINE_REDIS_HOST", "REDDIS_HOST", "localhost")
@@ -212,3 +237,20 @@ class Config:
             f"host={self.pg_host} port={self.pg_port} dbname={self.pg_database} "
             f"user={self.pg_user} password={self.pg_password}"
         )
+
+    @property
+    def pg_replica_enabled(self) -> bool:
+        """Postgres read-only failover is active only when a replica is configured."""
+        return bool(self.pg_replica_host)
+
+    @property
+    def pg_replica_dsn(self) -> str:
+        return (
+            f"host={self.pg_replica_host} port={self.pg_replica_port} "
+            f"dbname={self.pg_replica_database} "
+            f"user={self.pg_replica_user} password={self.pg_replica_password}"
+        )
+
+    @property
+    def ldap_replica_enabled(self) -> bool:
+        return bool(self.ldap_uri_replica)

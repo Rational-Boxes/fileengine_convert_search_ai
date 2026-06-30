@@ -27,9 +27,9 @@ class ChunkStore:
     def __init__(self, config: Config):
         self.config = config
 
-    def _conn(self, tenant: str):
+    def _conn(self, tenant: str, readonly: bool = False):
         from .db import connect_for_tenant
-        return connect_for_tenant(self.config, tenant)
+        return connect_for_tenant(self.config, tenant, readonly=readonly)
 
     def replace(self, tenant: str, file_uid: str,
                 items: List[Tuple[int, str, Sequence[float]]]) -> None:
@@ -51,7 +51,7 @@ class ChunkStore:
 
     def ann_search(self, tenant: str, query_embedding: Sequence[float], k: int) -> List[RetrievedChunk]:
         ql = _vec_literal(query_embedding)
-        with self._conn(tenant) as conn, conn.cursor() as cur:
+        with self._conn(tenant, readonly=True) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT file_uid, ordinal, text, embedding <=> %s::vector AS distance "
                 "FROM chunks WHERE embedding IS NOT NULL "

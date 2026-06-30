@@ -16,6 +16,8 @@ def reconcile_tenant(mf, pipeline, tenant: str, *, max_files: Optional[int] = No
     """Depth-first walk of the tenant's tree, converting each file. Returns counts."""
     from fileengine import ROOT_UID
 
+    from ._client import FileEngineError
+
     counts = {"files": 0, "converted": 0, "skipped": 0, "unsupported": 0,
               "missing": 0, "error": 0}
     stack = [ROOT_UID]
@@ -27,8 +29,14 @@ def reconcile_tenant(mf, pipeline, tenant: str, *, max_files: Optional[int] = No
             continue
         seen.add(uid)
 
-        entries = mf.dir(uid, tenant=tenant)
-        if not entries:  # False or empty
+        # A directory may vanish or be inaccessible between listing and visiting
+        # during a live walk — skip it rather than abort the whole sweep.
+        try:
+            entries = mf.dir(uid, tenant=tenant)
+        except FileEngineError:
+            log.debug("reconcile: could not list %s; skipping", uid)
+            continue
+        if not entries:  # empty directory
             continue
         for e in entries:
             if e.is_container:                   # DirectoryEntry.is_container is a property

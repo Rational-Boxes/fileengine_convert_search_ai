@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 
+from convert_search_ai._client import NotFoundError
 from convert_search_ai.store import DocStatus
 
 
@@ -42,11 +43,15 @@ class FakeMF:
 
     def stat(self, uid, tenant=None, **kw):
         f = self.files.get(uid)
-        return FakeInfo(uid, f["name"], f["version"], f["dir"]) if f else None
+        if f is None:
+            raise NotFoundError("file does not exist", operation="stat", uid=uid)
+        return FakeInfo(uid, f["name"], f["version"], f["dir"])
 
     def get(self, uid, tenant=None, **kw):
         f = self.files.get(uid)
-        return io.BytesIO(f["content"]) if f else False
+        if f is None:
+            raise NotFoundError("file does not exist", operation="get", uid=uid)
+        return io.BytesIO(f["content"])
 
     def touch(self, parent_uid, name, tenant=None, **kw):
         self._n += 1

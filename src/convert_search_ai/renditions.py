@@ -56,10 +56,11 @@ class RenditionWriter:
             name = rendition_name(version, r.fmt, r.ext)
             if name in existing:
                 continue
+            # touch + put raise on failure (e.g. WriteUnavailableError while the
+            # core is read-only during a failover) — propagated so the caller can
+            # retry/reconcile rather than silently dropping the rendition.
             rend_uid = self.mf.touch(file_uid, name, tenant=tenant)
-            if not rend_uid:
-                continue
-            if self.mf.put(rend_uid, r.data, tenant=tenant) is not False:
-                written.append(name)
-                existing.add(name)
+            self.mf.put(rend_uid, r.data, tenant=tenant)
+            written.append(name)
+            existing.add(name)
         return written
