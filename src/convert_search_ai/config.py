@@ -170,6 +170,11 @@ class Config:
         self.chat_model = _env("CSAI_CHAT_MODEL", "claude-sonnet-4-6")
         self.chat_base_url = _env("CSAI_CHAT_BASE_URL", "")
         self.chat_api_key = _first("CSAI_CHAT_API_KEY", "OPENAI_API_KEY", "")
+        # Max output tokens per completion. Must be generous: the create_document
+        # tool emits the whole HTML report as a tool-call argument, and a small cap
+        # silently truncates that JSON (the report then fails to save). 1024 was far
+        # too low for report generation.
+        self.chat_max_tokens = int(_env("CSAI_CHAT_MAX_TOKENS", "8192"))
 
         # --- Web search tool (WEB_SEARCH_TOOL_PLAN; OFF by default) ---
         # The chat web_search tool. `enabled` is the master switch (off by default —

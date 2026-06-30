@@ -35,15 +35,17 @@ def make_embedding_provider(config) -> EmbeddingProvider:
 def make_chat_provider(config) -> ChatProvider:
     name = (getattr(config, "chat_provider", "") or "anthropic").lower()
     model = getattr(config, "chat_model", "") or "claude-sonnet-4-6"
+    max_tokens = int(getattr(config, "chat_max_tokens", 8192))
     if name == "anthropic":
         from .chat import AnthropicChatProvider
-        return AnthropicChatProvider(model=model)
+        return AnthropicChatProvider(model=model, max_tokens=max_tokens)
     if name in _OPENAI_COMPATIBLE:
         from .chat import OpenAICompatibleChatProvider
         base_url = getattr(config, "chat_base_url", "") or (
             _OLLAMA_DEFAULT_BASE_URL if name == "ollama" else None)
         return OpenAICompatibleChatProvider(
-            model=model, base_url=base_url, api_key=getattr(config, "chat_api_key", "") or None)
+            model=model, base_url=base_url,
+            api_key=getattr(config, "chat_api_key", "") or None, max_tokens=max_tokens)
     if name in ("echo", "fake"):
         from .chat import EchoChatProvider
         return EchoChatProvider()

@@ -60,6 +60,11 @@ def test_openai_compatible_chat_uses_base_url(monkeypatch):
     assert p.__class__.__name__ == "OpenAICompatibleChatProvider"
     assert p.model_id == "gpt-4o-mini" and p.base_url == "https://api.example.com/v1"
     assert p._key == "sk-test"
+    # The token budget must be wired from config — a low default truncates the
+    # create_document tool's HTML argument and the report fails to save.
+    assert p.max_tokens == 8192                       # generous default
+    monkeypatch.setenv("CSAI_CHAT_MAX_TOKENS", "5000")
+    assert make_chat_provider(Config()).max_tokens == 5000
 
 
 def test_ollama_chat_defaults_base_url_and_needs_no_key(monkeypatch):

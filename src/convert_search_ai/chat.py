@@ -53,8 +53,11 @@ _INSTRUCTIONS_DOCUMENT = (
     "well-structured HTML (headings, paragraphs, tables, lists) — it is saved as an "
     "HTML document with an automatic PDF preview. Set create_folders=true when the "
     "user has agreed to create a new folder.\n"
-    "Always actually call create_document to perform the save — don't just say you "
-    "saved it. Report the saved location back to the user."
+    "Critical: a file exists ONLY after create_document returns a success "
+    "confirmation in this turn. Never tell the user a report has been saved unless "
+    "you actually called create_document and received its success message — if you "
+    "haven't called it yet, call it now instead of claiming it's done. If the tool "
+    "returns an error, report that to the user rather than implying success."
 )
 
 

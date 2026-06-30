@@ -7,6 +7,7 @@ lands in P2. ``build_tools(config)`` returns the enabled tools — empty unless
 from __future__ import annotations
 
 import html as _htmllib
+import logging
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -15,6 +16,8 @@ from urllib.parse import urlparse
 
 from . import audit, guards
 from .config import Config
+
+log = logging.getLogger("convert_search_ai.llm_tools")
 
 
 @dataclass
@@ -357,10 +360,22 @@ class CreateDocumentTool(Tool):
 
     def run(self, args: dict, ctx: ToolContext) -> ToolOutput:
         args = args or {}
+        user = getattr(ctx.identity, "user", "")
+        tenant = getattr(ctx.identity, "tenant", "") or getattr(ctx.config, "tenant", "")
         filename = _safe_name(str(args.get("filename", "")))
         body = args.get("html") or ""
+        # Diagnostic: every invocation, with sizes — so a truncated/empty call (the
+        # classic symptom of a too-small token budget mangling the tool-call args)
+        # is visible rather than looking like "no file written" with no trace.
+        log.info("create_document called: filename=%r path=%r html_len=%d",
+                 filename, args.get("path"), len(str(body)))
         if not filename or not str(body).strip():
-            return ToolOutput(text="(create_document error: 'filename' and 'html' are required)")
+            audit.record(action="create_document", user=user, tenant=tenant,
+                         result="error", reason="missing_args", html_len=len(str(body)))
+            return ToolOutput(text=(
+                "(create_document error: the report content was missing or incomplete "
+                "— this can happen if the report was truncated. Re-send the full HTML "
+                "body in the 'html' argument, with a 'filename' and 'path'.)"))
         title = str(args.get("title", "") or filename).strip()
         path = str(args.get("path", "") or "/")
         create = bool(args.get("create_folders", False))
@@ -368,9 +383,10 @@ class CreateDocumentTool(Tool):
         name = filename if filename.lower().endswith((".html", ".htm")) else filename + ".html"
         document = wrap_html_document(title, str(body)).encode("utf-8")
         if len(document) > self.max_bytes:
+            audit.record(action="create_document", user=user, tenant=tenant,
+                         result="error", reason="too_large", bytes=len(document))
             return ToolOutput(text="(create_document error: the report is too large to save)")
 
-        tenant = getattr(ctx.identity, "tenant", "") or getattr(ctx.config, "tenant", "")
         mf = self._client_factory(ctx.identity, ctx.config)
         try:
             try:
