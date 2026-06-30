@@ -54,3 +54,90 @@ def test_answer_with_history_and_no_context():
     assert [e for e in events if e["type"] == "citations"][0]["citations"] == []
     assert cc.messages == history + [{"role": "user", "content": "now"}]
     assert "no relevant context" in cc.system
+
+
+# --------------------------------------------------------------------------- #
+# Marker-driven report save (the streamed body is diverted to a file)
+# --------------------------------------------------------------------------- #
+
+class _Entry:
+    def __init__(self, uid, name, is_dir=True):
+        self.uid, self.name, self._dir = uid, name, is_dir
+
+    @property
+    def is_container(self):
+        return self._dir
+
+
+class _FakeMF:
+    def __init__(self):
+        self.tree = {"": []}
+        self.files = {}
+        self.puts = []
+        self._n = 0
+
+    def dir(self, uid, tenant=None, **kw):
+        return self.tree.get(uid, [])
+
+    def mkdir(self, parent, name, tenant=None, **kw):
+        self._n += 1
+        uid = f"d{self._n}"
+        self.tree.setdefault(parent, []).append(_Entry(uid, name))
+        self.tree[uid] = []
+        return uid
+
+    def touch(self, parent, name, tenant=None, **kw):
+        self._n += 1
+        uid = f"f{self._n}"
+        self.files[uid] = name
+        return uid
+
+    def put(self, uid, data, tenant=None, **kw):
+        self.puts.append((uid, data))
+        return 1.0
+
+    def close(self):
+        pass
+
+
+class _MarkerChat:
+    """Streams a marker-wrapped report (no tool call)."""
+    def __init__(self, *chunks):
+        self._chunks = chunks
+
+    def stream(self, messages, system=None):
+        for c in self._chunks:
+            yield c
+
+
+def test_marker_wrapped_report_is_saved_to_a_file(monkeypatch):
+    from convert_search_ai import llm_tools
+    mf = _FakeMF()
+    monkeypatch.setattr(llm_tools, "_default_client", lambda identity, config: mf)
+    chat = _MarkerChat(
+        'Sure — saving now.\n[[SAVE_REPORT path="/Reports" file="q3" title="Q3"]]\n',
+        "# Q3 Report\n\nRevenue is **up**.\n\n- north\n- south\n",
+        "[[/SAVE_REPORT]]\nDone!")
+    events = list(ChatService(Config(), retriever=FakeRetriever([]), chat=chat)
+                  .answer(_id(), message="write & save a report"))
+    text = "".join(e["text"] for e in events if e["type"] == "token")
+    assert "Saved the report to /Reports/q3.html" in text          # deterministic confirmation
+    assert mf.files[mf.puts[-1][0]] == "q3.html"                   # file written
+    saved = mf.puts[-1][1].decode()
+    assert "<h1>" in saved and "<strong>up</strong>" in saved      # markdown rendered to HTML
+    # the folder was auto-created (destination came from the marker)
+    assert any(e.name == "Reports" for e in mf.tree[""])
+
+
+def test_marker_cutoff_without_closing_still_saves_with_note(monkeypatch):
+    from convert_search_ai import llm_tools
+    mf = _FakeMF()
+    monkeypatch.setattr(llm_tools, "_default_client", lambda identity, config: mf)
+    chat = _MarkerChat(
+        '[[SAVE_REPORT path="/Reports" file="big"]]\n# Partial\n\nGot cut off mid-stream')
+    events = list(ChatService(Config(), retriever=FakeRetriever([]), chat=chat)
+                  .answer(_id(), message="report"))
+    text = "".join(e["text"] for e in events if e["type"] == "token")
+    assert "Saved the report to /Reports/big.html" in text
+    assert "cut off" in text                                       # truncation noted
+    assert mf.puts

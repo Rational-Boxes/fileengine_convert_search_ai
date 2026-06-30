@@ -11,7 +11,7 @@ import logging
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, NamedTuple, Optional
 from urllib.parse import urlparse
 
 from . import audit, guards
@@ -30,6 +30,7 @@ class ToolContext:
     config: Config
     sources: List[dict] = field(default_factory=list)  # {kind:"web", url, title}
     answer_text: str = ""
+    saved: List[str] = field(default_factory=list)  # locations already written this turn (dedupe)
 
 
 @dataclass
@@ -192,9 +193,13 @@ def _safe_name(name: str) -> str:
     return name[:200]
 
 
+_HTMLISH = re.compile(
+    r"\s*<(?:!doctype|html|h[1-6]|p|div|table|ul|ol|section|article|body|pre|blockquote)\b",
+    re.IGNORECASE)
+
+
 def _looks_like_html(s: str) -> bool:
-    low = s.lstrip()[:200].lower()
-    return low.startswith("<!doctype") or low.startswith("<html") or "<p>" in low or "<h1" in low
+    return bool(_HTMLISH.match(s or ""))
 
 
 def markdown_to_html(text: str) -> str:
@@ -274,6 +279,104 @@ def _norm_path(path: str) -> str:
     segs = [_safe_name(s) for s in (path or "").replace("\\", "/").split("/")]
     segs = [s for s in segs if s]
     return "/" + "/".join(segs)
+
+
+def report_location(path: str, filename: str) -> str:
+    """The canonical '/'-rooted location a report saves to (used for dedupe + UX)."""
+    safe = _safe_name(filename or "")
+    name = safe if safe.lower().endswith((".html", ".htm")) else safe + ".html"
+    segs = [s for s in (path or "").replace("\\", "/").split("/") if s.strip()]
+    return "/".join(["", *segs, name])
+
+
+class ReportSaveError(Exception):
+    """A user-actionable failure saving a report. ``kind`` is one of
+    ``empty`` | ``too_large`` | ``missing_folder`` | ``write``."""
+    def __init__(self, kind: str, message: str, missing_path: str = ""):
+        super().__init__(message)
+        self.kind = kind
+        self.message = message
+        self.missing_path = missing_path
+
+
+def save_report_document(identity, config, *, path: str, filename: str, title: str,
+                         body: str, create_folders: bool, client_factory=None,
+                         max_bytes: int = 5_000_000):
+    """Persist a report (Markdown or HTML ``body``) as an HTML file in the user's
+    storage, written *as the user*. Returns ``(uid, location, byte_len)``; raises
+    :class:`ReportSaveError`. Shared by the create_document tool and the marker-
+    driven save path so both behave identically."""
+    client_factory = client_factory or _default_client
+    safe = _safe_name(filename or "")
+    if not safe:
+        raise ReportSaveError("empty", "a filename is required")
+    body = (body or "").strip()
+    if not body:
+        raise ReportSaveError("empty", "no report content to save")
+    html = body if _looks_like_html(body) else markdown_to_html(body)
+    name = safe if safe.lower().endswith((".html", ".htm")) else safe + ".html"
+    document = wrap_html_document((title or safe).strip(), html).encode("utf-8")
+    if len(document) > max_bytes:
+        raise ReportSaveError("too_large", "the report is too large to save")
+    tenant = getattr(identity, "tenant", "") or getattr(config, "tenant", "")
+    mf = client_factory(identity, config)
+    try:
+        try:
+            parent = _resolve_folder(mf, path or "/", tenant, create=create_folders)
+        except FileNotFoundError as miss:
+            raise ReportSaveError("missing_folder", f"the folder '{miss}' does not exist",
+                                  missing_path=str(miss))
+        uid = mf.touch(parent, name, tenant=tenant)
+        mf.put(uid, document, tenant=tenant)
+    except ReportSaveError:
+        raise
+    except Exception as e:  # WriteUnavailable, PermissionDenied, … — surface as save error
+        raise ReportSaveError("write", f"could not save the report: {e}")
+    finally:
+        _close(mf)
+    return uid, report_location(path, filename), len(document)
+
+
+# Stream markers the model wraps a report in so the app can divert a copy of the
+# streamed body into a file — the destination travels in the START marker, set
+# BEFORE the report is generated. Closing marker OR stream cutoff triggers the save.
+_REPORT_BLOCK = re.compile(
+    r"\[\[\s*SAVE_REPORT\b([^\]]*?)\]\](.*?)(\[\[\s*/\s*SAVE_REPORT\s*\]\]|\Z)",
+    re.IGNORECASE | re.DOTALL)
+_ATTR = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
+
+
+class MarkedReport(NamedTuple):
+    path: str
+    filename: str
+    title: str
+    body: str
+    complete: bool   # False when the closing marker was missing (truncated/cut off)
+
+
+def parse_report_markers(text: str) -> List["MarkedReport"]:
+    """Every ``[[SAVE_REPORT path=… file=… title=…]] … [[/SAVE_REPORT]]`` block in
+    ``text``. An unclosed block (cutoff) is captured to the end with complete=False."""
+    out: List[MarkedReport] = []
+    for m in _REPORT_BLOCK.finditer(text or ""):
+        attrs = dict(_ATTR.findall(m.group(1) or ""))
+        body = (m.group(2) or "").strip()
+        filename = attrs.get("file") or attrs.get("filename") or ""
+        if not filename or not body:
+            continue
+        out.append(MarkedReport(
+            path=attrs.get("path") or "/",
+            filename=filename,
+            title=attrs.get("title") or "",
+            body=body,
+            complete=bool(m.group(3).strip())))
+    return out
+
+
+def strip_report_markers(text: str) -> str:
+    """Remove just the marker delimiters from displayed text (keep the body)."""
+    text = re.sub(r"\[\[\s*SAVE_REPORT\b[^\]]*?\]\]", "", text or "", flags=re.IGNORECASE)
+    return re.sub(r"\[\[\s*/\s*SAVE_REPORT\s*\]\]", "", text, flags=re.IGNORECASE)
 
 
 class ListFoldersTool(Tool):
@@ -410,38 +513,38 @@ class CreateDocumentTool(Tool):
                 "(create_document error: no report content to save. Write the report "
                 "in your reply and call create_document again with 'path' and "
                 "'filename', or pass the report in the 'html' argument.)"))
+        # The reply may carry stream markers (the model wrapped the report); strip
+        # the delimiters so they don't end up inside the saved document.
+        if used_fallback:
+            body = strip_report_markers(body)
         title = str(args.get("title", "") or filename).strip()
         path = str(args.get("path", "") or "/")
         create = bool(args.get("create_folders", False))
-
-        name = filename if filename.lower().endswith((".html", ".htm")) else filename + ".html"
-        document = wrap_html_document(title, str(body)).encode("utf-8")
-        if len(document) > self.max_bytes:
+        if not str(body).strip():
             audit.record(action="create_document", user=user, tenant=tenant,
-                         result="error", reason="too_large", bytes=len(document))
-            return ToolOutput(text="(create_document error: the report is too large to save)")
+                         result="error", reason="missing_content")
+            return ToolOutput(text=(
+                "(create_document error: no report content to save. Write the report "
+                "in your reply, then call create_document with 'path' and 'filename'.)"))
 
-        mf = self._client_factory(ctx.identity, ctx.config)
         try:
-            try:
-                parent = _resolve_folder(mf, path, tenant, create=create)
-            except FileNotFoundError as miss:
+            uid, loc, nbytes = save_report_document(
+                ctx.identity, ctx.config, path=path, filename=filename, title=title,
+                body=body, create_folders=create, client_factory=self._client_factory,
+                max_bytes=self.max_bytes)
+        except ReportSaveError as e:
+            if e.kind == "missing_folder":
                 return ToolOutput(text=(
-                    f"The folder '{miss}' does not exist. Ask the user to confirm the "
-                    f"destination, or call create_document again with create_folders=true "
+                    f"The folder '{e.missing_path}' does not exist. Ask the user to confirm "
+                    f"the destination, or call create_document again with create_folders=true "
                     f"to create it."))
-            uid = mf.touch(parent, name, tenant=tenant)
-            mf.put(uid, document, tenant=tenant)
-        except Exception as e:  # WriteUnavailable, PermissionDenied, etc. — fail soft
-            audit.record(action="create_document", user=getattr(ctx.identity, "user", ""),
-                         tenant=tenant, result="error")
-            return ToolOutput(text=f"(create_document error: could not save the report: {e})")
-        finally:
-            _close(mf)
+            audit.record(action="create_document", user=user, tenant=tenant,
+                         result="error", reason=e.kind)
+            return ToolOutput(text=f"(create_document error: {e.message})")
 
+        ctx.saved.append(loc)
         audit.record(action="create_document", user=user, tenant=tenant, result="ok",
-                     bytes=len(document), source="reply" if used_fallback else "html_arg")
-        loc = "/".join(["", *(s for s in path.replace("\\", "/").split("/") if s.strip()), name])
+                     bytes=nbytes, source="reply" if used_fallback else "html_arg")
         return ToolOutput(text=(
             f"Saved the report to {loc} (file id {uid}). A PDF preview is being "
             f"generated automatically. Let the user know it's ready in their files."))

@@ -160,6 +160,54 @@ def test_markdown_to_html_converts_and_passes_through_html():
     assert markdown_to_html("<h1>already</h1>") == "<h1>already</h1>"
 
 
+# --------------------------------------------------------------------------- #
+# SAVE_REPORT stream markers
+# --------------------------------------------------------------------------- #
+
+def test_parse_report_markers_extracts_target_and_body():
+    from convert_search_ai.llm_tools import parse_report_markers
+    text = ('preamble\n[[SAVE_REPORT path="/A/B" file="rep" title="My Report"]]\n'
+            '# Body\n\ntext\n[[/SAVE_REPORT]]\npostamble')
+    reps = parse_report_markers(text)
+    assert len(reps) == 1
+    r = reps[0]
+    assert (r.path, r.filename, r.title, r.complete) == ("/A/B", "rep", "My Report", True)
+    assert r.body == "# Body\n\ntext"          # preamble/postamble excluded
+
+
+def test_parse_report_markers_cutoff_is_incomplete():
+    from convert_search_ai.llm_tools import parse_report_markers
+    reps = parse_report_markers('[[SAVE_REPORT path="/A" file="x"]]\n# Partial')
+    assert len(reps) == 1 and reps[0].complete is False and reps[0].body == "# Partial"
+
+
+def test_parse_report_markers_ignores_blocks_missing_file_or_body():
+    from convert_search_ai.llm_tools import parse_report_markers
+    assert parse_report_markers('[[SAVE_REPORT path="/A"]]\nbody\n[[/SAVE_REPORT]]') == []  # no file
+    assert parse_report_markers('[[SAVE_REPORT file="x"]]\n[[/SAVE_REPORT]]') == []          # empty body
+
+
+def test_save_report_document_writes_and_creates_folders():
+    from convert_search_ai.llm_tools import save_report_document, report_location
+    mf = FakeMF()
+    uid, loc, n = save_report_document(
+        _Ident(), Config(), path="/New/Deep", filename="r", title="R",
+        body="# H\n\n**b**", create_folders=True, client_factory=lambda i, c: mf)
+    assert loc == report_location("/New/Deep", "r") == "/New/Deep/r.html"
+    assert n > 0 and "<h1>" in mf.puts[-1][1].decode()
+
+
+def test_save_report_document_missing_folder_raises():
+    from convert_search_ai.llm_tools import save_report_document, ReportSaveError
+    mf = FakeMF()
+    try:
+        save_report_document(_Ident(), Config(), path="/Nope", filename="r", title="R",
+                             body="x", create_folders=False, client_factory=lambda i, c: mf)
+        assert False, "expected ReportSaveError"
+    except ReportSaveError as e:
+        assert e.kind == "missing_folder" and "/Nope" in e.missing_path
+
+
 def test_filename_cannot_traverse_paths():
     # Path separators / traversal are stripped from the file name.
     assert _safe_name("../../etc/passwd") == "etcpasswd"

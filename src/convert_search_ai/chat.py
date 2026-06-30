@@ -38,27 +38,29 @@ _INSTRUCTIONS_WEB = (
     "one numbering — and make clear which statements come from the web."
 )
 
-# Appended when the create_document tool is available. The workflow is: explore
-# the user's folders, suggest a real location, get confirmation (offering to
-# create folders), then write — never write to a blindly guessed path.
+# Appended when the document tools are available. Workflow: explore folders,
+# confirm the destination FIRST, then stream the report wrapped in SAVE_REPORT
+# markers — the app diverts the marked body to a file automatically (no fragile
+# giant tool-argument needed).
 _INSTRUCTIONS_DOCUMENT = (
     "If the user asks to save, export, or turn this conversation (or its results) "
     "into a document or report:\n"
-    "1. Use the list_folders tool to explore the user's existing folders (start at "
-    "'/' and drill in) so you understand their layout.\n"
-    "2. Propose a specific destination folder and file name based on what you find, "
-    "and ask the user to confirm or choose another. If a suitable folder doesn't "
-    "exist, offer to create one (e.g. a 'Reports' folder).\n"
-    "3. Write the full report in your reply (well-structured Markdown or HTML — "
-    "headings, paragraphs, tables, lists), then call create_document with just the "
-    "'path' and 'filename' to save it (you can omit 'html' — the report you wrote "
-    "in your reply is saved automatically as an HTML document with a PDF preview). "
-    "Set create_folders=true when the user agreed to create a new folder.\n"
-    "Critical: writing the report in chat does NOT save it — a file exists ONLY "
-    "after you call create_document and it returns a success confirmation this turn. "
-    "Whenever the user wants the report saved, you MUST call create_document; never "
-    "say it's saved unless the tool returned success. If the tool returns an error, "
-    "report that error instead of implying success."
+    "1. Use the list_folders tool to explore the user's folders (start at '/' and "
+    "drill in) so your suggestion matches their layout.\n"
+    "2. Decide the destination FIRST: propose a specific folder + file name and get "
+    "the user's confirmation (offer to create a folder, e.g. 'Reports', if none "
+    "fits). Settle the destination before writing the report.\n"
+    "3. Then write the report wrapped in these markers, with the confirmed "
+    "destination in the opening marker:\n"
+    "   [[SAVE_REPORT path=\"/Confirmed/Folder\" file=\"report-name\" title=\"Report Title\"]]\n"
+    "   ...the full report as Markdown or HTML (headings, paragraphs, tables, lists)...\n"
+    "   [[/SAVE_REPORT]]\n"
+    "Everything between the markers is saved automatically to that path as an HTML "
+    "document with a PDF preview — you do NOT need a separate tool call. Always emit "
+    "the closing [[/SAVE_REPORT]] marker, and put the destination in the opening "
+    "marker whenever you intend to save. Do not claim a report is saved unless you "
+    "emitted the markers (or the create_document tool, still available, returned "
+    "success)."
 )
 
 
@@ -89,8 +91,12 @@ class ChatService:
         doc_citations = self._doc_citations(chunks)
 
         if not tools:
+            answer_parts: List[str] = []
             for delta in self.chat.stream(messages, system=system):
+                answer_parts.append(delta)
                 yield {"type": "token", "text": delta}
+            # Divert any marker-wrapped report from the stream into a saved file.
+            yield from self._save_marked_reports(identity, "".join(answer_parts), [])
             self._audit(identity, chunks, doc_citations, trimmed, web_searches=0)
             yield {"type": "citations", "citations": doc_citations}
             return
@@ -137,11 +143,46 @@ class ChatService:
             elif et == "tool_result":
                 yield {"type": "tool_result", "name": ev.get("name")}
 
+        # Divert any marker-wrapped report into a saved file (skips targets that a
+        # create_document tool call already wrote this turn).
+        yield from self._save_marked_reports(identity, ctx.answer_text, ctx.saved)
+
         citations = doc_citations + web_citations
         self._audit(identity, chunks, citations, trimmed, web_searches=counters["searches"])
         yield {"type": "citations", "citations": citations}
 
     # ----------------------------------------------------------------- helpers
+    def _save_marked_reports(self, identity, answer_text: str, saved: List[str]):
+        """Write any ``[[SAVE_REPORT …]] … [[/SAVE_REPORT]]`` block the model streamed
+        to a file in the user's storage — the destination travels in the START
+        marker (set before the report), and the closing marker OR a stream cutoff
+        triggers the save. Deterministic: no tool call required. Yields confirmation
+        token events. ``saved`` dedupes against create_document tool writes."""
+        from .llm_tools import (ReportSaveError, parse_report_markers,
+                                report_location, save_report_document)
+        for rep in parse_report_markers(answer_text):
+            loc = report_location(rep.path, rep.filename)
+            if loc in saved:
+                continue
+            try:
+                uid, loc, nbytes = save_report_document(
+                    identity, self.config, path=rep.path, filename=rep.filename,
+                    title=rep.title, body=rep.body, create_folders=True)
+            except ReportSaveError as e:
+                audit.record(action="save_report", user=identity.user, tenant=identity.tenant,
+                             result="error", reason=e.kind)
+                yield {"type": "token",
+                       "text": f"\n\n⚠ Could not save the report to {loc}: {e.message}\n"}
+                continue
+            saved.append(loc)
+            audit.record(action="save_report", user=identity.user, tenant=identity.tenant,
+                         result="ok", bytes=nbytes, truncated=not rep.complete)
+            note = "" if rep.complete else (" (note: the report may have been cut off before "
+                                            "completion — regenerate if it looks incomplete)")
+            yield {"type": "token", "text": (
+                f"\n\n✅ Saved the report to {loc} (file {uid}){note}. A PDF preview is "
+                f"being generated.\n")}
+
     def _select_tools(self, web_search: Optional[bool]):
         """Decide which tools to offer this turn. Requires provider tool support.
         Web tools need the global enable + per-message opt-in (or the configured
