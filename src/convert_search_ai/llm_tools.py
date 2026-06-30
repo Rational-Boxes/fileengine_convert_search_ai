@@ -23,10 +23,13 @@ log = logging.getLogger("convert_search_ai.llm_tools")
 @dataclass
 class ToolContext:
     """Per-answer context handed to a tool: who is asking, plus a ``sources``
-    accumulator the chat loop reads back to build citations."""
+    accumulator the chat loop reads back to build citations, and ``answer_text``
+    — the assistant's reply streamed so far this turn, so create_document can save
+    the report the model wrote inline even when it omits the ``html`` argument."""
     identity: object
     config: Config
     sources: List[dict] = field(default_factory=list)  # {kind:"web", url, title}
+    answer_text: str = ""
 
 
 @dataclass
@@ -189,6 +192,25 @@ def _safe_name(name: str) -> str:
     return name[:200]
 
 
+def _looks_like_html(s: str) -> bool:
+    low = s.lstrip()[:200].lower()
+    return low.startswith("<!doctype") or low.startswith("<html") or "<p>" in low or "<h1" in low
+
+
+def markdown_to_html(text: str) -> str:
+    """Render report text to HTML. The model usually writes the inline report as
+    Markdown; convert it so the saved document keeps its formatting. Already-HTML
+    text passes through. Falls back to escaped <pre> if the markdown lib is absent."""
+    text = text or ""
+    if _looks_like_html(text):
+        return text
+    try:
+        import markdown as _md
+        return _md.markdown(text, extensions=["tables", "fenced_code", "sane_lists"])
+    except Exception:
+        return "<pre>" + _htmllib.escape(text) + "</pre>"
+
+
 def wrap_html_document(title: str, body: str) -> str:
     """Wrap a model-supplied HTML *body* in a styled, printable full document. If
     the model already returned a complete document, it is used unchanged."""
@@ -323,35 +345,36 @@ class CreateDocumentTool(Tool):
 
     name = "create_document"
     description = (
-        "Save a report generated from this conversation as a formatted HTML "
-        "document in the user's file storage. ALWAYS confirm the destination "
-        "folder and the file name with the user in your reply BEFORE calling this "
-        "tool — do not guess a location. Provide the report as rich HTML body "
-        "content (headings, paragraphs, tables, lists, emphasis); it is wrapped in "
-        "a styled, printable full HTML document and a PDF preview is generated "
-        "automatically. Returns the saved file's location.")
+        "Save a report you produced in this conversation as a formatted document in "
+        "the user's file storage (an HTML file with an automatic PDF preview). "
+        "IMPORTANT: writing a report in your chat reply does NOT save it — you must "
+        "call this tool. The simplest reliable way: write the full report in your "
+        "reply, then call create_document with just 'path' and 'filename' — your "
+        "reply's report content is saved automatically (you can omit 'html'). "
+        "Optionally pass 'html' to save specific HTML instead of your reply. Confirm "
+        "the destination folder + file name with the user before calling. Returns "
+        "the saved file's location.")
     schema = {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description":
                      "Destination folder path in the user's storage, e.g. '/Reports' "
-                     "or 'Projects/Q3'. Use '/' for the top level. Confirm with the "
-                     "user before calling."},
+                     "or 'Projects/Q3'. Use '/' for the top level."},
             "filename": {"type": "string", "description":
                          "File name without extension ('.html' is appended), e.g. "
                          "'q3-summary'."},
             "title": {"type": "string", "description":
                       "Report title (used as the document <title> and heading)."},
             "html": {"type": "string", "description":
-                     "The report body as HTML — no <html>/<head>/<body> wrapper "
-                     "needed. Use full formatting: <h1>–<h3>, <p>, <ul>/<ol>, "
-                     "<table>, <strong>, <blockquote>, etc."},
+                     "OPTIONAL. The report body as HTML/Markdown. If omitted, the "
+                     "report you wrote in your reply this turn is saved — prefer "
+                     "omitting it and writing the report in your reply."},
             "create_folders": {"type": "boolean", "description":
                                "Create the destination folder (and any missing "
                                "parents) if it does not exist. Only set true after "
                                "the user confirms creating a new folder."},
         },
-        "required": ["path", "filename", "html"],
+        "required": ["path", "filename"],
     }
 
     def __init__(self, *, max_bytes: int = 5_000_000, client_factory=None):
@@ -363,19 +386,30 @@ class CreateDocumentTool(Tool):
         user = getattr(ctx.identity, "user", "")
         tenant = getattr(ctx.identity, "tenant", "") or getattr(ctx.config, "tenant", "")
         filename = _safe_name(str(args.get("filename", "")))
-        body = args.get("html") or ""
-        # Diagnostic: every invocation, with sizes — so a truncated/empty call (the
-        # classic symptom of a too-small token budget mangling the tool-call args)
-        # is visible rather than looking like "no file written" with no trace.
-        log.info("create_document called: filename=%r path=%r html_len=%d",
-                 filename, args.get("path"), len(str(body)))
+        arg_html = str(args.get("html") or "")
+        # Fall back to the report the model wrote in its reply this turn — the common
+        # case is the model shows the report in chat and calls this with only a
+        # destination. Convert that (usually Markdown) to HTML so formatting survives.
+        used_fallback = False
+        if arg_html.strip():
+            body = arg_html
+        else:
+            reply = (getattr(ctx, "answer_text", "") or "").strip()
+            body = markdown_to_html(reply) if reply else ""
+            used_fallback = bool(reply)
+        # Diagnostic: every invocation, with sizes + whether the reply fallback was
+        # used — so a "no file written" never lacks a trace.
+        log.info("create_document called: filename=%r path=%r html_arg_len=%d "
+                 "reply_len=%d fallback=%s", filename, args.get("path"), len(arg_html),
+                 len(getattr(ctx, "answer_text", "") or ""), used_fallback)
         if not filename or not str(body).strip():
             audit.record(action="create_document", user=user, tenant=tenant,
-                         result="error", reason="missing_args", html_len=len(str(body)))
+                         result="error", reason="missing_content",
+                         html_arg_len=len(arg_html), reply_len=len(getattr(ctx, "answer_text", "") or ""))
             return ToolOutput(text=(
-                "(create_document error: the report content was missing or incomplete "
-                "— this can happen if the report was truncated. Re-send the full HTML "
-                "body in the 'html' argument, with a 'filename' and 'path'.)"))
+                "(create_document error: no report content to save. Write the report "
+                "in your reply and call create_document again with 'path' and "
+                "'filename', or pass the report in the 'html' argument.)"))
         title = str(args.get("title", "") or filename).strip()
         path = str(args.get("path", "") or "/")
         create = bool(args.get("create_folders", False))
@@ -405,8 +439,8 @@ class CreateDocumentTool(Tool):
         finally:
             _close(mf)
 
-        audit.record(action="create_document", user=getattr(ctx.identity, "user", ""),
-                     tenant=tenant, result="ok", bytes=len(document))
+        audit.record(action="create_document", user=user, tenant=tenant, result="ok",
+                     bytes=len(document), source="reply" if used_fallback else "html_arg")
         loc = "/".join(["", *(s for s in path.replace("\\", "/").split("/") if s.strip()), name])
         return ToolOutput(text=(
             f"Saved the report to {loc} (file id {uid}). A PDF preview is being "

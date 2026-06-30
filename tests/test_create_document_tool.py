@@ -121,11 +121,43 @@ def test_root_path_writes_at_top_level():
 # Validation + safety
 # --------------------------------------------------------------------------- #
 
-def test_requires_filename_and_html():
+def test_requires_filename_and_some_content():
     mf = FakeMF()
+    # no filename -> error
     assert "error" in _tool(mf).run({"path": "/", "filename": "", "html": "x"}, _ctx()).text
-    assert "error" in _tool(mf).run({"path": "/", "filename": "a", "html": ""}, _ctx()).text
+    # filename but no html AND no inline reply to fall back to -> error
+    assert "error" in _tool(mf).run({"path": "/", "filename": "a"}, _ctx()).text
     assert mf.puts == []
+
+
+# --------------------------------------------------------------------------- #
+# Reply fallback — save the report the model wrote inline (no html arg)
+# --------------------------------------------------------------------------- #
+
+def test_saves_inline_reply_when_html_omitted():
+    mf = FakeMF()
+    ctx = _ctx()
+    ctx.answer_text = "# Q3 Report\n\nRevenue is **up**.\n\n- north\n- south\n"
+    out = _tool(mf).run({"path": "/Reports", "filename": "q3"}, ctx)   # no html arg
+    assert "/Reports/q3.html" in out.text
+    saved = mf.puts[-1][1].decode()
+    assert "<h1>" in saved and "<strong>up</strong>" in saved and "<li>north</li>" in saved
+
+
+def test_explicit_html_arg_takes_precedence_over_reply():
+    mf = FakeMF()
+    ctx = _ctx()
+    ctx.answer_text = "fallback text that should be ignored"
+    _tool(mf).run({"path": "/Reports", "filename": "q3", "html": "<h2>Explicit</h2>"}, ctx)
+    saved = mf.puts[-1][1].decode()
+    assert "<h2>Explicit</h2>" in saved and "fallback text" not in saved
+
+
+def test_markdown_to_html_converts_and_passes_through_html():
+    from convert_search_ai.llm_tools import markdown_to_html
+    assert "<h1>" in markdown_to_html("# Title")
+    assert "<table>" in markdown_to_html("| a | b |\n|---|---|\n| 1 | 2 |")
+    assert markdown_to_html("<h1>already</h1>") == "<h1>already</h1>"
 
 
 def test_filename_cannot_traverse_paths():

@@ -49,15 +49,16 @@ _INSTRUCTIONS_DOCUMENT = (
     "2. Propose a specific destination folder and file name based on what you find, "
     "and ask the user to confirm or choose another. If a suitable folder doesn't "
     "exist, offer to create one (e.g. a 'Reports' folder).\n"
-    "3. Once the user confirms, call create_document with the report as "
-    "well-structured HTML (headings, paragraphs, tables, lists) — it is saved as an "
-    "HTML document with an automatic PDF preview. Set create_folders=true when the "
-    "user has agreed to create a new folder.\n"
-    "Critical: a file exists ONLY after create_document returns a success "
-    "confirmation in this turn. Never tell the user a report has been saved unless "
-    "you actually called create_document and received its success message — if you "
-    "haven't called it yet, call it now instead of claiming it's done. If the tool "
-    "returns an error, report that to the user rather than implying success."
+    "3. Write the full report in your reply (well-structured Markdown or HTML — "
+    "headings, paragraphs, tables, lists), then call create_document with just the "
+    "'path' and 'filename' to save it (you can omit 'html' — the report you wrote "
+    "in your reply is saved automatically as an HTML document with a PDF preview). "
+    "Set create_folders=true when the user agreed to create a new folder.\n"
+    "Critical: writing the report in chat does NOT save it — a file exists ONLY "
+    "after you call create_document and it returns a success confirmation this turn. "
+    "Whenever the user wants the report saved, you MUST call create_document; never "
+    "say it's saved unless the tool returned success. If the tool returns an error, "
+    "report that error instead of implying success."
 )
 
 
@@ -120,10 +121,16 @@ class ChatService:
             return "\n\n".join(lines)
 
         specs = [{"name": t.name, "description": t.description, "schema": t.schema} for t in tools]
+        answer_parts: List[str] = []
         for ev in self.chat.run_tools(messages, system=system, tools=specs, execute=execute,
                                       max_iterations=self.config.web_max_iterations):
             et = ev.get("type")
             if et == "text":
+                answer_parts.append(ev.get("text", ""))
+                # Keep the running reply on the context so create_document can save
+                # the report the model wrote inline (executed mid-stream, before the
+                # tool_call event below is processed).
+                ctx.answer_text = "".join(answer_parts)
                 yield {"type": "token", "text": ev.get("text", "")}
             elif et == "tool_call":
                 yield {"type": "tool_call", "name": ev.get("name"), "args": ev.get("args")}
