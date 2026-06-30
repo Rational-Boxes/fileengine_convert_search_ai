@@ -81,6 +81,14 @@ class ConversionPipeline:
 
         written = self.writer.write(file_uid, version, result.renditions, tenant)
 
+        # Now that the current version's renditions exist, drop any left over from
+        # superseded versions (all formats) so stale previews don't accumulate or
+        # get served for the wrong content.
+        pruned = self.writer.prune_old_versions(file_uid, version, tenant)
+        if pruned:
+            log.info("pruned %d stale rendition(s) from old versions of %s: %s",
+                     len(pruned), file_uid, ", ".join(sorted(pruned)))
+
         # Index for vector retrieval (M3) when wired and there is text to chunk.
         # A force re-render of an already-indexed version writes any missing
         # renditions but does not re-embed unchanged content.

@@ -1,6 +1,8 @@
 """Unit tests for rendition naming + idempotent writes (fake ManagedFiles)."""
 from convert_search_ai.plugins.base import Rendition
-from convert_search_ai.renditions import RenditionWriter, rendition_name
+from convert_search_ai.renditions import (
+    RenditionWriter, parse_rendition_name, rendition_name,
+)
 from fakes import FakeMF
 
 
@@ -46,3 +48,60 @@ def test_new_version_supersedes_with_new_name():
     w.write("file1", "v9", [Rendition("preview", "png", b"A", "image/png")], "default")
     w.write("file1", "v10", [Rendition("preview", "png", b"B", "image/png")], "default")
     assert set(mf.renditions["file1"]) == {"v9-preview.png", "v10-preview.png"}
+
+
+def test_parse_rendition_name_roundtrip_and_rejects_others():
+    assert parse_rendition_name("v9-preview.png") == ("v9", "preview", "png")
+    assert parse_rendition_name("20260623-1-model.xkt") == ("20260623-1", "model", "xkt")
+    # not renditions: unknown fmt, no dash, no extension
+    assert parse_rendition_name("report.pdf") is None
+    assert parse_rendition_name("v9-notes.txt") is None
+    assert parse_rendition_name("plain") is None
+
+
+def test_prune_removes_all_old_version_formats_keeps_current():
+    mf = FakeMF()
+    mf.add_file("file1", "report.pdf", version="v10")
+    w = RenditionWriter(mf)
+    # An old version's full rendition set across formats…
+    for r in (("preview", "png"), ("thumbnail", "png"), ("pdf", "pdf"), ("model", "xkt")):
+        w.write("file1", "v9", [Rendition(r[0], r[1], b"old", "x")], "default")
+    # …plus the current version's renditions.
+    w.write("file1", "v10", [Rendition("preview", "png", b"new", "image/png"),
+                             Rendition("pdf", "pdf", b"new", "application/pdf")], "default")
+
+    removed = w.prune_old_versions("file1", "v10", "default")
+
+    assert set(removed) == {"v9-preview.png", "v9-thumbnail.png", "v9-pdf.pdf", "v9-model.xkt"}
+    assert set(mf.renditions["file1"]) == {"v10-preview.png", "v10-pdf.pdf"}
+
+
+def test_prune_leaves_non_rendition_children_untouched():
+    mf = FakeMF()
+    mf.add_file("file1", "report.pdf", version="v2")
+    w = RenditionWriter(mf)
+    w.write("file1", "v1", [Rendition("preview", "png", b"old", "image/png")], "default")
+    w.write("file1", "v2", [Rendition("preview", "png", b"new", "image/png")], "default")
+    # A hidden child that is not one of our renditions must never be pruned.
+    mf.renditions["file1"]["notes.txt"] = "child-xyz"
+
+    removed = w.prune_old_versions("file1", "v2", "default")
+
+    assert removed == ["v1-preview.png"]
+    assert "notes.txt" in mf.renditions["file1"]
+    assert "v2-preview.png" in mf.renditions["file1"]
+
+
+def test_prune_is_best_effort_on_delete_failure():
+    mf = FakeMF()
+    mf.add_file("file1", "report.pdf", version="v2")
+    w = RenditionWriter(mf)
+    w.write("file1", "v1", [Rendition("preview", "png", b"old", "image/png")], "default")
+    w.write("file1", "v2", [Rendition("preview", "png", b"new", "image/png")], "default")
+
+    def boom(uid, tenant=None, **kw):
+        raise RuntimeError("core read-only")
+    mf.remove = boom
+
+    # Must not raise — cleanup failures are logged, not fatal to the conversion.
+    assert w.prune_old_versions("file1", "v2", "default") == []

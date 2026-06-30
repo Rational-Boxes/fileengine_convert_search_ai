@@ -70,6 +70,16 @@ class FakeMF:
         out += [FakeEntry(u, n) for n, u in self.renditions.get(uid, {}).items()]
         return out
 
+    def remove(self, uid, tenant=None, **kw):
+        # Soft-delete: drop the rendition child with this uid from its parent.
+        for names in self.renditions.values():
+            for name, rend_uid in list(names.items()):
+                if rend_uid == uid:
+                    del names[name]
+                    return True
+        self.files.pop(uid, None)
+        return True
+
 
 class FakeStore:
     def __init__(self):

@@ -111,6 +111,25 @@ def test_reconverts_on_new_version():
     assert store.docs[("default", "f1")].source_version == "v2"
 
 
+def test_new_version_conversion_prunes_old_version_renditions():
+    # Converting a new version writes its renditions and wipes the prior
+    # version's, so stale previews don't linger for superseded content.
+    mf = FakeMF()
+    mf.add_file("f2", "pic.png", content=b"v1", version="v1")
+    store = FakeStore()
+    p = ConversionPipeline(mf=mf, store=store,
+                           registry=PluginRegistry([_rendition_plugin("preview", "png", "image/png")]))
+    p.convert("f2", "default")
+    assert set(mf.renditions["f2"]) == {"v1-preview.png"}
+
+    mf.files["f2"]["version"] = "v2"
+    out = p.convert("f2", "default")
+
+    assert out.status == "converted"
+    # Only the new version's rendition remains; the old one was pruned.
+    assert set(mf.renditions["f2"]) == {"v2-preview.png"}
+
+
 def test_unsupported_mime_is_recorded_not_failed():
     mf = FakeMF()
     mf.add_file("f3", "blob.bin", content=b"\x01\x02\x03nope", version="v1")
