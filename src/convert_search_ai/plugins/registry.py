@@ -62,7 +62,7 @@ def default_registry(config=None) -> PluginRegistry:
     thumb_px = getattr(config, "doc_thumbnail_px", DEFAULT_THUMBNAIL_PX) if config is not None else DEFAULT_THUMBNAIL_PX
     preview_px = getattr(config, "doc_preview_px", DEFAULT_PREVIEW_PX) if config is not None else DEFAULT_PREVIEW_PX
     code_style = getattr(config, "code_preview_style", "default") if config is not None else "default"
-    code_head = getattr(config, "code_preview_head_lines", 120) if config is not None else 120
+    code_max = getattr(config, "code_preview_max_lines", 0) if config is not None else 0
     return PluginRegistry([
         PdfPlugin(backends=backends, thumbnail_px=thumb_px, preview_px=preview_px),
         OfficePlugin(pdf_backends=backends, thumbnail_px=thumb_px, preview_px=preview_px),
@@ -79,10 +79,10 @@ def default_registry(config=None) -> PluginRegistry:
                    timeout_s=getattr(config, "html_pdf_timeout_s", 60)),
         # Markdown → a *formatted* PDF + previews (rendered document, not raw
         # source). Registered ahead of the source plugin so .md is claimed here.
-        MarkdownPlugin(style=code_style, head_lines=code_head, thumbnail_px=thumb_px, preview_px=preview_px),
-        # Source/text preview (colour-coded first-page PDF + PNGs). Registered
-        # ahead of the plain-text catch-all so text & source files get previews;
-        # the text plugin remains as the final fail-soft text extractor.
-        SourcePreviewPlugin(style=code_style, head_lines=code_head, thumbnail_px=thumb_px, preview_px=preview_px),
+        MarkdownPlugin(style=code_style, max_lines=code_max, thumbnail_px=thumb_px, preview_px=preview_px),
+        # Source/text preview (colour-coded full-document PDF + first-page PNGs).
+        # Registered ahead of the plain-text catch-all so text & source files get
+        # previews; the text plugin remains as the final fail-soft text extractor.
+        SourcePreviewPlugin(style=code_style, max_lines=code_max, thumbnail_px=thumb_px, preview_px=preview_px),
         TextMarkdownPlugin(),
     ])

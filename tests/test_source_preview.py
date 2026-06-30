@@ -67,6 +67,45 @@ def test_render_emits_first_page_pdf_for_source():
     assert pdf[0].data[:5] == b"%PDF-"
 
 
+def _pdf_page_count(pdf: bytes) -> int:
+    # reportlab writes one "/Type /Page" object per page (and "/Type /Pages" once
+    # for the tree); count the former.
+    return pdf.count(b"/Type /Page") - pdf.count(b"/Type /Pages")
+
+
+def test_source_pdf_renders_entire_file_across_pages():
+    pytest.importorskip("reportlab")
+    pytest.importorskip("pygments")
+    from convert_search_ai.plugins.source_preview import render_code_pdf, _detect_lexer
+    code = "\n".join(f"row_{i} = step({i})" for i in range(800))
+    lexer = _detect_lexer(code, "text/x-python", "big.py")
+    pdf = render_code_pdf(code, lexer, "default", "big.py", 0)   # 0 = whole file
+    assert pdf[:5] == b"%PDF-"
+    assert _pdf_page_count(pdf) > 1                              # paginated, not one page
+
+
+def test_source_pdf_wraps_long_lines_without_losing_content():
+    pytest.importorskip("reportlab")
+    pytest.importorskip("pygments")
+    from convert_search_ai.plugins.source_preview import render_code_pdf, _detect_lexer
+    code = "x = '" + "A" * 5000 + "'\n"          # one very long line
+    lexer = _detect_lexer(code, "text/x-python", "long.py")
+    pdf = render_code_pdf(code, lexer, "default", "long.py", 0)
+    assert pdf[:5] == b"%PDF-"
+    assert _pdf_page_count(pdf) >= 1             # wrapped across rows, renders fine
+
+
+def test_max_lines_caps_the_pdf():
+    pytest.importorskip("reportlab")
+    pytest.importorskip("pygments")
+    from convert_search_ai.plugins.source_preview import render_code_pdf, _detect_lexer
+    code = "\n".join(f"row_{i} = step({i})" for i in range(800))
+    lexer = _detect_lexer(code, "text/x-python", "big.py")
+    full = render_code_pdf(code, lexer, "default", "big.py", 0)
+    capped = render_code_pdf(code, lexer, "default", "big.py", 40)
+    assert _pdf_page_count(capped) < _pdf_page_count(full)
+
+
 def test_render_adds_png_previews_when_poppler_present():
     pytest.importorskip("reportlab")
     if not tools.have("pdftoppm"):

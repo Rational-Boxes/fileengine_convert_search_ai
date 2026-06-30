@@ -279,12 +279,13 @@ class MarkdownPlugin(ConversionPlugin):
     def __init__(
         self,
         style: str = "default",
-        head_lines: int = 200,
+        max_lines: int = 0,
         thumbnail_px: int = DEFAULT_THUMBNAIL_PX,
         preview_px: int = DEFAULT_PREVIEW_PX,
     ):
         self.style = style              # Pygments style (highlighting + source fallback)
-        self.head_lines = head_lines
+        # Max lines rendered into the source-style fallback PDF; 0 = entire file.
+        self.max_lines = max_lines
         self.thumbnail_px = thumbnail_px
         self.preview_px = preview_px
 
@@ -302,7 +303,7 @@ class MarkdownPlugin(ConversionPlugin):
             # Last resort: the source-style colour-coded PDF.
             from .source_preview import _detect_lexer, render_code_pdf
             lexer = _detect_lexer(text, mime, name)
-            pdf = render_code_pdf(text, lexer, self.style, name or "markdown", self.head_lines)
+            pdf = render_code_pdf(text, lexer, self.style, name or "markdown", self.max_lines)
         if not pdf:
             return []
         out = [Rendition(fmt="pdf", ext="pdf", data=pdf, mime="application/pdf")]

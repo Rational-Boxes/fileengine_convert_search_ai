@@ -1,11 +1,12 @@
-"""Syntax-highlighted first-page preview for text & source-code formats.
+"""Syntax-highlighted full-document preview for text & source-code formats.
 
 Detects the language with Pygments (C/C++/C#/Java, Python, HTML/CSS/JS/TS, Go,
 Rust, Ruby, PHP, SQL, shell, YAML/TOML/JSON/XML, Markdown, ... — the full Pygments
-lexer set), renders the first page of the file as a colour-coded PDF with
+lexer set), renders the **entire** file as a colour-coded, paginated PDF with
 reportlab, then reuses the shared ``page1_previews`` helper (poppler ``pdftoppm``)
-to emit the same icon-sized ``thumbnail`` + larger ``preview`` PNGs every other
-document type gets. The extracted text (for search/RAG) is the decoded content.
+to emit the icon-sized ``thumbnail`` + larger ``preview`` PNGs of the first page
+every other document type gets. The extracted text (for search/RAG) is the
+decoded content.
 
 This supersedes the plain ``text`` plugin for the MIME types it claims (it is
 registered ahead of it) by adding presentation renditions; it still degrades
@@ -87,10 +88,12 @@ def _style_font(tok_style) -> str:
     return "Courier"
 
 
-def render_code_pdf(text: str, lexer, style_name: str, title: str, head_lines: int) -> bytes:
-    """A single-page, syntax-highlighted PDF of the file's first ``head_lines``
-    lines: a muted ``title — Language`` header, a rule, then the colour-coded
-    source. Long lines and overflow rows are clipped to the page (it's a preview)."""
+def render_code_pdf(text: str, lexer, style_name: str, title: str, max_lines: int = 0) -> bytes:
+    """A syntax-highlighted PDF of the **entire** file, paginated across as many
+    pages as the content needs: a muted ``title · Language`` header + rule on each
+    page, then the colour-coded source. Long lines wrap to the next row so nothing
+    is lost. ``max_lines`` > 0 caps very large files as a safety valve; ``0`` (the
+    default) renders the whole document."""
     from io import BytesIO
 
     from pygments import lex
@@ -98,10 +101,10 @@ def render_code_pdf(text: str, lexer, style_name: str, title: str, head_lines: i
     from reportlab.lib.colors import HexColor
     from reportlab.pdfgen import canvas
 
-    # First-page budget only: normalise EOLs, expand tabs, keep the head lines.
+    # Normalise EOLs + expand tabs. Render the whole file unless a cap is set.
     text = text.replace("\r\n", "\n").replace("\r", "\n").expandtabs(4)
-    if head_lines > 0:
-        text = "\n".join(text.split("\n")[:head_lines])
+    if max_lines and max_lines > 0:
+        text = "\n".join(text.split("\n")[:max_lines])
 
     try:
         style = get_style_by_name(style_name)
@@ -114,59 +117,80 @@ def render_code_pdf(text: str, lexer, style_name: str, title: str, head_lines: i
 
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=(_PAGE_W, _PAGE_H))
-
-    top = _PAGE_H - _MARGIN
-    c.setFont("Courier-Bold", _FONT_SIZE)
-    c.setFillColor(HexColor("#333333"))
-    # "·" (U+00B7) is within Latin-1, so Courier renders it (unlike an em dash).
-    c.drawString(_MARGIN, top - _FONT_SIZE, _sanitize(f"{title}  ·  {lexer.name}")[:max_cols])
-    sep_y = top - _FONT_SIZE - 4
-    c.setStrokeColor(HexColor("#cccccc"))
-    c.setLineWidth(0.5)
-    c.line(_MARGIN, sep_y, _PAGE_W - _MARGIN, sep_y)
-
     black = HexColor("#000000")
-    y = sep_y - _LEADING
-    row = col = 0
-    done = False
+    # "·" (U+00B7) is within Latin-1, so Courier renders it (unlike an em dash).
+    header = _sanitize(f"{title}  ·  {lexer.name}")[:max_cols]
+    state = {"y": 0.0, "row": 0}
+
+    def start_page() -> None:
+        top = _PAGE_H - _MARGIN
+        c.setFont("Courier-Bold", _FONT_SIZE)
+        c.setFillColor(HexColor("#333333"))
+        c.drawString(_MARGIN, top - _FONT_SIZE, header)
+        sep_y = top - _FONT_SIZE - 4
+        c.setStrokeColor(HexColor("#cccccc"))
+        c.setLineWidth(0.5)
+        c.line(_MARGIN, sep_y, _PAGE_W - _MARGIN, sep_y)
+        state["y"] = sep_y - _LEADING
+        state["row"] = 0
+
+    def newline() -> None:
+        state["row"] += 1
+        state["y"] -= _LEADING
+        if state["row"] >= code_rows:   # page full → next page
+            c.showPage()
+            start_page()
+
+    start_page()
+    col = 0
     for ttype, value in lex(text, lexer):
-        if done:
-            break
         ts = style.style_for_token(ttype)
         hexcol = ts.get("color")
-        c.setFillColor(HexColor("#" + hexcol) if hexcol else black)
-        c.setFont(_style_font(ts), _FONT_SIZE)
+        color = HexColor("#" + hexcol) if hexcol else black
+        font = _style_font(ts)
+        c.setFillColor(color)
+        c.setFont(font, _FONT_SIZE)
         segments = value.split("\n")
         for i, seg in enumerate(segments):
-            if seg and col < max_cols:
-                c.drawString(_MARGIN + col * _CHAR_W, y, _sanitize(seg[:max_cols - col]))
-            col += len(seg)
-            if i < len(segments) - 1:  # a newline terminated this segment
-                row += 1
+            while seg:                  # wrap long lines instead of clipping them
+                space = max_cols - col
+                if space <= 0:
+                    newline()
+                    col = 0
+                    # canvas font/colour reset on showPage — restore for this token.
+                    c.setFillColor(color)
+                    c.setFont(font, _FONT_SIZE)
+                    space = max_cols
+                chunk = seg[:space]
+                if chunk.strip():
+                    c.drawString(_MARGIN + col * _CHAR_W, state["y"], _sanitize(chunk))
+                col += len(chunk)
+                seg = seg[len(chunk):]
+            if i < len(segments) - 1:   # a newline terminated this segment
+                newline()
                 col = 0
-                y -= _LEADING
-                if row >= code_rows:
-                    done = True
-                    break
+                c.setFillColor(color)
+                c.setFont(font, _FONT_SIZE)
     c.showPage()
     c.save()
     return buf.getvalue()
 
 
 class SourcePreviewPlugin(ConversionPlugin):
-    """First-page colour-coded PDF + page-1 PNG previews for text/source files."""
+    """Full-document colour-coded PDF + first-page PNG previews for text/source files."""
 
     name = "source"
 
     def __init__(
         self,
         style: str = "default",
-        head_lines: int = 120,
+        max_lines: int = 0,
         thumbnail_px: int = DEFAULT_THUMBNAIL_PX,
         preview_px: int = DEFAULT_PREVIEW_PX,
     ):
         self.style = style
-        self.head_lines = head_lines
+        # Max source lines rendered into the PDF; 0 = the entire file.
+        self.max_lines = max_lines
         self.thumbnail_px = thumbnail_px
         self.preview_px = preview_px
 
@@ -188,7 +212,7 @@ class SourcePreviewPlugin(ConversionPlugin):
         if not text.strip():
             return []
         lexer = _detect_lexer(text, mime, name)
-        pdf = render_code_pdf(text, lexer, self.style, name or "text", self.head_lines)
+        pdf = render_code_pdf(text, lexer, self.style, name or "text", self.max_lines)
         if not pdf:
             return []
         out = [Rendition(fmt="pdf", ext="pdf", data=pdf, mime="application/pdf")]
