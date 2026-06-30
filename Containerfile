@@ -13,12 +13,15 @@ FROM python:3.12-slim
 # thumbnails/previews), FFmpeg (video previews), libmagic (MIME detection).
 # 3D/CAD: occt-draw is OpenCASCADE's DRAW CLI (STEP/IGES/BREP/OBJ/VRML -> glTF);
 # nodejs/npm host convert2xkt (glTF/IFC/... -> XKT) for the xeokit viewer.
+# chromium is the full-fidelity HTML->PDF engine for .html documents (incl.
+# chat-generated reports); LibreOffice is the fallback.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress \
         imagemagick \
         ffmpeg \
         libmagic1 \
         occt-draw \
+        chromium \
         nodejs npm \
     && npm install -g @xeokit/xeokit-convert@1.3.2 \
     && ln -sf "$(npm root -g)/@xeokit/xeokit-convert/convert2xkt.js" /usr/local/bin/convert2xkt \
@@ -27,8 +30,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* /root/.npm
 
 # On Debian the OpenCASCADE DRAW binary is named "occt-draw" (Fedora ships it as
-# "DRAWEXE", the CSAI default), so point the CAD backend at it here.
-ENV CSAI_3D_DRAWEXE=occt-draw
+# "DRAWEXE", the CSAI default) and Chromium is "chromium" (Fedora: "chromium-
+# browser", the CSAI default), so point the CAD + HTML backends at them here.
+ENV CSAI_3D_DRAWEXE=occt-draw \
+    CSAI_HTML_CHROMIUM=chromium
 
 WORKDIR /app
 
