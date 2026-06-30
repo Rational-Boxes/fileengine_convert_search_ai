@@ -235,6 +235,85 @@ def _default_client(identity, config):
     return client_for(identity, config)
 
 
+def _close(mf) -> None:
+    close = getattr(mf, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
+def _norm_path(path: str) -> str:
+    """A clean '/'-rooted display path from a user/model-supplied path string."""
+    segs = [_safe_name(s) for s in (path or "").replace("\\", "/").split("/")]
+    segs = [s for s in segs if s]
+    return "/" + "/".join(segs)
+
+
+class ListFoldersTool(Tool):
+    """Browse the user's file storage (as the user) so the model can find and
+    suggest an appropriate place to save a document — and see whether a folder
+    already exists before offering to create one."""
+
+    name = "list_folders"
+    description = (
+        "Browse the user's file storage to find an appropriate place to save a "
+        "document. Lists the sub-folders (and a sample of files) directly under a "
+        "folder path. Use '/' for the top level, then drill into promising folders. "
+        "Call this BEFORE suggesting where to save a report so your suggestion "
+        "matches the user's actual folder layout.")
+    schema = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description":
+                     "Folder path to list, e.g. '/' (top level), '/Projects', "
+                     "'Reports/2026'. Defaults to '/'."},
+        },
+    }
+
+    def __init__(self, *, max_entries: int = 200, client_factory=None):
+        self.max_entries = max_entries
+        self._client_factory = client_factory or _default_client
+
+    def run(self, args: dict, ctx: ToolContext) -> ToolOutput:
+        path = str((args or {}).get("path", "/") or "/")
+        disp = _norm_path(path)
+        tenant = getattr(ctx.identity, "tenant", "") or getattr(ctx.config, "tenant", "")
+        mf = self._client_factory(ctx.identity, ctx.config)
+        try:
+            try:
+                folder = _resolve_folder(mf, path, tenant, create=False)
+            except FileNotFoundError as miss:
+                return ToolOutput(text=(
+                    f"The folder '{miss}' does not exist. List a parent folder (e.g. "
+                    f"'/') to see what's available, or offer to create it."))
+            try:
+                entries = mf.dir(folder, tenant=tenant) or []
+            except Exception as e:
+                return ToolOutput(text=f"(list_folders error: could not list {disp}: {e})")
+        finally:
+            _close(mf)
+
+        folders = sorted(e.name for e in entries if getattr(e, "is_container", False))
+        files = sorted(e.name for e in entries if not getattr(e, "is_container", False))
+        audit.record(action="list_folders", user=getattr(ctx.identity, "user", ""),
+                     tenant=tenant, result="ok", folders=len(folders), files=len(files))
+
+        if not folders and not files:
+            return ToolOutput(text=f"{disp} is empty (no sub-folders or files).")
+        lines = [f"Contents of {disp}:"]
+        if folders:
+            shown = folders[:self.max_entries]
+            lines.append("Folders: " + ", ".join(shown)
+                         + (f" (+{len(folders) - len(shown)} more)" if len(folders) > len(shown) else ""))
+        if files:
+            shown = files[:min(20, self.max_entries)]
+            lines.append("Files: " + ", ".join(shown)
+                         + (f" (+{len(files) - len(shown)} more)" if len(files) > len(shown) else ""))
+        return ToolOutput(text="\n".join(lines))
+
+
 class CreateDocumentTool(Tool):
     """Save a report generated from the conversation as a formatted HTML document
     in the user's FileEngine storage (written *as the user*, so ACLs apply)."""
@@ -308,12 +387,7 @@ class CreateDocumentTool(Tool):
                          tenant=tenant, result="error")
             return ToolOutput(text=f"(create_document error: could not save the report: {e})")
         finally:
-            close = getattr(mf, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:
-                    pass
+            _close(mf)
 
         audit.record(action="create_document", user=getattr(ctx.identity, "user", ""),
                      tenant=tenant, result="ok", bytes=len(document))
@@ -343,6 +417,9 @@ def build_tools(config: Config, *, include_web: bool = True) -> List[Tool]:
                 timeout_ms=getattr(config, "web_timeout_ms", 5000),
                 max_chars=getattr(config, "web_max_chars", 4000)))
     if getattr(config, "chat_document_tool_enabled", True):
+        # Exploration tool first so the model can browse + suggest a location, then
+        # the writer.
+        tools.append(ListFoldersTool())
         tools.append(CreateDocumentTool(
             max_bytes=getattr(config, "chat_document_max_bytes", 5_000_000)))
     return tools

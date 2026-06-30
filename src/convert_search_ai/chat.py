@@ -38,17 +38,23 @@ _INSTRUCTIONS_WEB = (
     "one numbering — and make clear which statements come from the web."
 )
 
-# Appended when the create_document tool is available. The confirm-location rule
-# is the key behaviour: never write a file to a guessed path.
+# Appended when the create_document tool is available. The workflow is: explore
+# the user's folders, suggest a real location, get confirmation (offering to
+# create folders), then write — never write to a blindly guessed path.
 _INSTRUCTIONS_DOCUMENT = (
     "If the user asks to save, export, or turn this conversation (or its results) "
-    "into a document or report, use the create_document tool. Before calling it, "
-    "ask the user where to save it (the destination folder and file name) and wait "
-    "for their confirmation — never write to a guessed location. Compose the report "
-    "as well-structured HTML (headings, paragraphs, tables, lists) for full "
-    "formatting; it is saved as an HTML document with an automatic PDF preview. If "
-    "the chosen folder doesn't exist, ask whether to create it before retrying with "
-    "create_folders=true."
+    "into a document or report:\n"
+    "1. Use the list_folders tool to explore the user's existing folders (start at "
+    "'/' and drill in) so you understand their layout.\n"
+    "2. Propose a specific destination folder and file name based on what you find, "
+    "and ask the user to confirm or choose another. If a suitable folder doesn't "
+    "exist, offer to create one (e.g. a 'Reports' folder).\n"
+    "3. Once the user confirms, call create_document with the report as "
+    "well-structured HTML (headings, paragraphs, tables, lists) — it is saved as an "
+    "HTML document with an automatic PDF preview. Set create_folders=true when the "
+    "user has agreed to create a new folder.\n"
+    "Always actually call create_document to perform the save — don't just say you "
+    "saved it. Report the saved location back to the user."
 )
 
 

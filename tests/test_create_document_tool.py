@@ -4,7 +4,8 @@ import pytest
 
 from convert_search_ai.config import Config
 from convert_search_ai.llm_tools import (
-    CreateDocumentTool, ToolContext, build_tools, wrap_html_document, _safe_name,
+    CreateDocumentTool, ListFoldersTool, ToolContext, build_tools,
+    wrap_html_document, _norm_path, _safe_name,
 )
 
 
@@ -166,12 +167,57 @@ def test_wrap_passes_through_complete_documents():
     assert "<p>body</p>" in wrapped
 
 
-def test_build_tools_includes_document_tool_without_web():
-    tools = build_tools(Config(), include_web=False)
-    assert any(t.name == "create_document" for t in tools)
+def test_build_tools_includes_document_tools_without_web():
+    names = {t.name for t in build_tools(Config(), include_web=False)}
+    assert {"list_folders", "create_document"} <= names
 
 
-def test_build_tools_can_disable_document_tool(monkeypatch):
+def test_build_tools_can_disable_document_tools(monkeypatch):
     monkeypatch.setenv("CSAI_CHAT_DOCUMENT_TOOL", "false")
-    tools = build_tools(Config(), include_web=False)
-    assert not any(t.name == "create_document" for t in tools)
+    names = {t.name for t in build_tools(Config(), include_web=False)}
+    assert "create_document" not in names and "list_folders" not in names
+
+
+# --------------------------------------------------------------------------- #
+# list_folders — filesystem exploration
+# --------------------------------------------------------------------------- #
+
+def _browse_mf():
+    mf = FakeMF()
+    mf.tree = {
+        "": [_Entry("p", "Projects"), _Entry("r", "Reports"),
+             _Entry("n", "notes.txt", is_dir=False)],
+        "p": [_Entry("a", "Alpha"), _Entry("b", "Beta")],
+    }
+    return mf
+
+
+def _lister(mf):
+    return ListFoldersTool(client_factory=lambda identity, config: mf)
+
+
+def test_list_folders_lists_subfolders_and_files():
+    out = _lister(_browse_mf()).run({"path": "/"}, _ctx())
+    assert "Projects" in out.text and "Reports" in out.text
+    assert "notes.txt" in out.text
+
+
+def test_list_folders_drills_into_subfolder():
+    out = _lister(_browse_mf()).run({"path": "/Projects"}, _ctx())
+    assert "Alpha" in out.text and "Beta" in out.text
+
+
+def test_list_folders_missing_path_is_guided_not_fatal():
+    out = _lister(_browse_mf()).run({"path": "/Nope"}, _ctx())
+    assert "does not exist" in out.text
+
+
+def test_list_folders_defaults_to_root():
+    out = _lister(_browse_mf()).run({}, _ctx())
+    assert "Contents of /" in out.text
+
+
+def test_norm_path_drops_traversal_and_blanks():
+    assert _norm_path("//Projects/../Alpha/") == "/Projects/Alpha"
+    assert _norm_path("") == "/"
+    assert _norm_path("/") == "/"
