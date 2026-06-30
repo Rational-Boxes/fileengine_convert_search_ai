@@ -185,6 +185,19 @@ class Config:
         self.web_fetch_pages = _bool("CSAI_WEB_FETCH_PAGES", False)
         self.web_fetch_max_bytes = int(_env("CSAI_WEB_FETCH_MAX_BYTES", str(2 * 1024 * 1024)))
 
+        # The chat `create_document` tool: lets the model save a report generated
+        # from the conversation as an HTML document in the user's own storage
+        # (written as the user, so ACLs apply), with a PDF rendition produced by
+        # the HTML→PDF converter. On by default (still requires a tool-capable chat
+        # provider); set false to disable. Caps the report size.
+        self.chat_document_tool_enabled = _bool("CSAI_CHAT_DOCUMENT_TOOL", True)
+        self.chat_document_max_bytes = int(_env("CSAI_CHAT_DOCUMENT_MAX_BYTES", str(5 * 1024 * 1024)))
+
+        # HTML → PDF conversion (for .html documents, incl. chat-generated reports).
+        # Chromium headless gives full-CSS fidelity; LibreOffice is the fallback.
+        self.html_chromium = _env("CSAI_HTML_CHROMIUM", "chromium-browser")
+        self.html_pdf_timeout_s = int(_env("CSAI_HTML_PDF_TIMEOUT_S", "60"))
+
         # PDF/Office → Markdown extraction backends, fidelity-ordered (the first
         # one installed AND yielding content wins; see plugins/pdf_backends).
         # Structure + tables are critical — pdftotext is only the last resort.

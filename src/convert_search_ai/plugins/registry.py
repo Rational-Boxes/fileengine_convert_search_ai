@@ -46,6 +46,7 @@ def default_registry(config=None) -> PluginRegistry:
 
     ``config`` (optional) supplies the PDF/Office extraction backend order via
     ``config.pdf_backends``."""
+    from .html import HtmlPlugin
     from .image import ImagePlugin
     from .markdown_preview import MarkdownPlugin
     from .office import OfficePlugin
@@ -70,6 +71,12 @@ def default_registry(config=None) -> PluginRegistry:
         # 3D / BIM / CAD (IFC, glTF/GLB, CityJSON, LAS/LAZ, STL, PLY, and via
         # OpenCASCADE: STEP, IGES, BREP, OBJ, VRML) → XKT + indexed text.
         Xeokit3DPlugin(config),
+        # HTML → a full-document PDF + previews (Chromium/LibreOffice). Registered
+        # ahead of the source/text catch-alls so text/html is rendered as a
+        # document, not treated as source code. Covers chat-generated reports.
+        HtmlPlugin(chromium=getattr(config, "html_chromium", "chromium-browser"),
+                   pdf_backends=backends, thumbnail_px=thumb_px, preview_px=preview_px,
+                   timeout_s=getattr(config, "html_pdf_timeout_s", 60)),
         # Markdown → a *formatted* PDF + previews (rendered document, not raw
         # source). Registered ahead of the source plugin so .md is claimed here.
         MarkdownPlugin(style=code_style, head_lines=code_head, thumbnail_px=thumb_px, preview_px=preview_px),

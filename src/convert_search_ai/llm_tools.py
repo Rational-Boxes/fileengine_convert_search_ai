@@ -6,9 +6,11 @@ lands in P2. ``build_tools(config)`` returns the enabled tools — empty unless
 ``CSAI_WEB_SEARCH_ENABLED`` is set (web search is OFF by default)."""
 from __future__ import annotations
 
+import html as _htmllib
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 from urllib.parse import urlparse
 
 from . import audit, guards
@@ -152,12 +154,183 @@ class FetchPageTool(Tool):
         return ToolOutput(text=text, sources=[src])
 
 
-def build_tools(config: Config) -> List[Tool]:
-    """The tools to expose to the model for this deployment. Empty unless web
-    search is enabled (OFF by default). fetch_page is added only when page fetch
-    is additionally enabled."""
+# --------------------------------------------------------------------------- #
+# create_document — save a chat-generated report into FileEngine
+# --------------------------------------------------------------------------- #
+
+# Characters disallowed in a single file/folder name (path separators, control,
+# and the Windows-reserved set) so a name can't escape its folder.
+_BAD_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+_REPORT_CSS = """
+  :root { color-scheme: light; }
+  body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+         line-height: 1.5; color: #1a1a1a; max-width: 50rem; margin: 2.5rem auto;
+         padding: 0 1.5rem; }
+  h1, h2, h3, h4 { line-height: 1.25; margin: 1.4em 0 0.5em; color: #11233b; }
+  h1 { font-size: 1.9rem; border-bottom: 2px solid #e2e6ea; padding-bottom: .3em; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #cdd3da; padding: .5em .7em; text-align: left; }
+  th { background: #f3f5f7; }
+  code, pre { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  pre { background: #f6f8fa; padding: 1em; overflow-x: auto; border-radius: 6px; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: .2em 1em; color: #444; }
+  a { color: #0b5cad; }
+  @media print { body { margin: 0; max-width: none; } }
+""".strip()
+
+
+def _safe_name(name: str) -> str:
+    """A single, safe file/folder name (no path traversal). Empty if unusable."""
+    name = _BAD_NAME.sub("", (name or "").strip()).strip(". ")
+    return name[:200]
+
+
+def wrap_html_document(title: str, body: str) -> str:
+    """Wrap a model-supplied HTML *body* in a styled, printable full document. If
+    the model already returned a complete document, it is used unchanged."""
+    body = body or ""
+    low = body.lstrip()[:200].lower()
+    if low.startswith("<!doctype") or low.startswith("<html"):
+        return body
+    safe_title = _htmllib.escape(title or "Report")
+    return (
+        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+        f"<title>{safe_title}</title>\n<style>\n{_REPORT_CSS}\n</style>\n</head>\n"
+        f"<body>\n{body}\n</body>\n</html>\n"
+    )
+
+
+def _resolve_folder(mf, path: str, tenant: str, *, create: bool):
+    """Resolve a '/'-separated folder ``path`` to a container UID, walking from the
+    root. Raises ``FileNotFoundError`` (carrying the missing path) when a segment
+    is absent and ``create`` is false; otherwise mkdir's the missing segments."""
+    from ._client import ManagedFiles  # noqa: F401 (ensures fileengine importable)
+    try:
+        from fileengine import ROOT_UID
+    except Exception:
+        ROOT_UID = ""
+    segments = [s for s in (path or "").replace("\\", "/").split("/") if s.strip()]
+    uid = ROOT_UID
+    walked: List[str] = []
+    for seg in segments:
+        seg_clean = _safe_name(seg)
+        if not seg_clean:
+            continue
+        entries = mf.dir(uid, tenant=tenant) or []
+        match = next((e for e in entries if e.is_container and e.name == seg_clean), None)
+        if match is not None:
+            uid = match.uid
+        elif create:
+            uid = mf.mkdir(uid, seg_clean, tenant=tenant)
+        else:
+            raise FileNotFoundError("/" + "/".join(walked + [seg_clean]))
+        walked.append(seg_clean)
+    return uid
+
+
+def _default_client(identity, config):
+    from .core_client import client_for
+    return client_for(identity, config)
+
+
+class CreateDocumentTool(Tool):
+    """Save a report generated from the conversation as a formatted HTML document
+    in the user's FileEngine storage (written *as the user*, so ACLs apply)."""
+
+    name = "create_document"
+    description = (
+        "Save a report generated from this conversation as a formatted HTML "
+        "document in the user's file storage. ALWAYS confirm the destination "
+        "folder and the file name with the user in your reply BEFORE calling this "
+        "tool — do not guess a location. Provide the report as rich HTML body "
+        "content (headings, paragraphs, tables, lists, emphasis); it is wrapped in "
+        "a styled, printable full HTML document and a PDF preview is generated "
+        "automatically. Returns the saved file's location.")
+    schema = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description":
+                     "Destination folder path in the user's storage, e.g. '/Reports' "
+                     "or 'Projects/Q3'. Use '/' for the top level. Confirm with the "
+                     "user before calling."},
+            "filename": {"type": "string", "description":
+                         "File name without extension ('.html' is appended), e.g. "
+                         "'q3-summary'."},
+            "title": {"type": "string", "description":
+                      "Report title (used as the document <title> and heading)."},
+            "html": {"type": "string", "description":
+                     "The report body as HTML — no <html>/<head>/<body> wrapper "
+                     "needed. Use full formatting: <h1>–<h3>, <p>, <ul>/<ol>, "
+                     "<table>, <strong>, <blockquote>, etc."},
+            "create_folders": {"type": "boolean", "description":
+                               "Create the destination folder (and any missing "
+                               "parents) if it does not exist. Only set true after "
+                               "the user confirms creating a new folder."},
+        },
+        "required": ["path", "filename", "html"],
+    }
+
+    def __init__(self, *, max_bytes: int = 5_000_000, client_factory=None):
+        self.max_bytes = max_bytes
+        self._client_factory = client_factory or _default_client
+
+    def run(self, args: dict, ctx: ToolContext) -> ToolOutput:
+        args = args or {}
+        filename = _safe_name(str(args.get("filename", "")))
+        body = args.get("html") or ""
+        if not filename or not str(body).strip():
+            return ToolOutput(text="(create_document error: 'filename' and 'html' are required)")
+        title = str(args.get("title", "") or filename).strip()
+        path = str(args.get("path", "") or "/")
+        create = bool(args.get("create_folders", False))
+
+        name = filename if filename.lower().endswith((".html", ".htm")) else filename + ".html"
+        document = wrap_html_document(title, str(body)).encode("utf-8")
+        if len(document) > self.max_bytes:
+            return ToolOutput(text="(create_document error: the report is too large to save)")
+
+        tenant = getattr(ctx.identity, "tenant", "") or getattr(ctx.config, "tenant", "")
+        mf = self._client_factory(ctx.identity, ctx.config)
+        try:
+            try:
+                parent = _resolve_folder(mf, path, tenant, create=create)
+            except FileNotFoundError as miss:
+                return ToolOutput(text=(
+                    f"The folder '{miss}' does not exist. Ask the user to confirm the "
+                    f"destination, or call create_document again with create_folders=true "
+                    f"to create it."))
+            uid = mf.touch(parent, name, tenant=tenant)
+            mf.put(uid, document, tenant=tenant)
+        except Exception as e:  # WriteUnavailable, PermissionDenied, etc. — fail soft
+            audit.record(action="create_document", user=getattr(ctx.identity, "user", ""),
+                         tenant=tenant, result="error")
+            return ToolOutput(text=f"(create_document error: could not save the report: {e})")
+        finally:
+            close = getattr(mf, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+
+        audit.record(action="create_document", user=getattr(ctx.identity, "user", ""),
+                     tenant=tenant, result="ok", bytes=len(document))
+        loc = "/".join(["", *(s for s in path.replace("\\", "/").split("/") if s.strip()), name])
+        return ToolOutput(text=(
+            f"Saved the report to {loc} (file id {uid}). A PDF preview is being "
+            f"generated automatically. Let the user know it's ready in their files."))
+
+
+def build_tools(config: Config, *, include_web: bool = True) -> List[Tool]:
+    """The tools to expose to the model for this deployment.
+
+    ``create_document`` is included whenever it's enabled (default on). The web
+    tools are added only when web search is enabled AND ``include_web`` (the chat
+    layer passes the per-turn opt-in); fetch_page needs its own extra enable."""
     tools: List[Tool] = []
-    if getattr(config, "web_search_enabled", False):
+    if include_web and getattr(config, "web_search_enabled", False):
         from .providers import make_web_search_provider
         tools.append(WebSearchTool(
             make_web_search_provider(config),
@@ -169,4 +342,7 @@ def build_tools(config: Config) -> List[Tool]:
                 max_bytes=getattr(config, "web_fetch_max_bytes", 2_000_000),
                 timeout_ms=getattr(config, "web_timeout_ms", 5000),
                 max_chars=getattr(config, "web_max_chars", 4000)))
+    if getattr(config, "chat_document_tool_enabled", True):
+        tools.append(CreateDocumentTool(
+            max_bytes=getattr(config, "chat_document_max_bytes", 5_000_000)))
     return tools

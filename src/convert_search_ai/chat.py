@@ -38,6 +38,19 @@ _INSTRUCTIONS_WEB = (
     "one numbering — and make clear which statements come from the web."
 )
 
+# Appended when the create_document tool is available. The confirm-location rule
+# is the key behaviour: never write a file to a guessed path.
+_INSTRUCTIONS_DOCUMENT = (
+    "If the user asks to save, export, or turn this conversation (or its results) "
+    "into a document or report, use the create_document tool. Before calling it, "
+    "ask the user where to save it (the destination folder and file name) and wait "
+    "for their confirmation — never write to a guessed location. Compose the report "
+    "as well-structured HTML (headings, paragraphs, tables, lists) for full "
+    "formatting; it is saved as an HTML document with an automatic PDF preview. If "
+    "the chosen folder doesn't exist, ask whether to create it before retrying with "
+    "create_folders=true."
+)
+
 
 class ChatService:
     def __init__(self, config: Config, *, retriever: Optional[Retriever] = None, chat=None):
@@ -62,7 +75,7 @@ class ChatService:
 
         tools = self._select_tools(web_search)
         messages = list(history or []) + [{"role": "user", "content": msg}]
-        system = self._build_system(system_prompt, chunks, tools_enabled=bool(tools))
+        system = self._build_system(system_prompt, chunks, tools=tools)
         doc_citations = self._doc_citations(chunks)
 
         if not tools:
@@ -114,14 +127,16 @@ class ChatService:
 
     # ----------------------------------------------------------------- helpers
     def _select_tools(self, web_search: Optional[bool]):
-        """Decide whether to offer tools this turn: global enable + per-message
-        opt-in (or the configured default) + provider tool support."""
-        if not getattr(self.config, "web_search_enabled", False):
+        """Decide which tools to offer this turn. Requires provider tool support.
+        Web tools need the global enable + per-message opt-in (or the configured
+        default); create_document is offered whenever it's enabled, independently."""
+        if not getattr(self.chat, "supports_tools", False):
             return []
-        want = self.config.web_search_default if web_search is None else bool(web_search)
-        if not want or not getattr(self.chat, "supports_tools", False):
-            return []
-        return build_tools(self.config)
+        include_web = False
+        if getattr(self.config, "web_search_enabled", False):
+            include_web = (self.config.web_search_default if web_search is None
+                           else bool(web_search))
+        return build_tools(self.config, include_web=include_web)
 
     @staticmethod
     def _doc_citations(chunks: List[RetrievedChunk]) -> List[dict]:
@@ -138,12 +153,15 @@ class ChatService:
                      web_searches=web_searches, context_trimmed=trimmed)
 
     def _build_system(self, system_prompt: str, chunks: List[RetrievedChunk],
-                      *, tools_enabled: bool = False) -> str:
+                      *, tools: Optional[List] = None) -> str:
         context = ("\n\n".join(f"[{i + 1}] (file {c.file_uid})\n{c.text}" for i, c in enumerate(chunks))
                    if chunks else "(no relevant context found)")
+        names = {getattr(t, "name", "") for t in (tools or [])}
         parts = []
         if system_prompt and system_prompt.strip():
             parts.append(system_prompt.strip())
-        parts.append(_INSTRUCTIONS_WEB if tools_enabled else _INSTRUCTIONS)
+        parts.append(_INSTRUCTIONS_WEB if "web_search" in names else _INSTRUCTIONS)
+        if "create_document" in names:
+            parts.append(_INSTRUCTIONS_DOCUMENT)
         parts.append("Context:\n" + context)
         return "\n\n".join(parts)

@@ -47,19 +47,23 @@ def test_no_results_message():
     assert out.sources == [] and "no web results" in out.text.lower()
 
 
-def test_build_tools_off_by_default():
+def test_web_tools_off_by_default():
     c = Config()
     assert c.web_search_enabled is False
-    assert build_tools(c) == []
+    names = {t.name for t in build_tools(c)}
+    assert "web_search" not in names and "fetch_page" not in names
+    # create_document is on by default (covered in test_create_document_tool.py).
+    assert "create_document" in names
 
 
 def test_build_tools_includes_web_search_when_enabled():
     c = Config()
     c.web_search_enabled = True
     c.web_search_provider = "fake"
-    tools = build_tools(c)
-    assert len(tools) == 1 and tools[0].name == "web_search"
-    assert tools[0].schema["required"] == ["query"]
+    ws = next(t for t in build_tools(c) if t.name == "web_search")
+    assert ws.schema["required"] == ["query"]
+    # The per-turn opt-out (include_web=False) suppresses web tools.
+    assert "web_search" not in {t.name for t in build_tools(c, include_web=False)}
 
 
 # --- fetch_page tool -------------------------------------------------------
@@ -88,6 +92,6 @@ def test_build_tools_adds_fetch_page_only_when_enabled():
     c.web_search_enabled = True
     c.web_search_provider = "fake"
     c.web_fetch_pages = True
-    assert {t.name for t in build_tools(c)} == {"web_search", "fetch_page"}
+    assert {"web_search", "fetch_page"} <= {t.name for t in build_tools(c)}
     c.web_fetch_pages = False
     assert "fetch_page" not in {t.name for t in build_tools(c)}

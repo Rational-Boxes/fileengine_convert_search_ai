@@ -76,6 +76,9 @@ def _sniff(data: bytes) -> str | None:
     # ftyp box near the start => ISO base media (mp4 / mov / m4v)
     if data[4:8] == b"ftyp":
         return "video/mp4"
+    lowered = head.lstrip().lower()
+    if lowered.startswith(b"<!doctype html") or lowered.startswith(b"<html"):
+        return "text/html"
     return _sniff_text_3d(data, head)
 
 
