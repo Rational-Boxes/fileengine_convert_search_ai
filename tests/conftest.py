@@ -29,7 +29,25 @@ def _services_up() -> bool:
         return False
 
 
+def _db_up() -> bool:
+    """True when the configured Postgres is reachable. Connection params come from
+    ``Config`` (the ``CSAI_PG_*`` env), so DB-backed tests run against whatever PG
+    the environment points at — e.g. ``CSAI_PG_PORT=5434`` for the dev server — and
+    are skipped (not hard-failed) when no matching DB is up."""
+    try:
+        import psycopg
+
+        from convert_search_ai.config import Config
+        cfg = Config()
+        with psycopg.connect(host=cfg.pg_host, port=cfg.pg_port, dbname=cfg.pg_database,
+                             user=cfg.pg_user, password=cfg.pg_password, connect_timeout=2):
+            return True
+    except Exception:
+        return False
+
+
 live = pytest.mark.skipif(not _services_up(), reason="LDAP/core not reachable")
+live_db = pytest.mark.skipif(not _db_up(), reason="Postgres (CSAI_PG_*) not reachable")
 
 
 @pytest.fixture

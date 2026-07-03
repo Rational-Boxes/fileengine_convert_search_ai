@@ -1,4 +1,5 @@
 """WebSocket /chat endpoint tests (TestClient + injected fake chat service)."""
+from conftest import live_db
 from fastapi.testclient import TestClient
 
 from convert_search_ai.app import build_app
@@ -8,7 +9,7 @@ from convert_search_ai.ldap_auth import Identity
 
 class FakeChat:
     def answer(self, identity, *, message, system_prompt="", history=None, k=8,
-               web_search=None):
+               web_search=None, conversation_id=None):
         yield {"type": "token", "text": f"Answer to: {message}"}
         yield {"type": "citations", "citations": [{"file_uid": "f1", "marker": 1}]}
 
@@ -30,6 +31,7 @@ def test_chat_rejects_unauthenticated():
         assert msg["type"] == "error" and "authentication" in msg["error"]
 
 
+@live_db  # retrieval hits the pgvector store (CSAI_PG_*)
 def test_chat_streams_tokens_then_citations_then_done():
     app, c = _client()
     tok = _token(app)

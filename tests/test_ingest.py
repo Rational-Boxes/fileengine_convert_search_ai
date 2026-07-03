@@ -1,4 +1,5 @@
 """Unit tests for the ingest worker's event→action mapping (fakes)."""
+from conftest import live_db
 from convert_search_ai.config import Config
 from convert_search_ai.ingest import Ingestor
 from fakes import FakeStore
@@ -43,6 +44,7 @@ def _ingestor(batch=None):
     return Ingestor(Config(), pipe, store, src), pipe, store, src
 
 
+@live_db  # convert path connects to Postgres (CSAI_PG_*)
 def test_file_created_and_updated_trigger_convert():
     ing, pipe, _, _ = _ingestor()
     ing.handle({"type": "file.created", "file_uid": "a", "tenant": "default"})
@@ -56,6 +58,7 @@ def test_rendition_events_are_ignored():
     assert pipe.converted == []
 
 
+@live_db  # delete path drops document rows in Postgres (CSAI_PG_*)
 def test_delete_drops_document_rows():
     ing, pipe, store, _ = _ingestor()
     ing.handle({"type": "file.deleted", "file_uid": "x", "tenant": "default"})

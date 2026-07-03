@@ -1,4 +1,5 @@
 """Conversation persistence — REST CRUD + WS turn persistence (in-memory fake store)."""
+from conftest import live_db
 from fastapi.testclient import TestClient
 
 from convert_search_ai.app import build_app
@@ -7,7 +8,8 @@ from convert_search_ai.ldap_auth import Identity
 
 
 class FakeChat:
-    def answer(self, identity, *, message, system_prompt="", history=None, k=8, web_search=None):
+    def answer(self, identity, *, message, system_prompt="", history=None, k=8, web_search=None,
+               conversation_id=None):
         yield {"type": "token", "text": f"Answer to: {message}"}
         yield {"type": "citations", "citations": [{"marker": 1, "kind": "doc", "file_uid": "f1"}]}
 
@@ -100,6 +102,7 @@ def _drain(ws):
             return evs
 
 
+@live_db  # persists the turn to Postgres (CSAI_PG_*)
 def test_ws_persists_turn_and_returns_conversation_id():
     convos = FakeConversationStore()
     app, c = _app(convos)
