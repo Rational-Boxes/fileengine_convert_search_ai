@@ -20,7 +20,10 @@ _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 # The rendition fmt vocabulary (matches plugins' Rendition.fmt and the frontend's
 # KNOWN allowlist). Used to recognize our own hidden children when pruning, so a
 # non-rendition child can never be mistaken for one and removed.
-_KNOWN_FMTS = frozenset({"thumbnail", "preview", "pdf", "poster", "model"})
+# "chatlog" is the chat-provenance hidden child attached to AI-generated reports
+# (see design_documents/CHAT_WITH_AI.md §4.6) — a rendition-shaped sidecar, so it
+# inherits the parent's ACL + cascade delete for free.
+_KNOWN_FMTS = frozenset({"thumbnail", "preview", "pdf", "poster", "model", "chatlog"})
 
 
 def _safe_version(version: str) -> str:

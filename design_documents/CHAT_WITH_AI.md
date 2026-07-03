@@ -18,9 +18,9 @@ never surface content the user couldn't open themselves.
 
 ```
         ┌─────────┐   WebSocket /chat    ┌──────────────────────────────────────┐
- user → │  SPA    │ ───────────────────► │  CSAI                                 │
-        │ (chat)  │ ◄─ token/citations ─ │  retrieve (pgvector, READ‑gated)      │
-        └─────────┘                      │  + tools (web / files) + LLM stream   │
+ user → │  SPA    │ ───────────────────► │  CSAI                                │
+        │ (chat)  │ ◄─ token/citations ─ │  retrieve (pgvector, READ‑gated)     │
+        └─────────┘                      │  + tools (web / files) + LLM stream  │
                                          └───────────┬──────────────────────────┘
                                      gRPC (as the user) │  CheckPermission(READ)
                                                         ▼

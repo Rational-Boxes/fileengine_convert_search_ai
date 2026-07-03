@@ -301,10 +301,13 @@ class ReportSaveError(Exception):
 
 def save_report_document(identity, config, *, path: str, filename: str, title: str,
                          body: str, create_folders: bool, client_factory=None,
-                         max_bytes: int = 5_000_000):
+                         max_bytes: int = 5_000_000, provenance: dict = None):
     """Persist a report (Markdown or HTML ``body``) as an HTML file in the user's
     storage, written *as the user*. Returns ``(uid, location, byte_len)``; raises
-    :class:`ReportSaveError`. Used by the marker-driven save path (chat.py)."""
+    :class:`ReportSaveError`. Used by the marker-driven save path (chat.py).
+
+    When ``provenance`` (the chat context) is given, a chat-provenance log is
+    attached as a hidden child of the report (best-effort — see provenance.py)."""
     client_factory = client_factory or _default_client
     safe = _safe_name(filename or "")
     if not safe:
@@ -327,6 +330,13 @@ def save_report_document(identity, config, *, path: str, filename: str, title: s
                                   missing_path=str(miss))
         uid = mf.touch(parent, name, tenant=tenant)
         mf.put(uid, document, tenant=tenant)
+        if provenance is not None:
+            from . import provenance as _prov
+            _prov.attach_provenance(mf, uid, tenant, {
+                **provenance,
+                "report_title": (title or safe).strip(),
+                "report_location": report_location(path, filename),
+            })
     except ReportSaveError:
         raise
     except Exception as e:  # WriteUnavailable, PermissionDenied, … — surface as save error

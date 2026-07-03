@@ -212,7 +212,7 @@ async def chat(ws: WebSocket) -> None:
                 _begin_turn, convos, identity, payload.get("conversation_id"), message)
             if conv_id:
                 await ws.send_json({"type": "conversation", "id": conv_id})
-            answer, citations = await _stream_answer(ws, chat_service, identity, payload, message)
+            answer, citations = await _stream_answer(ws, chat_service, identity, payload, message, conv_id)
             if conv_id:
                 await run_in_threadpool(_end_turn, convos, identity, conv_id, answer, citations)
             await ws.send_json({"type": "done"})
@@ -243,7 +243,8 @@ def _end_turn(convos, identity: Identity, conv_id, answer: str, citations) -> No
             "conversation persist (end) failed", exc_info=True)
 
 
-async def _stream_answer(ws: WebSocket, chat_service, identity, payload: dict, message: str):
+async def _stream_answer(ws: WebSocket, chat_service, identity, payload: dict, message: str,
+                         conversation_id=None):
     """Bridge the sync RAG generator (blocking I/O) to the async socket via a worker
     thread + memory stream. Forwards every event to the client and returns the
     accumulated ``(answer_text, citations)`` so the turn can be persisted."""
@@ -257,6 +258,7 @@ async def _stream_answer(ws: WebSocket, chat_service, identity, payload: dict, m
                 history=payload.get("history") or [],
                 k=int(payload.get("k", 8)),
                 web_search=payload.get("web_search"),
+                conversation_id=conversation_id,
             ):
                 anyio.from_thread.run(send.send, ev)
         except Exception as e:  # surface, don't crash the socket loop

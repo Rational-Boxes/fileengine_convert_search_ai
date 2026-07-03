@@ -80,7 +80,8 @@ class ChatService:
 
     def answer(self, identity, *, message: str, system_prompt: str = "",
                history: Optional[List[dict]] = None, k: int = 8,
-               web_search: Optional[bool] = None) -> Iterator[dict]:
+               web_search: Optional[bool] = None,
+               conversation_id: Optional[str] = None) -> Iterator[dict]:
         msg = guards.check_query(message, self.config.max_query_chars)
         k = guards.cap_k(k, self.config.max_chat_k)
         chunks = self.retriever.retrieve(identity, msg, k=k)
@@ -97,7 +98,8 @@ class ChatService:
                 answer_parts.append(delta)
                 yield {"type": "token", "text": delta}
             # Divert any marker-wrapped report from the stream into a saved file.
-            yield from self._save_marked_reports(identity, "".join(answer_parts), [])
+            prov = self._prov(identity, system_prompt, conversation_id, history, msg, doc_citations)
+            yield from self._save_marked_reports(identity, "".join(answer_parts), [], prov)
             self._audit(identity, chunks, doc_citations, trimmed, web_searches=0)
             yield {"type": "citations", "citations": doc_citations}
             return
@@ -144,14 +146,31 @@ class ChatService:
                 yield {"type": "tool_result", "name": ev.get("name")}
 
         # Divert any marker-wrapped report into a saved file.
-        yield from self._save_marked_reports(identity, ctx.answer_text, ctx.saved)
-
         citations = doc_citations + web_citations
+        prov = self._prov(identity, system_prompt, conversation_id, history, msg, citations)
+        yield from self._save_marked_reports(identity, ctx.answer_text, ctx.saved, prov)
+
         self._audit(identity, chunks, citations, trimmed, web_searches=counters["searches"])
         yield {"type": "citations", "citations": citations}
 
     # ----------------------------------------------------------------- helpers
-    def _save_marked_reports(self, identity, answer_text: str, saved: List[str]):
+    def _prov(self, identity, system_prompt, conversation_id, history, message, citations) -> dict:
+        """Assemble the chat context handed to a saved report so it can attach a
+        provenance log (who chatted + transcript + grounding). See provenance.py."""
+        return {
+            "user": getattr(identity, "user", ""),
+            "tenant": getattr(identity, "tenant", ""),
+            "model": getattr(self.config, "chat_model", ""),
+            "provider": getattr(self.config, "chat_provider", ""),
+            "system_prompt": system_prompt or "",
+            "conversation_id": conversation_id,
+            "history": history or [],
+            "message": message,
+            "citations": citations,
+        }
+
+    def _save_marked_reports(self, identity, answer_text: str, saved: List[str],
+                             provenance: Optional[dict] = None):
         """Write any ``[[SAVE_REPORT …]] … [[/SAVE_REPORT]]`` block the model streamed
         to a file in the user's storage — the destination travels in the START
         marker (set before the report), and the closing marker OR a stream cutoff
@@ -167,7 +186,9 @@ class ChatService:
                 uid, loc, nbytes = save_report_document(
                     identity, self.config, path=rep.path, filename=rep.filename,
                     title=rep.title, body=rep.body, create_folders=True,
-                    max_bytes=getattr(self.config, "chat_document_max_bytes", 5_000_000))
+                    max_bytes=getattr(self.config, "chat_document_max_bytes", 5_000_000),
+                    provenance=({**provenance, "answer_text": answer_text}
+                                if provenance is not None else None))
             except ReportSaveError as e:
                 audit.record(action="save_report", user=identity.user, tenant=identity.tenant,
                              result="error", reason=e.kind)
