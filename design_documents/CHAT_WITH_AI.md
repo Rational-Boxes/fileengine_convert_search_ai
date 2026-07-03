@@ -291,8 +291,10 @@ documents that weren't chat‑generated.
 **Permissions & privacy.** The log **follows the report**: it is readable by anyone
 who can READ the report (provenance is part of the artifact) and is written under
 the creating user's identity. The transcript is the creator's *own* session content
-— it exposes no other user's private chats — and it is **not redacted** (any
-web‑fetched third‑party text quoted in the chat is preserved verbatim).
+— it exposes no other user's private chats. **Personally identifiable information
+(PII) is redacted** from the stored transcript; **web‑fetched / internet content is
+kept verbatim** (not redacted), since it is public reference material, not personal
+data.
 
 **Integrity.** Write the JSON record with a content hash (and, later, an optional
 signature) so the provenance can't be silently altered after the fact —
@@ -301,8 +303,8 @@ signature) so the provenance can't be silently altered after the fact —
 **Decisions (settled).**
 - **Full transcript** — the entire conversation up to the save is stored,
   untruncated (no size cap / no "generating turn only" trimming).
-- **No redaction** — transcript content, including quoted web‑fetched material, is
-  kept verbatim.
+- **Redact PII, keep web content** — personally identifiable information is scrubbed
+  from the stored transcript; web‑fetched / internet content is preserved verbatim.
 - **Lifespan = the report's.** The log is a hidden child/sidecar, so it versions and
   is deleted **with** the report (child cascade); it has no separate retention or
   legal‑hold and follows the document's read access.
