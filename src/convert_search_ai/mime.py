@@ -55,6 +55,15 @@ _EXT_3D = {
     ".vrml": "model/vrml",
 }
 
+# Extensions whose type the sniffers get wrong: libmagic reports Markdown as
+# text/plain, which would route .md to the source-code preview (raw text) instead
+# of the formatted Markdown renderer. The extension is authoritative for these,
+# taking priority over libmagic (but not over a positive content sniff).
+_EXT_TEXT_OVERRIDE = {
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+}
+
 # Office Open XML / OpenDocument are ZIP containers — disambiguate by member.
 _ZIP_SIG = b"PK\x03\x04"
 _OOXML = {
@@ -134,10 +143,16 @@ def _sniff_zip(data: bytes) -> str:
 
 def detect(data: bytes, name: str = "") -> str:
     """Best-effort MIME type for ``data`` (with optional file ``name``)."""
+    lower = name.lower() if name else ""
     if data:
         sniffed = _sniff(data)
         if sniffed:
             return sniffed
+        # Extension override for text types the sniffers mislabel (Markdown ->
+        # text/plain), applied before libmagic so it wins over that guess.
+        for ext, mime in _EXT_TEXT_OVERRIDE.items():
+            if lower.endswith(ext):
+                return mime
         try:  # python-magic, if installed
             import magic  # type: ignore
             guess = magic.from_buffer(bytes(data[:8192]), mime=True)
@@ -146,7 +161,9 @@ def detect(data: bytes, name: str = "") -> str:
         except Exception:
             pass
     if name:
-        lower = name.lower()
+        for ext, mime in _EXT_TEXT_OVERRIDE.items():
+            if lower.endswith(ext):
+                return mime
         for ext, mime in _EXT_3D.items():
             if lower.endswith(ext):
                 return mime
