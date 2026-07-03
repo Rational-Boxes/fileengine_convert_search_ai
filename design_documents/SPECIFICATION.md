@@ -44,3 +44,7 @@ frontend connects and where a document reference is returned in replies the link
 to the document is presented. THe front-end provides a conversation specific system prompt
 to seed the conversation. This way a system user can conduct a chat-with-documents session
 limited to only content they have read access to.
+
+The full feature set — the WebSocket protocol, permission‑scoped retrieval, agentic
+tools (web search/fetch, folder browse, report saving), citations, conversations, and
+the planned expansion — is documented in **[CHAT_WITH_AI.md](./CHAT_WITH_AI.md)**.

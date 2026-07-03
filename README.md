@@ -6,6 +6,7 @@ FileEngine microservice for **format conversion**, **search**, and **vector-back
 RAG chat** — every result and citation gated by the user's FileEngine read
 permission. See [`design_documents/`](./design_documents) for the
 [specification](./design_documents/SPECIFICATION.md),
+[chat‑with‑AI feature doc](./design_documents/CHAT_WITH_AI.md),
 [development plan](./design_documents/DEVELOPMENT_PLAN.md), and the
 [event contract](./design_documents/EVENT_CONTRACT.md).
 
