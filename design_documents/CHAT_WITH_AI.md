@@ -264,9 +264,9 @@ so an org has an accountability trail for AI‑authored documents.
 **What is captured (the provenance record).**
 - The **chatting user's identity** (uid/email) and tenant, plus the timestamp the
   report was generated.
-- The **conversation transcript** that led to the report — the turns of the chat
-  (user prompts + assistant answers). At minimum the generating turn; ideally the
-  full conversation up to the save (bounded by a size cap).
+- The **full conversation transcript** that led to the report — every turn of the
+  chat (user prompts + assistant answers) up to the save, stored **in its entirety
+  (no truncation)**.
 - The **grounding**: the citations/sources used (document `file_uid`s + any web
   URLs) and the retrieval parameters.
 - The **generation context**: chat provider + model, the (system) prompt in effect,
@@ -288,24 +288,26 @@ affordance in the preview / details drawer that opens the rendered transcript
 showing who chatted, when, the prompts/answers, and the cited sources. Absent for
 documents that weren't chat‑generated.
 
-**Permissions & privacy (to decide).** Default proposal: the log is readable by
-anyone who can **READ the report** (provenance is part of the artifact), written
-by the creating user's identity. Consider a stricter mode where the transcript is
-visible only to the **creator + tenant admins** (since a chat may contain incidental
-personal phrasing) while a minimal attribution stub (who/when/model) stays visible
-to all report readers. The transcript is the creator's *own* session content, so it
-exposes no other user's private chats.
+**Permissions & privacy.** The log **follows the report**: it is readable by anyone
+who can READ the report (provenance is part of the artifact) and is written under
+the creating user's identity. The transcript is the creator's *own* session content
+— it exposes no other user's private chats — and it is **not redacted** (any
+web‑fetched third‑party text quoted in the chat is preserved verbatim).
 
 **Integrity.** Write the JSON record with a content hash (and, later, an optional
 signature) so the provenance can't be silently altered after the fact —
 "tamper‑evident."
 
-**Open decisions.**
-- Full conversation vs. just the generating turn(s); size cap and truncation policy.
-- Redaction of any web‑fetched third‑party content quoted in the transcript.
-- Retention: does deleting the report also purge its log (child cascade — yes by
-  default), and is the log retained under legal‑hold separately?
-- Backfill: only new reports get logs, or attach on next save for existing ones.
+**Decisions (settled).**
+- **Full transcript** — the entire conversation up to the save is stored,
+  untruncated (no size cap / no "generating turn only" trimming).
+- **No redaction** — transcript content, including quoted web‑fetched material, is
+  kept verbatim.
+- **Lifespan = the report's.** The log is a hidden child/sidecar, so it versions and
+  is deleted **with** the report (child cascade); it has no separate retention or
+  legal‑hold and follows the document's read access.
+- **No backfill** — only reports generated after this ships get a log; existing
+  reports are left as‑is.
 
 **Touch points.** CSAI `llm_tools.py` (emit the record at `save_report`),
 `conversations.py` (source the transcript), FileEngine core (a hidden‑child/sidecar
