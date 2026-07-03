@@ -89,12 +89,16 @@ def build_record(prov: dict, *, report_uid: str, report_version: str) -> dict:
 # -------------------------------------------------------------- HTML rendering
 def render_html(record: dict) -> bytes:
     """A self-contained, previewable HTML transcript with the JSON record embedded."""
+    from .llm_tools import markdown_to_html  # lazy: avoids an import cycle
     e = html.escape
     rep = record.get("report", {})
     rows = []
     for m in record.get("transcript", []):
         role = e(m.get("role", ""))
-        body = e(m.get("content", "")).replace("\n", "<br>")
+        # Render each turn as Markdown → HTML, letting any raw HTML the model
+        # produced (e.g. the report body) render rather than showing as escaped
+        # text. Isolated downstream by the viewer (shadow DOM / iframe document).
+        body = markdown_to_html(m.get("content", ""))
         rows.append(f'<div class="msg {role}"><div class="role">{role}</div>'
                     f'<div class="body">{body}</div></div>')
     cites = []

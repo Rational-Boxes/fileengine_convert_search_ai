@@ -128,13 +128,16 @@ def test_render_html_embeds_roundtrippable_json_and_transcript():
     assert json.loads(payload)["schema"] == provenance.SCHEMA
 
 
-def test_render_html_escapes_content():
+def test_render_html_renders_markdown_and_passes_through_html():
     rec = provenance.build_record(
-        {"user": "u", "tenant": "t", "message": "<script>x</script>", "answer_text": "a",
-         "citations": []}, report_uid="r1", report_version="v1")
+        {"user": "u", "tenant": "t", "message": "**bold** point",
+         "answer_text": "<p>raw <em>html</em></p>", "citations": []},
+        report_uid="r1", report_version="v1")
     h = provenance.render_html(rec).decode("utf-8")
-    # the user's angle brackets are escaped in the rendered transcript
-    assert "&lt;script&gt;x&lt;/script&gt;" in h
+    # Markdown in a turn is formatted…
+    assert "<strong>bold</strong>" in h
+    # …and raw HTML the model produced renders rather than showing as escaped text.
+    assert "<em>html</em>" in h
 
 
 # --------------------------------------------------------------- attach to file
