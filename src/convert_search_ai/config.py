@@ -278,6 +278,9 @@ class Config:
         # /auth/token bearer tokens + Basic auth are accepted).
         self.bridge_url = _env("CSAI_BRIDGE_URL", "").rstrip("/")
         self.bridge_introspect_ttl = int(_env("CSAI_BRIDGE_INTROSPECT_TTL", "60"))
+        # Shared HS256 secret to verify the bridge's bearer JWTs locally (no
+        # introspection round-trip). Same value the bridge signs with.
+        self.jwt_secret = _env("FILEENGINE_JWT_SECRET", "")
 
     @property
     def pg_dsn(self) -> str:

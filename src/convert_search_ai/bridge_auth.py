@@ -21,6 +21,7 @@ import urllib.request
 from typing import Optional
 
 from .ldap_auth import Identity
+from .jwt_verify import identity_from_claims, verify_hs256
 
 
 class BridgeTokenVerifier:
@@ -28,23 +29,40 @@ class BridgeTokenVerifier:
     endpoint, with a small TTL cache. Disabled (always returns ``None``) when no
     bridge URL is configured."""
 
-    def __init__(self, base_url: str, ttl_seconds: int = 60, timeout: float = 3.0):
+    def __init__(self, base_url: str, ttl_seconds: int = 60, timeout: float = 3.0,
+                 jwt_secret: str = ""):
         self.base_url = (base_url or "").rstrip("/")
         self.ttl = ttl_seconds
         self.timeout = timeout
+        self.jwt_secret = jwt_secret or ""
         self._lock = threading.Lock()
         self._cache: dict[tuple[str, str], tuple[Identity, float]] = {}
 
     @property
     def enabled(self) -> bool:
-        return bool(self.base_url)
+        # Verifiable if we can check signatures locally OR reach the bridge.
+        return bool(self.jwt_secret) or bool(self.base_url)
 
     def verify(self, token: str, tenant: str) -> Optional[Identity]:
         """Resolve a bridge bearer ``token`` to an Identity scoped to ``tenant``,
-        or ``None`` if coordination is off, the token is empty, or the bridge
-        rejects it / is unreachable. Cached per ``(token, tenant)`` for ``ttl``."""
-        if not self.enabled or not token:
+        or ``None`` if coordination is off, the token is empty/invalid, or the
+        bridge rejects it. When a shared JWT secret is configured the signed token
+        is verified LOCALLY (no round-trip); otherwise introspection is used."""
+        if not token or not self.enabled:
             return None
+        # Local HS256 verification of the bridge's signed JWT.
+        if self.jwt_secret:
+            claims = verify_hs256(token, self.jwt_secret)
+            if claims is None:
+                return None  # invalid/expired — do not fall back to introspection
+            got = identity_from_claims(claims, tenant)
+            if got is None:
+                return None
+            user, roles = got
+            return Identity(user=user, roles=roles,
+                            tenant=tenant or claims.get("tenant", "default"),
+                            authenticated=True)
+        # No shared secret: fall back to bridge introspection (cached).
         key = (token, tenant)
         now = time.time()
         with self._lock:

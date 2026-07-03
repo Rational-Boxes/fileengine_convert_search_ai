@@ -92,7 +92,7 @@ def build_app(config: Config | None = None, *, search: SearchService | None = No
     # (disabled when CSAI_BRIDGE_URL is unset). One login spans both services.
     from .bridge_auth import BridgeTokenVerifier
     app.state.bridge_verifier = BridgeTokenVerifier(
-        config.bridge_url, config.bridge_introspect_ttl)
+        config.bridge_url, config.bridge_introspect_ttl, jwt_secret=config.jwt_secret)
     gate = PermissionGate(config.permission_cache_ttl)
     app.state.permission_gate = gate
     app.state.search = search or SearchService(config, gate=gate)
