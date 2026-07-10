@@ -395,3 +395,69 @@ def test_default_registry_includes_model3d_before_text():
 def test_registry_routes_3d_mime_to_model3d():
     from convert_search_ai.plugins.registry import default_registry
     assert default_registry().for_mime("application/x-ifc").name == "model3d"
+
+
+# --------------------------------------------------------------------------- #
+# IfcOpenShell backend (Python lib for text, IfcConvert for geometry)
+#
+# The `ifc4.ifc` fixture declares schema IFC4RC4, which the installed
+# IfcOpenShell rejects — so it silently falls back to the native scanner and the
+# ifcopenshell code path is never exercised by the tests above. `pillar_ifc4.ifc`
+# declares a released IFC4 schema, so these tests drive the real ifcopenshell
+# path end-to-end (skipped when the library / IfcConvert are absent).
+# --------------------------------------------------------------------------- #
+
+def _ifcopenshell_available() -> bool:
+    try:
+        import ifcopenshell  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _ifcconvert_bin():
+    import shutil
+    # IfcOpenShell ships the CLI as `IfcConvert`; the plugin's default config
+    # name is `ifcConvert` — accept either so the test finds a real install.
+    return shutil.which("IfcConvert") or shutil.which("ifcConvert")
+
+
+@pytest.mark.skipif(not _ifcopenshell_available(), reason="ifcopenshell not installed")
+def test_ifcopenshell_text_branch_used_for_released_schema():
+    from convert_search_ai.plugins.xeokit3d import (
+        _ifc_text_ifcopenshell, extract_ifc_text)
+    data = fx("pillar_ifc4.ifc")
+    md = _ifc_text_ifcopenshell(data)
+    assert md, "ifcopenshell branch produced no text for an IFC4 file"
+    assert "schema IFC4" in md
+    assert "BIMExample" in md          # IfcProject.Name, resolved by ifcopenshell
+    # extract_ifc_text must prefer the (richer, attribute-resolved) ifcopenshell
+    # result over the native STEP scanner whenever the library can parse the file.
+    assert extract_ifc_text(data) == md
+
+
+@pytest.mark.skipif(
+    not (_ifcopenshell_available() and _ifcconvert_bin() and _tools.have("convert2xkt")),
+    reason="IfcOpenShell (IfcConvert) + convert2xkt required")
+def test_ifc_render_via_ifcopenshell_backend(monkeypatch):
+    """Geometry render forced onto the IfcOpenShell backend: IFC → GLB (IfcConvert)
+    → XKT (convert2xkt), rather than xeokit's native web-ifc path."""
+    import struct
+    from convert_search_ai.config import Config
+    from convert_search_ai.plugins.xeokit3d import Xeokit3DPlugin
+    monkeypatch.setenv("CSAI_3D_IFC_BACKEND", "ifcopenshell")
+    monkeypatch.setenv("CSAI_3D_IFCCONVERT", _ifcconvert_bin())
+    calls = []
+    _orig = _tools.run
+    monkeypatch.setattr(_tools, "run",
+                        lambda cmd, **kw: (calls.append(cmd[0]), _orig(cmd, **kw))[1])
+    rends = Xeokit3DPlugin(Config()).render(
+        fx("pillar_ifc4.ifc"), "application/x-ifc", "pillar_ifc4.ifc")
+    assert len(rends) == 1
+    r = rends[0]
+    assert (r.fmt, r.ext, r.mime) == ("model", "xkt", "application/octet-stream")
+    assert struct.unpack("<I", r.data[:4])[0] == 12   # xeokit XKT v12 header
+    # geometry came through IfcOpenShell's IfcConvert (GLB), then convert2xkt —
+    # NOT convert2xkt consuming the .ifc directly (that would be web-ifc/xeokit).
+    assert any("IfcConvert" in c or c.endswith("ifcConvert") for c in calls)
+    assert any("convert2xkt" in c for c in calls)
