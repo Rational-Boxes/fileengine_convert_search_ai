@@ -13,10 +13,17 @@ it. Two callers exist:
   ``system_admin`` role so indexing sees *all* content (a complete index);
   per-user ACLs are then enforced at retrieval time via ``client_for``.
 """
+import contextvars
 from dataclasses import replace
 
 from .ldap_auth import Identity, authenticate
 from ._client import ManagedFiles
+
+# Request-scoped client IP (set by the HTTP middleware), forwarded to the core so
+# per-user file-access audit rows carry the real caller's address. Empty for
+# background work (e.g. the ingest worker) which has no client connection.
+request_source_addr: "contextvars.ContextVar[str]" = contextvars.ContextVar(
+    "request_source_addr", default="")
 
 # The core grants this role an ACL bypass (acl_manager.h / server.cpp): a trusted
 # upstream attaches it to legitimately privileged, system-level requests. Indexing
@@ -32,6 +39,7 @@ def client_for(identity: Identity, config) -> ManagedFiles:
         user_name=identity.user,
         user_roles=identity.roles,
         tenant=identity.tenant or config.tenant,
+        source_addr=request_source_addr.get(),  # forwarded to the core for audit
     )
 
 
