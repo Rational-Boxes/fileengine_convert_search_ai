@@ -74,15 +74,14 @@ def build_app(config: Config | None = None, *, search: SearchService | None = No
     app = FastAPI(title="convert_search_ai", version=__version__)
 
     # Capture the caller's IP into a request-scoped contextvar so per-user core
-    # calls forward it (core audit source_addr). Best-effort: the first
-    # X-Forwarded-For hop behind the proxy, else the socket peer.
+    # calls forward it (core audit source_addr). Trusted-proxy aware (§3): honors
+    # FILEENGINE_TRUSTED_PROXIES exactly like the C++ bridges.
     from .core_client import request_source_addr
+    from .netutil import client_ip_from_request
 
     @app.middleware("http")
     async def _capture_client_ip(request, call_next):
-        xff = request.headers.get("x-forwarded-for", "")
-        ip = xff.split(",")[0].strip() if xff else (request.client.host if request.client else "")
-        token = request_source_addr.set(ip)
+        token = request_source_addr.set(client_ip_from_request(request))
         try:
             return await call_next(request)
         finally:
