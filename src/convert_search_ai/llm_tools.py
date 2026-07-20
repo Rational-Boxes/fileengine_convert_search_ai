@@ -481,13 +481,138 @@ class ListFoldersTool(Tool):
         return ToolOutput(text="\n".join(lines))
 
 
-def build_tools(config: Config, *, include_web: bool = True) -> List[Tool]:
+class DocumentSearchTool(Tool):
+    """Locate the user's indexed documents by content terms (permission-gated).
+
+    RAG auto-retrieves context for the user's message; this tool lets the model go
+    further — deliberately searching for a file the initial context didn't surface,
+    then reading it with get_document_text. Returns matching files (name + file_uid
+    + snippet), not full text."""
+
+    name = "document_search"
+    description = (
+        "Search the user's indexed documents by content terms to FIND relevant "
+        "files. Returns matching documents with a name, a file_uid, and a short "
+        "snippet — not the full text. Use this when the automatically-provided "
+        "context does not contain what you need: search for the topic, then read the "
+        "most relevant file with get_document_text. Only files the user may read are "
+        "returned.")
+    schema = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Content search terms."},
+            "limit": {"type": "integer",
+                      "description": "Max documents to return (default 10)."},
+        },
+        "required": ["query"],
+    }
+
+    def __init__(self, search_service, *, default_limit: int = 10):
+        self._search = search_service
+        self._default_limit = default_limit
+
+    def run(self, args: dict, ctx: ToolContext) -> ToolOutput:
+        query = str((args or {}).get("query", "") or "")
+        try:
+            limit = int((args or {}).get("limit") or self._default_limit)
+        except (TypeError, ValueError):
+            limit = self._default_limit
+        try:
+            hits = self._search.search(ctx.identity, query, limit=limit, fuzzy=True)
+        except guards.GuardError as e:
+            return ToolOutput(text=f"(document_search error: {e})")
+        except Exception as e:
+            return ToolOutput(text=f"(document_search error: {e})")
+        if not hits:
+            return ToolOutput(text=f"No indexed documents matched '{query}'.")
+        lines = [f"{len(hits)} document(s) matched '{query}' (read one with "
+                 f"get_document_text using its file_uid):"]
+        for h in hits:
+            snippet = " ".join((getattr(h, "snippet", "") or "").split())
+            lines.append(f"- {getattr(h, 'name', '') or '(unnamed)'} "
+                         f"[file_uid={getattr(h, 'file_uid', '')}]\n  {snippet}")
+        return ToolOutput(text="\n".join(lines))
+
+
+class GetDocumentTextTool(Tool):
+    """Read a window of one indexed document's extracted text (permission-gated).
+
+    The deep-interrogation half of RAG + direct read: fetch the Markdown the search
+    index holds for a specific file_uid, sliced to an [offset, offset+length)
+    character window so the model can page through a large document rather than
+    pull the whole thing. The reply states the total length and the window bounds
+    so the model can request the next range."""
+
+    name = "get_document_text"
+    description = (
+        "Read the extracted text (Markdown) of ONE indexed document by its file_uid, "
+        "to interrogate details the automatic context did not include. Returns a "
+        "character window: pass 'offset' (start, default 0) and 'length' (default "
+        "4000, capped) to page through a long document — the response reports the "
+        "total length and the window returned so you can request the next range. Get "
+        "a file_uid from document_search or a citation. Only readable files are "
+        "returned.")
+    schema = {
+        "type": "object",
+        "properties": {
+            "file_uid": {"type": "string", "description": "The document's file_uid."},
+            "offset": {"type": "integer",
+                       "description": "Start character offset into the text (default 0)."},
+            "length": {"type": "integer",
+                       "description": "Number of characters to return (default 4000; capped)."},
+        },
+        "required": ["file_uid"],
+    }
+
+    def __init__(self, search_service, *, default_window: int = 4000, max_window: int = 20000):
+        self._search = search_service
+        self._default_window = default_window
+        self._max_window = max_window
+
+    def run(self, args: dict, ctx: ToolContext) -> ToolOutput:
+        file_uid = str((args or {}).get("file_uid", "") or "").strip()
+        if not file_uid:
+            return ToolOutput(text="(get_document_text error: file_uid is required)")
+        try:
+            offset = max(0, int((args or {}).get("offset") or 0))
+        except (TypeError, ValueError):
+            offset = 0
+        try:
+            length = int((args or {}).get("length") or self._default_window)
+        except (TypeError, ValueError):
+            length = self._default_window
+        length = max(1, min(length, self._max_window))
+        try:
+            text, _truncated = self._search.get_text(ctx.identity, file_uid)
+        except PermissionError:
+            return ToolOutput(text=f"(get_document_text: you do not have permission to read {file_uid})")
+        except FileNotFoundError:
+            return ToolOutput(text=(f"(get_document_text: no extracted text for {file_uid} — "
+                                    f"it may not be indexed)"))
+        except Exception as e:
+            return ToolOutput(text=f"(get_document_text error: {e})")
+        text = text or ""
+        total = len(text)
+        if offset >= total and total > 0:
+            return ToolOutput(text=(f"Document {file_uid} is {total} characters; offset {offset} "
+                                    f"is past the end. Request a smaller offset."))
+        window = text[offset:offset + length]
+        end = offset + len(window)
+        more = (f" — more follows; call again with offset={end} for the next window"
+                if end < total else " — end of document")
+        header = f"Document {file_uid}: characters {offset}–{end} of {total}{more}:\n\n"
+        return ToolOutput(text=header + window)
+
+
+def build_tools(config: Config, *, include_web: bool = True, search=None) -> List[Tool]:
     """The tools to expose to the model for this deployment.
 
-    Document saving is handled by the SAVE_REPORT stream markers (see chat.py),
-    not a tool, so only the folder-exploration tool is offered for documents. The
-    web tools are added only when web search is enabled AND ``include_web`` (the
-    chat layer passes the per-turn opt-in); fetch_page needs its own extra enable."""
+    Report saving is handled by the SAVE_REPORT stream markers (see chat.py), not a
+    tool. The web tools are added only when web search is enabled AND ``include_web``
+    (the chat layer passes the per-turn opt-in); fetch_page needs its own extra
+    enable. The document tools (folder browse + content search + windowed read) are
+    added when the document feature is enabled; the search/read pair needs a
+    ``search`` SearchService to reach the index (per-user permission-gated)."""
     tools: List[Tool] = []
     if include_web and getattr(config, "web_search_enabled", False):
         from .providers import make_web_search_provider
@@ -502,7 +627,14 @@ def build_tools(config: Config, *, include_web: bool = True) -> List[Tool]:
                 timeout_ms=getattr(config, "web_timeout_ms", 5000),
                 max_chars=getattr(config, "web_max_chars", 4000)))
     if getattr(config, "chat_document_tool_enabled", True):
-        # Folder exploration so the model can browse + suggest a destination; the
-        # save itself is deterministic via the SAVE_REPORT markers.
+        # Folder exploration so the model can browse the user's storage.
         tools.append(ListFoldersTool())
+        # RAG + direct interrogation: find files by content, then read a range.
+        if search is not None:
+            tools.append(DocumentSearchTool(
+                search, default_limit=getattr(config, "chat_doc_search_limit", 10)))
+            tools.append(GetDocumentTextTool(
+                search,
+                default_window=getattr(config, "chat_doc_text_window", 4000),
+                max_window=getattr(config, "chat_doc_text_max_window", 20000)))
     return tools

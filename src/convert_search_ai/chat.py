@@ -38,6 +38,22 @@ _INSTRUCTIONS_WEB = (
     "one numbering — and make clear which statements come from the web."
 )
 
+# Appended (non-report mode) when the document read/search tools are available:
+# RAG auto-retrieval is only a first pass, so let the model interrogate the source
+# documents directly instead of giving up when the excerpts fall short.
+_INSTRUCTIONS_DOC_TOOLS = (
+    "The Context below is auto-retrieved (RAG) and may be incomplete or miss details "
+    "buried inside a document. Do NOT say you don't know until you have looked. When "
+    "the Context is missing or thin on what the user asks, follow this workflow:\n"
+    "  1. Call document_search with the key terms to find which file(s) contain the "
+    "information (it returns file names + file_uids).\n"
+    "  2. Call get_document_text on the most relevant file_uid to READ its actual "
+    "content; page through long files with offset/length until you find the detail.\n"
+    "  3. Answer from what you read, naming the document(s) you used.\n"
+    "Prefer searching-then-reading a real document over guessing or giving up. You "
+    "may iterate (search again, read another file) as needed."
+)
+
 # Appended when the document tools are available. Workflow: explore folders,
 # confirm the destination FIRST, then stream the report wrapped in SAVE_REPORT
 # markers — the app diverts the marked body to a file automatically (no fragile
@@ -69,25 +85,32 @@ _INSTRUCTIONS_DOCUMENT = (
 # chose the folder + filename; the model produces ONLY content and must not name a
 # destination — one content‑only SAVE_REPORT block.
 _INSTRUCTIONS_REPORT_TARGET = (
-    "The user has asked you to generate a report of this conversation and has "
-    "ALREADY chosen exactly where to save it. Write the report now, wrapped in a "
-    "single pair of markers:\n"
-    "   [[SAVE_REPORT title=\"A short report title\"]]\n"
-    "   ...the full report as Markdown or HTML (headings, paragraphs, tables, lists)...\n"
+    "Your ONLY task right now is to WRITE A REPORT of this conversation. Do not ask "
+    "questions, do not browse folders or call any tools, do not narrate what you are "
+    "doing ('gathering information', etc.), and do not answer conversationally — the "
+    "user has already chosen where to save it. Synthesize the conversation above (and "
+    "any Context excerpts below, citing them by their [n] marker where you use them) "
+    "into a complete, well-structured report.\n"
+    "Output ONLY the report, wrapped in a single pair of markers, with NO text before "
+    "the opening marker or after the closing one:\n"
+    "   [[SAVE_REPORT title=\"A short, descriptive title\"]]\n"
+    "   ...the full report as Markdown: headings, paragraphs, tables, lists...\n"
     "   [[/SAVE_REPORT]]\n"
-    "Provide ONLY a title and the report body. Do NOT specify or mention any folder, "
-    "path, or filename — the destination is fixed by the user and is not yours to "
-    "choose. Put the ENTIRE report between the markers (opening marker, the complete "
-    "report, then the closing [[/SAVE_REPORT]] marker); do not place content after "
-    "the closing marker."
+    "Write the opening marker, then the ENTIRE report, then the closing "
+    "[[/SAVE_REPORT]] marker. Do NOT put any folder, path, or filename in the marker "
+    "— only a title. Begin your response with '[[SAVE_REPORT'."
 )
 
 
 class ChatService:
-    def __init__(self, config: Config, *, retriever: Optional[Retriever] = None, chat=None):
+    def __init__(self, config: Config, *, retriever: Optional[Retriever] = None, chat=None,
+                 search=None):
         self.config = config
         self.retriever = retriever or Retriever(config)
         self._chat = chat
+        # SearchService for the document_search / get_document_text tools (RAG +
+        # LLM-controlled direct interrogation). None ⇒ those two tools are omitted.
+        self._search = search
 
     @property
     def chat(self):
@@ -106,7 +129,10 @@ class ChatService:
         chunks = self.retriever.retrieve(identity, msg, k=k)
         chunks, trimmed = guards.trim_context(chunks, self.config.max_context_chars)
 
-        tools = self._select_tools(web_search)
+        # Report mode is a focused "write the report now" task — offer NO tools so
+        # the model can't wander off "gathering information" and answer briefly
+        # instead of writing (the destination is already fixed by the user).
+        tools = [] if report_target is not None else self._select_tools(web_search)
         messages = list(history or []) + [{"role": "user", "content": msg}]
         system = self._build_system(system_prompt, chunks, tools=tools, report_target=report_target)
         doc_citations = self._doc_citations(chunks)
@@ -252,7 +278,7 @@ class ChatService:
         if getattr(self.config, "web_search_enabled", False):
             include_web = (self.config.web_search_default if web_search is None
                            else bool(web_search))
-        return build_tools(self.config, include_web=include_web)
+        return build_tools(self.config, include_web=include_web, search=self._search)
 
     @staticmethod
     def _doc_citations(chunks: List[RetrievedChunk]) -> List[dict]:
@@ -277,13 +303,16 @@ class ChatService:
         parts = []
         if system_prompt and system_prompt.strip():
             parts.append(system_prompt.strip())
-        parts.append(_INSTRUCTIONS_WEB if "web_search" in names else _INSTRUCTIONS)
-        # Report saving is now a UI‑initiated action with a user‑pinned destination
-        # (GENERATE_REPORT_TO_TARGET). In report mode we command a content‑only report;
-        # outside it we DO NOT solicit any SAVE_REPORT block (the model no longer
-        # chooses where — or whether — to save). The list_folders tool remains for
-        # general browsing, separately.
+        # In report mode the report directive REPLACES the retrieval "answer + cite"
+        # instruction — otherwise the model produces a short grounded answer instead
+        # of writing the report (GENERATE_REPORT_TO_TARGET). Outside report mode we do
+        # NOT solicit any SAVE_REPORT block (the model no longer chooses where/whether
+        # to save); list_folders remains available for general browsing.
         if report_target is not None:
             parts.append(_INSTRUCTIONS_REPORT_TARGET)
+        else:
+            parts.append(_INSTRUCTIONS_WEB if "web_search" in names else _INSTRUCTIONS)
+            if "get_document_text" in names:
+                parts.append(_INSTRUCTIONS_DOC_TOOLS)
         parts.append("Context:\n" + context)
         return "\n\n".join(parts)

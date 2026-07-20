@@ -209,6 +209,10 @@ class Config:
         # the saved report size.
         self.chat_document_tool_enabled = _bool("CSAI_CHAT_DOCUMENT_TOOL", True)
         self.chat_document_max_bytes = int(_env("CSAI_CHAT_DOCUMENT_MAX_BYTES", str(5 * 1024 * 1024)))
+        # document_search / get_document_text tools (RAG + direct interrogation).
+        self.chat_doc_search_limit = int(_env("CSAI_CHAT_DOC_SEARCH_LIMIT", "10"))
+        self.chat_doc_text_window = int(_env("CSAI_CHAT_DOC_TEXT_WINDOW", "4000"))
+        self.chat_doc_text_max_window = int(_env("CSAI_CHAT_DOC_TEXT_MAX_WINDOW", "20000"))
 
         # HTML → PDF conversion (for .html documents, incl. chat-generated reports).
         # Chromium headless gives full-CSS fidelity; LibreOffice is the fallback.

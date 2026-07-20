@@ -100,8 +100,19 @@ via the provider's native function‑calling (`chat.py`, `llm_tools.py`,
 `providers/chat.py`). Tools available:
 
 - **`list_folders`** *(on by default, `CSAI_CHAT_DOCUMENT_TOOL`)* — browse the
-  user's storage under a path, executed **as the user** (ACLs apply). Used so the
-  model can pick a real save destination.
+  user's storage under a path, executed **as the user** (ACLs apply).
+- **`document_search`** *(on by default, `CSAI_CHAT_DOCUMENT_TOOL`)* — **RAG +
+  LLM‑controlled direct interrogation.** RAG only auto‑retrieves a first pass of
+  context; this tool lets the model deliberately *locate* an indexed file by content
+  terms (returns name + `file_uid` + snippet), permission‑gated by the same
+  `SearchService` as `POST /search`. Paired with:
+- **`get_document_text`** *(on by default, `CSAI_CHAT_DOCUMENT_TOOL`)* — read a
+  **character window** (`offset`/`length`) of one indexed file's extracted Markdown
+  by `file_uid`, so the model can page through and interrogate details the RAG
+  excerpts missed (permission‑gated `SearchService.get_text`; window defaults
+  `CSAI_CHAT_DOC_TEXT_WINDOW` 4000, cap `CSAI_CHAT_DOC_TEXT_MAX_WINDOW` 20000). The
+  system prompt instructs the model to **search → read** a real document rather than
+  give up when the context is thin (`_INSTRUCTIONS_DOC_TOOLS`).
 - **`web_search`** *(off by default, `CSAI_WEB_SEARCH_ENABLED`)* — public‑web
   search (DuckDuckGo by default; `fake`/`none` also selectable). Returns titled
   results with snippets, each added to the citation list.

@@ -128,7 +128,10 @@ def build_app(config: Config | None = None, *, search: SearchService | None = No
     app.state.permission_gate = gate
     app.state.search = search or SearchService(config, gate=gate)
     # Chat retrieval shares the same gate, so real-time cache invalidation applies.
-    app.state.chat = chat or ChatService(config, retriever=Retriever(config, gate=gate))
+    # The same SearchService backs the document_search / get_document_text tools
+    # (RAG + LLM-controlled direct interrogation), sharing the permission cache.
+    app.state.chat = chat or ChatService(config, retriever=Retriever(config, gate=gate),
+                                         search=app.state.search)
     app.state.conversations = conversations or ConversationStore(config)
 
     if enable_event_invalidation:
