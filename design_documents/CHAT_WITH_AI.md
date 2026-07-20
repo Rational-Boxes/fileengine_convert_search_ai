@@ -115,6 +115,9 @@ wrap a generated report in `[[SAVE_REPORT path="…" file="…" title="…"]] �
 markers; CSAI parses them, renders Markdown → styled HTML, and writes the file into
 FileEngine **as the user** (subject to WRITE on the destination; capped at
 `CSAI_CHAT_DOCUMENT_MAX_BYTES`, default 5 MB). The core generates a PDF preview.
+Today the *model* chooses the path; a planned **"Generate report"** UI lets the
+*user* pin the exact destination folder + filename (authoritative) — see
+[`GENERATE_REPORT_TO_TARGET.md`](./GENERATE_REPORT_TO_TARGET.md).
 *(Planned: attach a tamper‑evident chat provenance log to every saved report — see
 §4.6.)*
 
