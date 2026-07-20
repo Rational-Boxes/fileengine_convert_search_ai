@@ -139,9 +139,13 @@ def test_parse_report_markers_cutoff_is_incomplete():
     assert len(reps) == 1 and reps[0].complete is False and reps[0].body == "# Partial"
 
 
-def test_parse_report_markers_ignores_blocks_missing_file_or_body():
-    assert parse_report_markers('[[SAVE_REPORT path="/A"]]\nbody\n[[/SAVE_REPORT]]') == []  # no file
-    assert parse_report_markers('[[SAVE_REPORT file="x"]]\n[[/SAVE_REPORT]]') == []          # empty body
+def test_parse_report_markers_requires_only_a_body():
+    # Content-only marker (no file/path) is valid — the destination is supplied out
+    # of band by the caller (GENERATE_REPORT_TO_TARGET), not the model.
+    reps = parse_report_markers('[[SAVE_REPORT title="T"]]\nbody here\n[[/SAVE_REPORT]]')
+    assert len(reps) == 1 and reps[0].body == "body here" and reps[0].filename == ""
+    # An empty body is still ignored.
+    assert parse_report_markers('[[SAVE_REPORT file="x"]]\n[[/SAVE_REPORT]]') == []
 
 
 def test_markdown_to_html_converts_and_passes_through_html():

@@ -299,12 +299,24 @@ class ReportSaveError(Exception):
         self.missing_path = missing_path
 
 
+def _is_permission_error(e) -> bool:
+    s = str(e).lower()
+    return any(w in s for w in ("permission", "denied", "not allowed", "forbidden"))
+
+
 def save_report_document(identity, config, *, path: str, filename: str, title: str,
                          body: str, create_folders: bool, client_factory=None,
-                         max_bytes: int = 5_000_000, provenance: dict = None):
+                         max_bytes: int = 5_000_000, provenance: dict = None,
+                         folder_uid: str = None):
     """Persist a report (Markdown or HTML ``body``) as an HTML file in the user's
     storage, written *as the user*. Returns ``(uid, location, byte_len)``; raises
     :class:`ReportSaveError`. Used by the marker-driven save path (chat.py).
+
+    Destination: when ``folder_uid`` is given (the user pinned it in the UI — see
+    GENERATE_REPORT_TO_TARGET), the report is written straight into that folder UID
+    (no name-walk, no mkdir); otherwise ``path`` is resolved by name from the root.
+    If a file of the same name already exists in the target folder, a **new version**
+    of that exact file is written; otherwise the file is created.
 
     When ``provenance`` (the chat context) is given, a chat-provenance log is
     attached as a hidden child of the report (best-effort — see provenance.py)."""
@@ -323,12 +335,26 @@ def save_report_document(identity, config, *, path: str, filename: str, title: s
     tenant = getattr(identity, "tenant", "") or getattr(config, "tenant", "")
     mf = client_factory(identity, config)
     try:
+        if folder_uid is not None:
+            parent = folder_uid          # UID-anchored: the user chose this exact folder
+        else:
+            try:
+                parent = _resolve_folder(mf, path or "/", tenant, create=create_folders)
+            except FileNotFoundError as miss:
+                raise ReportSaveError("missing_folder", f"the folder '{miss}' does not exist",
+                                      missing_path=str(miss))
+        # Overwrite as a new version when a file with this name already exists in the
+        # target folder; else create it. Either way the report lands at the exact
+        # file the user picked (versioning is a core feature — history is preserved).
+        existing = None
         try:
-            parent = _resolve_folder(mf, path or "/", tenant, create=create_folders)
-        except FileNotFoundError as miss:
-            raise ReportSaveError("missing_folder", f"the folder '{miss}' does not exist",
-                                  missing_path=str(miss))
-        uid = mf.touch(parent, name, tenant=tenant)
+            for e in (mf.dir(parent, tenant=tenant) or []):
+                if not getattr(e, "is_container", False) and e.name == name:
+                    existing = e.uid
+                    break
+        except Exception:
+            existing = None
+        uid = existing or mf.touch(parent, name, tenant=tenant)
         mf.put(uid, document, tenant=tenant)
         if provenance is not None:
             from . import provenance as _prov
@@ -339,8 +365,9 @@ def save_report_document(identity, config, *, path: str, filename: str, title: s
             })
     except ReportSaveError:
         raise
-    except Exception as e:  # WriteUnavailable, PermissionDenied, … — surface as save error
-        raise ReportSaveError("write", f"could not save the report: {e}")
+    except Exception as e:  # WriteUnavailable / permission / … — surface as save error
+        kind = "denied" if _is_permission_error(e) else "write"
+        raise ReportSaveError(kind, f"could not save the report: {e}")
     finally:
         _close(mf)
     return uid, report_location(path, filename), len(document)
@@ -371,7 +398,10 @@ def parse_report_markers(text: str) -> List["MarkedReport"]:
         attrs = dict(_ATTR.findall(m.group(1) or ""))
         body = (m.group(2) or "").strip()
         filename = attrs.get("file") or attrs.get("filename") or ""
-        if not filename or not body:
+        # Only the body is required. In the user‑pinned report flow (GENERATE_REPORT_
+        # TO_TARGET) the marker is content‑only — no path/file — and the destination
+        # comes from the caller, so an absent filename is expected there.
+        if not body:
             continue
         out.append(MarkedReport(
             path=attrs.get("path") or "/",

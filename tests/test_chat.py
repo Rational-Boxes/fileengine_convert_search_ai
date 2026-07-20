@@ -110,33 +110,50 @@ class _MarkerChat:
             yield c
 
 
-def test_marker_wrapped_report_is_saved_to_a_file(monkeypatch):
+def test_report_mode_saves_to_the_user_pinned_target(monkeypatch):
     from convert_search_ai import llm_tools
     mf = _FakeMF()
     monkeypatch.setattr(llm_tools, "_default_client", lambda identity, config: mf)
+    dest = mf.mkdir("", "Reports")                                  # user pre-chose this folder
     chat = _MarkerChat(
-        'Sure — saving now.\n[[SAVE_REPORT path="/Reports" file="q3" title="Q3"]]\n',
+        'Sure — here it is.\n[[SAVE_REPORT title="Q3"]]\n',         # content-only marker
         "# Q3 Report\n\nRevenue is **up**.\n\n- north\n- south\n",
         "[[/SAVE_REPORT]]\nDone!")
-    events = list(ChatService(Config(), retriever=FakeRetriever([]), chat=chat)
-                  .answer(_id(), message="write & save a report"))
+    events = list(ChatService(Config(), retriever=FakeRetriever([]), chat=chat).answer(
+        _id(), message="write a report",
+        report_target={"folder_uid": dest, "filename": "q3", "path": "/Reports"}))
     text = "".join(e["text"] for e in events if e["type"] == "token")
     assert "Saved the report to /Reports/q3.html" in text          # deterministic confirmation
-    assert mf.files[mf.puts[-1][0]] == "q3.html"                   # file written
+    # a report_saved event drives the SPA's "Open report" preview link
+    saved_ev = next(e for e in events if e["type"] == "report_saved")
+    assert saved_ev["name"] == "q3.html" and saved_ev["uid"] == mf.puts[-1][0]
+    assert mf.files[mf.puts[-1][0]] == "q3.html"                   # written into the pinned folder
     saved = mf.puts[-1][1].decode()
     assert "<h1>" in saved and "<strong>up</strong>" in saved      # markdown rendered to HTML
-    # the folder was auto-created (destination came from the marker)
-    assert any(e.name == "Reports" for e in mf.tree[""])
+
+
+def test_no_report_target_means_no_save(monkeypatch):
+    # §3a: outside report mode the model can no longer save a report anywhere, even
+    # if it emits a marker block.
+    from convert_search_ai import llm_tools
+    mf = _FakeMF()
+    monkeypatch.setattr(llm_tools, "_default_client", lambda identity, config: mf)
+    chat = _MarkerChat('[[SAVE_REPORT title="X"]]\nsome body\n[[/SAVE_REPORT]]')
+    events = list(ChatService(Config(), retriever=FakeRetriever([]), chat=chat)
+                  .answer(_id(), message="hi"))                    # no report_target
+    assert not mf.puts                                             # nothing written
+    assert not any(e["type"] == "report_saved" for e in events)
 
 
 def test_marker_cutoff_without_closing_still_saves_with_note(monkeypatch):
     from convert_search_ai import llm_tools
     mf = _FakeMF()
     monkeypatch.setattr(llm_tools, "_default_client", lambda identity, config: mf)
-    chat = _MarkerChat(
-        '[[SAVE_REPORT path="/Reports" file="big"]]\n# Partial\n\nGot cut off mid-stream')
-    events = list(ChatService(Config(), retriever=FakeRetriever([]), chat=chat)
-                  .answer(_id(), message="report"))
+    dest = mf.mkdir("", "Reports")
+    chat = _MarkerChat('[[SAVE_REPORT title="Big"]]\n# Partial\n\nGot cut off mid-stream')
+    events = list(ChatService(Config(), retriever=FakeRetriever([]), chat=chat).answer(
+        _id(), message="report",
+        report_target={"folder_uid": dest, "filename": "big", "path": "/Reports"}))
     text = "".join(e["text"] for e in events if e["type"] == "token")
     assert "Saved the report to /Reports/big.html" in text
     assert "cut off" in text                                       # truncation noted

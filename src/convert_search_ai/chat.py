@@ -64,6 +64,24 @@ _INSTRUCTIONS_DOCUMENT = (
     "emitted the full marked block."
 )
 
+# Injected (in place of _INSTRUCTIONS_DOCUMENT) when the caller pinned a destination
+# via the "Generate report" action (GENERATE_REPORT_TO_TARGET). The user already
+# chose the folder + filename; the model produces ONLY content and must not name a
+# destination — one content‑only SAVE_REPORT block.
+_INSTRUCTIONS_REPORT_TARGET = (
+    "The user has asked you to generate a report of this conversation and has "
+    "ALREADY chosen exactly where to save it. Write the report now, wrapped in a "
+    "single pair of markers:\n"
+    "   [[SAVE_REPORT title=\"A short report title\"]]\n"
+    "   ...the full report as Markdown or HTML (headings, paragraphs, tables, lists)...\n"
+    "   [[/SAVE_REPORT]]\n"
+    "Provide ONLY a title and the report body. Do NOT specify or mention any folder, "
+    "path, or filename — the destination is fixed by the user and is not yours to "
+    "choose. Put the ENTIRE report between the markers (opening marker, the complete "
+    "report, then the closing [[/SAVE_REPORT]] marker); do not place content after "
+    "the closing marker."
+)
+
 
 class ChatService:
     def __init__(self, config: Config, *, retriever: Optional[Retriever] = None, chat=None):
@@ -81,7 +99,8 @@ class ChatService:
     def answer(self, identity, *, message: str, system_prompt: str = "",
                history: Optional[List[dict]] = None, k: int = 8,
                web_search: Optional[bool] = None,
-               conversation_id: Optional[str] = None) -> Iterator[dict]:
+               conversation_id: Optional[str] = None,
+               report_target: Optional[dict] = None) -> Iterator[dict]:
         msg = guards.check_query(message, self.config.max_query_chars)
         k = guards.cap_k(k, self.config.max_chat_k)
         chunks = self.retriever.retrieve(identity, msg, k=k)
@@ -89,7 +108,7 @@ class ChatService:
 
         tools = self._select_tools(web_search)
         messages = list(history or []) + [{"role": "user", "content": msg}]
-        system = self._build_system(system_prompt, chunks, tools=tools)
+        system = self._build_system(system_prompt, chunks, tools=tools, report_target=report_target)
         doc_citations = self._doc_citations(chunks)
 
         if not tools:
@@ -97,9 +116,11 @@ class ChatService:
             for delta in self.chat.stream(messages, system=system):
                 answer_parts.append(delta)
                 yield {"type": "token", "text": delta}
-            # Divert any marker-wrapped report from the stream into a saved file.
-            prov = self._prov(identity, system_prompt, conversation_id, history, msg, doc_citations)
-            yield from self._save_marked_reports(identity, "".join(answer_parts), [], prov)
+            # Save the report ONLY when the user pinned a destination (report mode).
+            if report_target is not None:
+                prov = self._prov(identity, system_prompt, conversation_id, history, msg, doc_citations)
+                yield from self._save_marked_reports(identity, "".join(answer_parts), [], prov,
+                                                     report_target=report_target)
             self._audit(identity, chunks, doc_citations, trimmed, web_searches=0)
             yield {"type": "citations", "citations": doc_citations}
             return
@@ -145,10 +166,12 @@ class ChatService:
             elif et == "tool_result":
                 yield {"type": "tool_result", "name": ev.get("name")}
 
-        # Divert any marker-wrapped report into a saved file.
+        # Save the report ONLY when the user pinned a destination (report mode).
         citations = doc_citations + web_citations
-        prov = self._prov(identity, system_prompt, conversation_id, history, msg, citations)
-        yield from self._save_marked_reports(identity, ctx.answer_text, ctx.saved, prov)
+        if report_target is not None:
+            prov = self._prov(identity, system_prompt, conversation_id, history, msg, citations)
+            yield from self._save_marked_reports(identity, ctx.answer_text, ctx.saved, prov,
+                                                 report_target=report_target)
 
         self._audit(identity, chunks, citations, trimmed, web_searches=counters["searches"])
         yield {"type": "citations", "citations": citations}
@@ -170,22 +193,30 @@ class ChatService:
         }
 
     def _save_marked_reports(self, identity, answer_text: str, saved: List[str],
-                             provenance: Optional[dict] = None):
-        """Write any ``[[SAVE_REPORT …]] … [[/SAVE_REPORT]]`` block the model streamed
-        to a file in the user's storage — the destination travels in the START
-        marker (set before the report), and the closing marker OR a stream cutoff
-        triggers the save. Deterministic: no tool call required. Yields confirmation
-        token events. ``saved`` dedupes locations already written this turn."""
+                             provenance: Optional[dict] = None,
+                             report_target: Optional[dict] = None):
+        """Write the ``[[SAVE_REPORT …]] … [[/SAVE_REPORT]]`` block the model streamed
+        to the file the **user pinned** in the UI (``report_target`` — folder UID +
+        filename; the marker is content‑only). The closing marker OR a stream cutoff
+        triggers the save; no tool call required. Emits a ``report_saved`` event (for
+        the "Open report" preview link) plus a confirmation token. ``saved`` dedupes
+        locations already written this turn."""
         from .llm_tools import (ReportSaveError, parse_report_markers,
                                 report_location, save_report_document)
+        pinned = report_target or {}
         for rep in parse_report_markers(answer_text):
-            loc = report_location(rep.path, rep.filename)
+            # The destination is the user's pinned target, never the model's marker.
+            path = str(pinned.get("path", "") or "")
+            filename = str(pinned.get("filename", "") or "")
+            folder_uid = pinned.get("folder_uid")
+            loc = report_location(path, filename)
             if loc in saved:
                 continue
             try:
                 uid, loc, nbytes = save_report_document(
-                    identity, self.config, path=rep.path, filename=rep.filename,
-                    title=rep.title, body=rep.body, create_folders=True,
+                    identity, self.config, path=path, filename=filename,
+                    title=rep.title, body=rep.body, create_folders=False,
+                    folder_uid=folder_uid,
                     max_bytes=getattr(self.config, "chat_document_max_bytes", 5_000_000),
                     provenance=({**provenance, "answer_text": answer_text}
                                 if provenance is not None else None))
@@ -198,11 +229,17 @@ class ChatService:
             saved.append(loc)
             audit.record(action="save_report", user=identity.user, tenant=identity.tenant,
                          result="ok", bytes=nbytes, truncated=not rep.complete)
+            # Structured event first (drives the SPA's "Open report" preview link),
+            # then the human‑readable confirmation token.
+            yield {"type": "report_saved", "uid": uid,
+                   "name": loc.rsplit("/", 1)[-1], "path": loc}
             note = "" if rep.complete else (" (note: the report may have been cut off before "
                                             "completion — regenerate if it looks incomplete)")
             yield {"type": "token", "text": (
                 f"\n\n✅ Saved the report to {loc} (file {uid}){note}. A PDF preview is "
                 f"being generated.\n")}
+            # Only the first marked block is the report; ignore any extras in report mode.
+            break
 
     def _select_tools(self, web_search: Optional[bool]):
         """Decide which tools to offer this turn. Requires provider tool support.
@@ -232,7 +269,8 @@ class ChatService:
                      web_searches=web_searches, context_trimmed=trimmed)
 
     def _build_system(self, system_prompt: str, chunks: List[RetrievedChunk],
-                      *, tools: Optional[List] = None) -> str:
+                      *, tools: Optional[List] = None,
+                      report_target: Optional[dict] = None) -> str:
         context = ("\n\n".join(f"[{i + 1}] (file {c.file_uid})\n{c.text}" for i, c in enumerate(chunks))
                    if chunks else "(no relevant context found)")
         names = {getattr(t, "name", "") for t in (tools or [])}
@@ -240,9 +278,12 @@ class ChatService:
         if system_prompt and system_prompt.strip():
             parts.append(system_prompt.strip())
         parts.append(_INSTRUCTIONS_WEB if "web_search" in names else _INSTRUCTIONS)
-        # Marker-driven report saving works in any path; offer the guidance whenever
-        # the document feature is enabled (not tied to a specific tool being present).
-        if getattr(self.config, "chat_document_tool_enabled", True):
-            parts.append(_INSTRUCTIONS_DOCUMENT)
+        # Report saving is now a UI‑initiated action with a user‑pinned destination
+        # (GENERATE_REPORT_TO_TARGET). In report mode we command a content‑only report;
+        # outside it we DO NOT solicit any SAVE_REPORT block (the model no longer
+        # chooses where — or whether — to save). The list_folders tool remains for
+        # general browsing, separately.
+        if report_target is not None:
+            parts.append(_INSTRUCTIONS_REPORT_TARGET)
         parts.append("Context:\n" + context)
         return "\n\n".join(parts)

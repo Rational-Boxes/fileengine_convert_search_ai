@@ -250,6 +250,18 @@ async def _stream_answer(ws: WebSocket, chat_service, identity, payload: dict, m
     accumulated ``(answer_text, citations)`` so the turn can be persisted."""
     send, recv = anyio.create_memory_object_stream(256)
 
+    # "Generate report" (GENERATE_REPORT_TO_TARGET): the user pinned an exact
+    # destination in the UI. Presence of the folder UID + a non-empty filename puts
+    # this turn in report mode; the destination is authoritative (the model never
+    # chooses it). folder UID "" means the filesystem root.
+    report_target = None
+    if "report_target_folder_uid" in payload and str(payload.get("report_target_filename", "")).strip():
+        report_target = {
+            "folder_uid": str(payload.get("report_target_folder_uid") or ""),
+            "filename": str(payload.get("report_target_filename", "")),
+            "path": str(payload.get("report_target_path", "") or ""),
+        }
+
     def produce():
         try:
             for ev in chat_service.answer(
@@ -259,6 +271,7 @@ async def _stream_answer(ws: WebSocket, chat_service, identity, payload: dict, m
                 k=int(payload.get("k", 8)),
                 web_search=payload.get("web_search"),
                 conversation_id=conversation_id,
+                report_target=report_target,
             ):
                 anyio.from_thread.run(send.send, ev)
         except Exception as e:  # surface, don't crash the socket loop
