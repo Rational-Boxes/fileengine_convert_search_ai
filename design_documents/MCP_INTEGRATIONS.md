@@ -1,9 +1,12 @@
 # convert_search_ai — Tenant-Managed MCP Integrations for Chat
 
-Status: **Design / proposal (not implemented).** This document specifies adding
-**Model Context Protocol (MCP) client** support to the CSAI chat backend so a
-tenant can equip the assistant with external tools, plus the **tenant-admin
-management interface** to add and govern those integrations. It extends
+Status: **P1 implemented.** The backend (data model, admin CRUD + test, client
+discovery/wrapping/namespacing, mandatory per-call consent, opt-in identity
+forwarding, fail-open) and the frontend admin view + in-chat consent prompt are in
+place; see §13 for the file map. This document specifies adding **Model Context
+Protocol (MCP) client** support to the CSAI chat backend so a tenant can equip the
+assistant with external tools, plus the **tenant-admin management interface** to add
+and govern those integrations. It extends
 [`CHAT_WITH_AI.md`](./CHAT_WITH_AI.md) (§2.3 Agentic tools) and reuses the tool loop
 from [`WEB_SEARCH_TOOL_PLAN.md`](./WEB_SEARCH_TOOL_PLAN.md). Companion:
 [`SPECIFICATION.md`](./SPECIFICATION.md), [`EVENT_CONTRACT.md`](./EVENT_CONTRACT.md).
@@ -311,15 +314,25 @@ names appear there automatically.
 
 ## 13. Touched files (implementation map)
 
-**convert_search_ai** — `mcp_client.py` (new: SDK client, discovery, tool wrapping),
-`llm_tools.py` (`build_tools(..., mcp=…)`), `chat.py` (`_select_tools`, MCP system
-instruction), `routers/mcp_admin.py` (new admin CRUD + test), `store.py`/`schema.py`
-(the `mcp_integration` table + a small repo), `config.py` (§9 knobs), `crypto` helper
-(Fernet for `secret_enc`), `app.py` (wire the router + MCP provider), `audit.py`
-(new action names), `design_documents/EVENT_CONTRACT.md` (tool events unchanged; note
-MCP tool names).
+**convert_search_ai** — `mcp_client.py` (new: SDK client, discovery, tool wrapping,
+`McpTool`/`McpToolProvider`), `mcp_store.py` (new: the `mcp_integration` repo),
+`crypto.py` (new: Fernet `secret_enc` + minimal HS256 identity assertion),
+`consent.py` (new: the async-socket ↔ sync-tool-thread consent bridge),
+`routers/mcp_admin.py` (new: admin CRUD + test, tenant-admin gated), `schema.py`
+(the `mcp_integration` table), `llm_tools.py` (`build_tools(..., mcp=…)` +
+`ToolContext.consent`), `chat.py` (`_select_tools(identity, …)`, MCP system
+instruction, `consent` passthrough), `api.py` (consent broker wired into `/chat`),
+`config.py` (§9 knobs), `app.py` (wire the router + shared `McpToolProvider`).
+Consent events are documented in `design_documents/CHAT_WITH_AI.md` (the chat WS
+contract); the core `EVENT_CONTRACT.md` (Redis file-activity stream) is unchanged.
+`pyproject.toml` adds the optional `mcp` extra (`mcp`, `cryptography`). Tests:
+`test_mcp_crypto`, `test_mcp_store` (live_db), `test_mcp_client`, `test_mcp_admin`,
+`test_consent`, `test_mcp_chat`.
 
-**frontend** — a new admin view + `mcpAdminService`, linked from the admin nav.
+**frontend** — `services/mcpAdminService.ts` (new), `views/McpIntegrationsView.vue`
+(new admin view), a router entry + `AppNav` "Integrations" link, and the in-chat
+consent prompt (`types/index.ts` + `chatService.ts` `tool_consent_request` /
+`sendConsent` + `ChatView.vue`).
 
 No core / bridge changes — MCP integrations are a CSAI-and-frontend concern; the
 core remains the ACL authority for the user's own documents, independent of external

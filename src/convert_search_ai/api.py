@@ -199,6 +199,9 @@ async def chat(ws: WebSocket) -> None:
 
     chat_service = ws.app.state.chat
     convos = ws.app.state.conversations
+    # MCP tool consent approvals the user chose to "remember" persist for the life of
+    # this WebSocket connection (the conversation), so the same tool isn't re-prompted.
+    remembered_consents: set[str] = set()
     try:
         while True:
             payload = await ws.receive_json()
@@ -212,7 +215,9 @@ async def chat(ws: WebSocket) -> None:
                 _begin_turn, convos, identity, payload.get("conversation_id"), message)
             if conv_id:
                 await ws.send_json({"type": "conversation", "id": conv_id})
-            answer, citations = await _stream_answer(ws, chat_service, identity, payload, message, conv_id)
+            answer, citations = await _stream_answer(
+                ws, chat_service, identity, payload, message, conv_id,
+                remembered_consents=remembered_consents)
             if conv_id:
                 await run_in_threadpool(_end_turn, convos, identity, conv_id, answer, citations)
             await ws.send_json({"type": "done"})
@@ -244,11 +249,26 @@ def _end_turn(convos, identity: Identity, conv_id, answer: str, citations) -> No
 
 
 async def _stream_answer(ws: WebSocket, chat_service, identity, payload: dict, message: str,
-                         conversation_id=None):
+                         conversation_id=None, remembered_consents: set | None = None):
     """Bridge the sync RAG generator (blocking I/O) to the async socket via a worker
     thread + memory stream. Forwards every event to the client and returns the
-    accumulated ``(answer_text, citations)`` so the turn can be persisted."""
+    accumulated ``(answer_text, citations)`` so the turn can be persisted.
+
+    An MCP tool call pauses in the worker thread on a :class:`~.consent.ConsentBroker`
+    while the user approves/denies over the same socket; a concurrent reader task
+    routes ``tool_consent`` replies back to it. On a socket drop the broker is shut
+    down (every pending/future consent denies) so the worker thread unblocks."""
+    from .consent import ConsentBroker
+
     send, recv = anyio.create_memory_object_stream(256)
+    config = ws.app.state.config
+    consent_timeout_s = max(1.0, getattr(config, "mcp_consent_timeout_ms", 120000) / 1000.0)
+
+    def _emit(ev: dict) -> None:  # worker thread -> ordered client event stream
+        anyio.from_thread.run(send.send, ev)
+
+    broker = ConsentBroker(_emit, timeout_s=consent_timeout_s,
+                           remembered=remembered_consents if remembered_consents is not None else set())
 
     # "Generate report" (GENERATE_REPORT_TO_TARGET): the user pinned an exact
     # destination in the UI. Presence of the folder UID + a non-empty filename puts
@@ -272,6 +292,7 @@ async def _stream_answer(ws: WebSocket, chat_service, identity, payload: dict, m
                 web_search=payload.get("web_search"),
                 conversation_id=conversation_id,
                 report_target=report_target,
+                consent=broker.request,
             ):
                 anyio.from_thread.run(send.send, ev)
         except Exception as e:  # surface, don't crash the socket loop
@@ -282,6 +303,20 @@ async def _stream_answer(ws: WebSocket, chat_service, identity, payload: dict, m
     parts: list[str] = []
     citations: list = []
     async with anyio.create_task_group() as tg:
+        # Read inbound control messages (consent replies) for the duration of this
+        # turn only; the task is cancelled once the answer stream is exhausted, so the
+        # outer chat() loop resumes ownership of receive_json for the next message.
+        async def read_control():
+            try:
+                while True:
+                    msg = await ws.receive_json()
+                    if isinstance(msg, dict) and msg.get("type") == "tool_consent":
+                        broker.resolve(str(msg.get("id", "")), bool(msg.get("decision")),
+                                       bool(msg.get("remember")))
+            except Exception:  # disconnect / bad frame — deny pending consent (CancelledError is BaseException, so a normal cancel is unaffected)
+                broker.shutdown()  # unblock the worker thread -> deny
+
+        tg.start_soon(read_control)
         tg.start_soon(anyio.to_thread.run_sync, produce)
         async with recv:
             async for ev in recv:
@@ -290,7 +325,12 @@ async def _stream_answer(ws: WebSocket, chat_service, identity, payload: dict, m
                     parts.append(ev.get("text", ""))
                 elif t == "citations":
                     citations = ev.get("citations", [])
-                await ws.send_json(ev)
+                try:
+                    await ws.send_json(ev)
+                except Exception:  # socket closed mid-answer — stop, deny pending consent
+                    broker.shutdown()
+                    break
+        tg.cancel_scope.cancel()  # answer complete — stop the control reader
     return "".join(parts), citations
 
 

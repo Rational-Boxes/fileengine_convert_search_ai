@@ -63,9 +63,15 @@ in the SPECIFICATION / DEVELOPMENT_PLAN; this doc starts at **retrieval + chat**
   | `token` | `{text}` | a streamed delta of the answer |
   | `tool_call` | `{name, args}` | the model invoked a tool |
   | `tool_result` | `{name}` | a tool returned |
+  | `tool_consent_request` | `{id, integration, tool, tool_full, args_summary}` | an MCP tool needs the user's approval before it runs (see [`MCP_INTEGRATIONS.md`](./MCP_INTEGRATIONS.md) §6); the turn pauses until answered |
   | `citations` | `{citations:[…]}` | the source list for the turn (once, near the end) |
   | `done` | — | end of turn |
   | `error` | `{error}` | failure (auth, serialization, generation) |
+
+  The **client → server** control message answering a consent request is
+  `{"type":"tool_consent","id":"…","decision":true|false,"remember":true|false}` —
+  `remember` allows that tool for the rest of the conversation. No reply within
+  `CSAI_MCP_CONSENT_TIMEOUT_MS` (or a dropped socket) defaults to **deny**.
 
 - **Turn lifecycle:** persist the user message → stream the answer → persist the
   assistant message + citations. Persistence is best‑effort (a DB blip logs but

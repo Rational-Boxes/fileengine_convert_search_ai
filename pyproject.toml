@@ -36,6 +36,10 @@ voyage = ["voyageai>=0.2"]
 openai = ["openai>=1.0"]
 # Web search tool backend (WEB_SEARCH_TOOL_PLAN) — DuckDuckGo, no API key.
 websearch = ["ddgs>=6.0"]
+# Tenant-managed MCP integrations (MCP_INTEGRATIONS) — the MCP client SDK plus
+# Fernet secret encryption. Only needed when CSAI_MCP_ENABLED; imported lazily so
+# the service runs without it otherwise.
+mcp = ["mcp>=1.0", "cryptography>=42.0"]
 
 [project.scripts]
 convert-search-ai = "convert_search_ai.app:main"
