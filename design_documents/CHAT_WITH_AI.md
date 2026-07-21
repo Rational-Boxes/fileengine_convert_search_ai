@@ -120,6 +120,9 @@ via the provider's native function‑calling (`chat.py`, `llm_tools.py`,
   fetch and extract the readable text of one HTTPS URL, **SSRF‑guarded**
   (`webfetch.py`: public IPs only, https only, redirects re‑validated, size/timeout
   capped, text content types only).
+- **MCP integrations** *(proposed, off by default)* — tools discovered dynamically
+  from external **MCP servers** a tenant admin registers and manages, exposed to the
+  chat via the same tool loop. See [`MCP_INTEGRATIONS.md`](./MCP_INTEGRATIONS.md).
 
 **Report saving** (`llm_tools.py`, marker‑driven, on by default) — the model can
 wrap a generated report in `[[SAVE_REPORT path="…" file="…" title="…"]] … [[/SAVE_REPORT]]`
