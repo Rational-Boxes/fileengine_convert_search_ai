@@ -233,6 +233,11 @@ def test_chat_consent_approve_runs_real_tool(ctx):
         assert "RESULT_BEGIN" in answer and "RESULT_END" in answer
         result = answer.split("RESULT_BEGIN", 1)[1].split("RESULT_END", 1)[0]
         assert result.strip() and "declined" not in result.lower()
+        # The invocation left a bibliographic note (an MCP citation) in the turn.
+        cites = [e for e in events if e["type"] == "citations"][-1]["citations"]
+        mcp_cites = [c for c in cites if c.get("kind") == "mcp"]
+        assert mcp_cites and mcp_cites[0]["integration"] == integ["name"]
+        assert isinstance(mcp_cites[0].get("marker"), int)
         # Audited: consent granted + the external tool call recorded ok.
         actions = _audit(ctx)
         assert any(a["action"] == "mcp_consent" and a["result"] == "ok" for a in actions)

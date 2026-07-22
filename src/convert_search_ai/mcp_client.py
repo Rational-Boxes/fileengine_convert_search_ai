@@ -243,7 +243,12 @@ class McpTool(Tool):
             text = text[:cap] + "\n…(truncated)"
         audit.record(action="mcp_tool", user=user, tenant=tenant, result="ok",
                      integration=integ.slug, tool=self._tool_name, truncated=truncated)
-        return ToolOutput(text=text or "(the tool returned no content)")
+        # Leave a bibliographic note: a successful MCP call is a cited source in the
+        # turn, alongside document and web citations (chat.py assigns its [n] marker).
+        src = {"kind": "mcp", "integration": integ.name, "tool": self._tool_name,
+               "label": f"{integ.name} · {self._tool_name}"}
+        ctx.sources.append(src)
+        return ToolOutput(text=text or "(the tool returned no content)", sources=[src])
 
 
 # --------------------------------------------------------------------------- #

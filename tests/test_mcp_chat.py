@@ -81,6 +81,13 @@ def test_mcp_tool_runs_when_consent_approves(monkeypatch):
     assert "TICKET-7 created" in text
     # The MCP usage instruction was injected into the system prompt.
     assert "external systems" in (chat.last_system or "")
+    # A successful MCP call leaves a bibliographic note in the turn's citations,
+    # alongside document/web sources and with a shared [n] marker.
+    cites = [e for e in events if e["type"] == "citations"][0]["citations"]
+    mcp_cites = [c for c in cites if c.get("kind") == "mcp"]
+    assert len(mcp_cites) == 1
+    assert mcp_cites[0]["integration"] == "CRM" and mcp_cites[0]["tool"] == "create_ticket"
+    assert isinstance(mcp_cites[0]["marker"], int) and mcp_cites[0]["marker"] >= 1
 
 
 def test_mcp_tool_denied_when_no_consent(monkeypatch):
@@ -93,6 +100,9 @@ def test_mcp_tool_denied_when_no_consent(monkeypatch):
     assert called["n"] == 0
     text = "".join(e["text"] for e in events if e["type"] == "token")
     assert "approval" in text.lower() or "declined" in text.lower()
+    # A declined call is not a source — no MCP citation is recorded.
+    cites = [e for e in events if e["type"] == "citations"][0]["citations"]
+    assert not [c for c in cites if c.get("kind") == "mcp"]
 
 
 def test_no_mcp_tools_when_provider_absent():

@@ -169,8 +169,8 @@ class ChatService:
 
         # --- tool loop ---------------------------------------------------------
         ctx = ToolContext(identity=identity, config=self.config, consent=consent)
-        web_citations: List[dict] = []
-        counters = {"marker": len(chunks), "searches": 0}  # web markers continue after docs
+        tool_citations: List[dict] = []   # web + mcp sources, sharing the [n] numbering
+        counters = {"marker": len(chunks), "searches": 0}  # tool markers continue after docs
         tools_by_name = {t.name: t for t in tools}
 
         def execute(name: str, args: dict) -> str:
@@ -185,11 +185,22 @@ class ChatService:
             for s in out.sources:
                 counters["marker"] += 1
                 m = counters["marker"]
-                web_citations.append({"marker": m, "kind": "web",
-                                      "url": s["url"], "title": s.get("title", "")})
-                head = s.get("title") or s["url"]
-                lines.append(f"[{m}] {head} ({urlparse(s['url']).netloc})\n"
-                             f"{s.get('snippet', '')}\nSource: {s['url']}")
+                if s.get("kind") == "mcp":
+                    # An MCP tool call is a bibliographic source too: record it as a
+                    # citation and prefix its result with the [n] marker so the model
+                    # can attribute the answer to the external tool.
+                    tool_citations.append({"marker": m, "kind": "mcp",
+                                           "integration": s.get("integration", ""),
+                                           "tool": s.get("tool", "")})
+                    label = s.get("label") or (f"{s.get('integration', '')} · "
+                                               f"{s.get('tool', '')}").strip(" ·")
+                    lines.append(f"[{m}] {label}\n{out.text}")
+                else:
+                    tool_citations.append({"marker": m, "kind": "web",
+                                           "url": s["url"], "title": s.get("title", "")})
+                    head = s.get("title") or s["url"]
+                    lines.append(f"[{m}] {head} ({urlparse(s['url']).netloc})\n"
+                                 f"{s.get('snippet', '')}\nSource: {s['url']}")
             return "\n\n".join(lines)
 
         specs = [{"name": t.name, "description": t.description, "schema": t.schema} for t in tools]
@@ -209,7 +220,7 @@ class ChatService:
                 yield {"type": "tool_result", "name": ev.get("name")}
 
         # Save the report ONLY when the user pinned a destination (report mode).
-        citations = doc_citations + web_citations
+        citations = doc_citations + tool_citations
         if report_target is not None:
             prov = self._prov(identity, system_prompt, conversation_id, history, msg, citations)
             yield from self._save_marked_reports(identity, ctx.answer_text, ctx.saved, prov,
