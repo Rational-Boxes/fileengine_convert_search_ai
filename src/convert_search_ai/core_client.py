@@ -33,11 +33,22 @@ SYSTEM_ADMIN_ROLE = "system_admin"
 
 
 def client_for(identity: Identity, config) -> ManagedFiles:
-    """A gRPC client that acts as ``identity`` (the end user)."""
+    """A gRPC client that acts as ``identity`` (the end user).
+
+    Mirrors the bridges' tenant-admin aliasing (http_bridge, security review H2): a
+    member of the tenant ``administrators`` group acts with the core's
+    ``tenant_admin`` role, so CSAI resolves the **same** effective permissions the
+    REST/WebDAV doors do. Without this, CSAI under-privileges tenant admins — e.g.
+    denying WRITE (and blocking ONLYOFFICE editing) on files they can edit via the
+    SPA. The global ``system_admin`` bypass is deliberately NOT added (it is granted
+    only to actual ``system_admin`` group members, carried verbatim)."""
+    roles = list(identity.roles or [])
+    if "administrators" in roles and "tenant_admin" not in roles:
+        roles.append("tenant_admin")
     return ManagedFiles(
         server_address=config.grpc_address,
         user_name=identity.user,
-        user_roles=identity.roles,
+        user_roles=roles,
         tenant=identity.tenant or config.tenant,
         source_addr=request_source_addr.get(),  # forwarded to the core for audit
     )

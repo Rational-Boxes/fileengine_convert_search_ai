@@ -8,10 +8,11 @@ from convert_search_ai.ldap_auth import Identity
 
 
 class FakeMF:
-    def __init__(self, *, server_address, user_name, user_roles, tenant):
+    def __init__(self, *, server_address, user_name, user_roles, tenant, source_addr="", **_kw):
         self.user_name = user_name
         self.user_roles = list(user_roles)
         self.tenant = tenant
+        self.source_addr = source_addr
 
 
 def _patch(monkeypatch, agent=Identity(user="csai", roles=["users"], tenant="t", authenticated=True)):
@@ -45,3 +46,29 @@ def test_client_for_end_user_never_gets_bypass(monkeypatch):
     mf = client_for(Identity(user="alice", roles=["users"], tenant="t", authenticated=True), Config())
     assert SYSTEM_ADMIN_ROLE not in mf.user_roles
     assert mf.user_name == "alice"
+
+
+def test_client_for_aliases_administrators_to_tenant_admin(monkeypatch):
+    # Mirror the bridges (security review H2): a tenant "administrators" member acts
+    # with the core's tenant_admin role, so CSAI resolves the same effective perms
+    # the REST/WebDAV doors do (else admins are denied WRITE / ONLYOFFICE editing).
+    monkeypatch.setattr(core_client, "ManagedFiles", FakeMF)
+    mf = client_for(Identity(user="james", roles=["administrators", "users"], tenant="t",
+                             authenticated=True), Config())
+    assert "tenant_admin" in mf.user_roles
+    assert "administrators" in mf.user_roles  # originals preserved
+    # NOT the global system_admin bypass (only real system_admin members carry it).
+    assert SYSTEM_ADMIN_ROLE not in mf.user_roles
+
+
+def test_client_for_non_admin_gets_no_extra_roles(monkeypatch):
+    monkeypatch.setattr(core_client, "ManagedFiles", FakeMF)
+    mf = client_for(Identity(user="bob", roles=["users"], tenant="t", authenticated=True), Config())
+    assert "tenant_admin" not in mf.user_roles and mf.user_roles == ["users"]
+
+
+def test_client_for_does_not_duplicate_tenant_admin(monkeypatch):
+    monkeypatch.setattr(core_client, "ManagedFiles", FakeMF)
+    mf = client_for(Identity(user="j", roles=["administrators", "tenant_admin"], tenant="t",
+                             authenticated=True), Config())
+    assert mf.user_roles.count("tenant_admin") == 1
