@@ -113,6 +113,23 @@ _INSTRUCTIONS_REPORT_TARGET = (
     "— only a title. Begin your response with '[[SAVE_REPORT'."
 )
 
+# Always appended in research mode (answer AND report). The Context labels each file
+# by a uid as "(file <uid>)", and the file tools return uids too; left to itself each
+# model refers to files differently (one settled on "(file <uid>)", another might emit
+# a bare uid or the name). Standardize the convention so the interface can reliably
+# rewrite it into a named link — both in the live chat (utils/fileRefs.ts) and in the
+# saved report HTML (llm_tools._linkify_file_refs).
+_INSTRUCTIONS_FILE_REFS = (
+    "Referring to files: each file is identified by a uid, shown in the Context and "
+    "returned by the file tools in the form '(file <uid>)'. Whenever you point to a "
+    "specific file in your answer, write the reference in exactly that literal form — "
+    "'(file <uid>)' with the file's real uid, and nothing else: no bare or reformatted "
+    "uids, no invented ids, no Markdown link, and do not write the file name yourself. "
+    "The interface automatically replaces each '(file <uid>)' with a link showing the "
+    "file's current name, so the reference always stays correct. This is separate from, "
+    "and does not replace, the [n] citation markers."
+)
+
 
 class ChatService:
     def __init__(self, config: Config, *, retriever: Optional[Retriever] = None, chat=None,
@@ -355,5 +372,8 @@ class ChatService:
                 parts.append(_INSTRUCTIONS_DOC_TOOLS)
             if any(n.startswith("mcp__") for n in names):
                 parts.append(_INSTRUCTIONS_MCP)
+        # The file-reference convention applies in both answer and report modes, so
+        # the UI/report linkifier can turn "(file <uid>)" into a named link.
+        parts.append(_INSTRUCTIONS_FILE_REFS)
         parts.append("Context:\n" + context)
         return "\n\n".join(parts)

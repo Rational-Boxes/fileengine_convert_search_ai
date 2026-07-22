@@ -205,6 +205,49 @@ def _looks_like_html(s: str) -> bool:
     return bool(_HTMLISH.match(s or ""))
 
 
+# Inline file references the model emits as "(file <uid>)" (the convention set in
+# chat.py's _INSTRUCTIONS_FILE_REFS). Matched conservatively — hex + dashes, ≥8 chars
+# (file uids are UUIDs) — so ordinary parenthetical prose is never touched. This is
+# the report-side twin of the chat UI's utils/fileRefs.ts.
+_FILE_REF_RE = re.compile(r"\(file\s+([0-9a-fA-F-]{8,})\)")
+
+
+def _linkify_file_refs(html: str, mf, tenant: str) -> str:
+    """Rewrite '(file <uid>)' references in a report's HTML into tenant-scoped links
+    that show each file's name, resolved via the core AS THE USER (``mf`` is the
+    caller's already-open, identity-bound client). Best-effort: a uid that can't be
+    resolved (deleted / no access) degrades to a plain '📄 file' label rather than a
+    broken link, and any failure returns the HTML unchanged — linkifying must never
+    block saving the report."""
+    if not html or "(file " not in html:
+        return html
+    resolved: dict = {}
+
+    def name_of(uid):
+        if uid not in resolved:
+            try:
+                info = mf.stat(uid, tenant=tenant)
+                resolved[uid] = getattr(info, "name", "") or ""
+            except Exception:
+                resolved[uid] = ""
+        return resolved[uid]
+
+    def repl(m):
+        uid = m.group(1)
+        name = name_of(uid)
+        label = _htmllib.escape(f"📄 {name}" if name else "📄 file")
+        if not name:
+            # No reliable target (unresolved) — show a label, not a dead link.
+            return f"({label})"
+        href = _htmllib.escape(f"/files?file={uid}&tenant={tenant}", quote=True)
+        return f'(<a href="{href}">{label}</a>)'
+
+    try:
+        return _FILE_REF_RE.sub(repl, html)
+    except Exception:
+        return html
+
+
 def markdown_to_html(text: str) -> str:
     """Render report text to HTML. The model usually writes the inline report as
     Markdown; convert it so the saved document keeps its formatting. Already-HTML
@@ -332,12 +375,15 @@ def save_report_document(identity, config, *, path: str, filename: str, title: s
         raise ReportSaveError("empty", "no report content to save")
     html = body if _looks_like_html(body) else markdown_to_html(body)
     name = safe if safe.lower().endswith((".html", ".htm")) else safe + ".html"
-    document = wrap_html_document((title or safe).strip(), html).encode("utf-8")
-    if len(document) > max_bytes:
-        raise ReportSaveError("too_large", "the report is too large to save")
     tenant = getattr(identity, "tenant", "") or getattr(config, "tenant", "")
     mf = client_factory(identity, config)
     try:
+        # Rewrite the model's "(file <uid>)" references into named, tenant-scoped
+        # links (resolved as the user) before wrapping + size-checking the document.
+        html = _linkify_file_refs(html, mf, tenant)
+        document = wrap_html_document((title or safe).strip(), html).encode("utf-8")
+        if len(document) > max_bytes:
+            raise ReportSaveError("too_large", "the report is too large to save")
         if folder_uid is not None:
             parent = folder_uid          # UID-anchored: the user chose this exact folder
         else:
