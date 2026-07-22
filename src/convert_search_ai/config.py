@@ -214,6 +214,27 @@ class Config:
         self.chat_doc_text_window = int(_env("CSAI_CHAT_DOC_TEXT_WINDOW", "4000"))
         self.chat_doc_text_max_window = int(_env("CSAI_CHAT_DOC_TEXT_MAX_WINDOW", "20000"))
 
+        # --- Tenant-managed MCP integrations (MCP_INTEGRATIONS.md; OFF by default) ---
+        # A tenant admin registers external MCP servers whose tools the chat model may
+        # call (with per-call user consent). `enabled` is the master switch; `secret_key`
+        # (Fernet) is REQUIRED when enabled — it encrypts each integration's credential
+        # at rest. stdio transport is never tenant-settable (arbitrary code execution);
+        # `allow_stdio` only permits a deployment's own system-config servers (P3).
+        self.mcp_enabled = _bool("CSAI_MCP_ENABLED", False)
+        self.mcp_allow_stdio = _bool("CSAI_MCP_ALLOW_STDIO", False)
+        self.mcp_max_integrations = int(_env("CSAI_MCP_MAX_INTEGRATIONS", "10"))
+        self.mcp_tool_timeout_ms = int(_env("CSAI_MCP_TOOL_TIMEOUT_MS", "15000"))
+        self.mcp_max_tool_output_chars = int(_env("CSAI_MCP_MAX_TOOL_OUTPUT_CHARS", "8000"))
+        self.mcp_max_tools_per_integration = int(_env("CSAI_MCP_MAX_TOOLS", "50"))
+        self.mcp_connect_cache_ttl = int(_env("CSAI_MCP_CONNECT_CACHE_TTL", "300"))
+        # A tool call blocks this long for the user's approve/deny reply, then denies.
+        self.mcp_consent_timeout_ms = int(_env("CSAI_MCP_CONSENT_TIMEOUT_MS", "120000"))
+        self.mcp_secret_key = _env("CSAI_MCP_SECRET_KEY", "")
+        # Signs the minimal user-claim header sent to an integration whose
+        # `forward_identity` is on (opt-in, §7). Defaults to the shared bridge secret.
+        self.mcp_identity_secret = _first("CSAI_MCP_IDENTITY_SECRET", "FILEENGINE_JWT_SECRET", "")
+        self.mcp_identity_ttl = int(_env("CSAI_MCP_IDENTITY_TTL", "120"))
+
         # HTML → PDF conversion (for .html documents, incl. chat-generated reports).
         # Chromium headless gives full-CSS fidelity; LibreOffice is the fallback.
         self.html_chromium = _env("CSAI_HTML_CHROMIUM", "chromium-browser")

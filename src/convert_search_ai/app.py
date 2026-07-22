@@ -127,11 +127,20 @@ def build_app(config: Config | None = None, *, search: SearchService | None = No
     gate = PermissionGate(config.permission_cache_ttl)
     app.state.permission_gate = gate
     app.state.search = search or SearchService(config, gate=gate)
+    # Tenant-managed MCP integrations (MCP_INTEGRATIONS): the store backs the admin
+    # API; the provider resolves a tenant's enabled external tools per chat turn.
+    # Both are always wired; they no-op unless CSAI_MCP_ENABLED and the tenant has
+    # enabled integrations. A shared provider means the admin API's cache-busting
+    # (on create/edit/delete/test) is seen by chat immediately.
+    from .mcp_client import McpToolProvider
+    from .mcp_store import McpIntegrationStore
+    app.state.mcp_store = McpIntegrationStore(config)
+    app.state.mcp = McpToolProvider(config, app.state.mcp_store)
     # Chat retrieval shares the same gate, so real-time cache invalidation applies.
     # The same SearchService backs the document_search / get_document_text tools
     # (RAG + LLM-controlled direct interrogation), sharing the permission cache.
     app.state.chat = chat or ChatService(config, retriever=Retriever(config, gate=gate),
-                                         search=app.state.search)
+                                         search=app.state.search, mcp=app.state.mcp)
     app.state.conversations = conversations or ConversationStore(config)
 
     if enable_event_invalidation:
@@ -140,6 +149,8 @@ def build_app(config: Config | None = None, *, search: SearchService | None = No
         app.state.invalidator.start_background()
 
     app.include_router(router)
+    from .routers.mcp_admin import router as mcp_admin_router
+    app.include_router(mcp_admin_router)
     return app
 
 

@@ -105,6 +105,35 @@ CREATE TABLE IF NOT EXISTS "{schema}".conversation_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_conv_messages
     ON "{schema}".conversation_messages (conversation_id, id);
+
+-- Tenant-managed MCP integrations (MCP_INTEGRATIONS.md). Each row is an external
+-- MCP server the tenant admin registered; the chat model may call its tools (with
+-- per-call user consent). Lives in the tenant schema, so isolation is automatic.
+-- `secret_enc` is Fernet-encrypted at rest and never returned by the API.
+CREATE TABLE IF NOT EXISTS "{schema}".mcp_integration (
+    id               TEXT        PRIMARY KEY,
+    name             TEXT        NOT NULL,
+    slug             TEXT        NOT NULL,
+    description      TEXT        NOT NULL DEFAULT '',
+    transport        TEXT        NOT NULL DEFAULT 'streamable-http'
+                     CHECK (transport IN ('streamable-http','sse')),
+    endpoint_url     TEXT        NOT NULL,
+    auth_type        TEXT        NOT NULL DEFAULT 'none'
+                     CHECK (auth_type IN ('none','bearer','header')),
+    auth_header      TEXT        NOT NULL DEFAULT '',   -- header name when auth_type='header'
+    secret_enc       BYTEA,                             -- Fernet(token); NULL when auth_type='none'
+    headers          JSONB       NOT NULL DEFAULT '{{}}'::jsonb,
+    enabled          BOOLEAN     NOT NULL DEFAULT false,
+    allowed_tools    JSONB,                             -- NULL = expose all discovered tools
+    forward_identity BOOLEAN     NOT NULL DEFAULT false,
+    created_by       TEXT        NOT NULL DEFAULT '',
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (name),
+    UNIQUE (slug)
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_integration_enabled
+    ON "{schema}".mcp_integration (enabled);
 '''
 
 

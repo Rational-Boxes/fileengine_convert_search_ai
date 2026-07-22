@@ -63,9 +63,15 @@ in the SPECIFICATION / DEVELOPMENT_PLAN; this doc starts at **retrieval + chat**
   | `token` | `{text}` | a streamed delta of the answer |
   | `tool_call` | `{name, args}` | the model invoked a tool |
   | `tool_result` | `{name}` | a tool returned |
+  | `tool_consent_request` | `{id, integration, tool, tool_full, args_summary}` | an MCP tool needs the user's approval before it runs (see [`MCP_INTEGRATIONS.md`](./MCP_INTEGRATIONS.md) §6); the turn pauses until answered |
   | `citations` | `{citations:[…]}` | the source list for the turn (once, near the end) |
   | `done` | — | end of turn |
   | `error` | `{error}` | failure (auth, serialization, generation) |
+
+  The **client → server** control message answering a consent request is
+  `{"type":"tool_consent","id":"…","decision":true|false,"remember":true|false}` —
+  `remember` allows that tool for the rest of the conversation. No reply within
+  `CSAI_MCP_CONSENT_TIMEOUT_MS` (or a dropped socket) defaults to **deny**.
 
 - **Turn lifecycle:** persist the user message → stream the answer → persist the
   assistant message + citations. Persistence is best‑effort (a DB blip logs but
@@ -120,6 +126,9 @@ via the provider's native function‑calling (`chat.py`, `llm_tools.py`,
   fetch and extract the readable text of one HTTPS URL, **SSRF‑guarded**
   (`webfetch.py`: public IPs only, https only, redirects re‑validated, size/timeout
   capped, text content types only).
+- **MCP integrations** *(proposed, off by default)* — tools discovered dynamically
+  from external **MCP servers** a tenant admin registers and manages, exposed to the
+  chat via the same tool loop. See [`MCP_INTEGRATIONS.md`](./MCP_INTEGRATIONS.md).
 
 **Report saving** (`llm_tools.py`, marker‑driven, on by default) — the model can
 wrap a generated report in `[[SAVE_REPORT path="…" file="…" title="…"]] … [[/SAVE_REPORT]]`

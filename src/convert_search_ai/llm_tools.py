@@ -31,6 +31,9 @@ class ToolContext:
     sources: List[dict] = field(default_factory=list)  # {kind:"web", url, title}
     answer_text: str = ""
     saved: List[str] = field(default_factory=list)  # locations already written this turn (dedupe)
+    # Per-call consent gate for MCP tools (MCP_INTEGRATIONS §6): a callable
+    # ``(ConsentRequest) -> bool``. None ⇒ no channel ⇒ MCP tools deny (fail-closed).
+    consent: Optional[object] = None
 
 
 @dataclass
@@ -604,7 +607,8 @@ class GetDocumentTextTool(Tool):
         return ToolOutput(text=header + window)
 
 
-def build_tools(config: Config, *, include_web: bool = True, search=None) -> List[Tool]:
+def build_tools(config: Config, *, include_web: bool = True, search=None,
+                mcp: Optional[List[Tool]] = None) -> List[Tool]:
     """The tools to expose to the model for this deployment.
 
     Report saving is handled by the SAVE_REPORT stream markers (see chat.py), not a
@@ -612,7 +616,11 @@ def build_tools(config: Config, *, include_web: bool = True, search=None) -> Lis
     (the chat layer passes the per-turn opt-in); fetch_page needs its own extra
     enable. The document tools (folder browse + content search + windowed read) are
     added when the document feature is enabled; the search/read pair needs a
-    ``search`` SearchService to reach the index (per-user permission-gated)."""
+    ``search`` SearchService to reach the index (per-user permission-gated).
+
+    ``mcp`` is the tenant's already-resolved MCP tools (McpToolProvider.tools_for,
+    which is identity-scoped); they are appended last and are consent-gated at call
+    time (MCP_INTEGRATIONS §6)."""
     tools: List[Tool] = []
     if include_web and getattr(config, "web_search_enabled", False):
         from .providers import make_web_search_provider
@@ -637,4 +645,7 @@ def build_tools(config: Config, *, include_web: bool = True, search=None) -> Lis
                 search,
                 default_window=getattr(config, "chat_doc_text_window", 4000),
                 max_window=getattr(config, "chat_doc_text_max_window", 20000)))
+    # Tenant-managed MCP tools last (already resolved + namespaced; consent-gated).
+    if mcp:
+        tools.extend(mcp)
     return tools

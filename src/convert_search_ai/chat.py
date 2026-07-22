@@ -54,6 +54,18 @@ _INSTRUCTIONS_DOC_TOOLS = (
     "may iterate (search again, read another file) as needed."
 )
 
+# Appended when tenant-configured MCP tools (mcp__<integration>__<tool>) are present.
+# These reach EXTERNAL systems the tenant admin registered; each call is gated by an
+# explicit user consent prompt, so use them deliberately (MCP_INTEGRATIONS §6).
+_INSTRUCTIONS_MCP = (
+    "Additional tools named 'mcp__<integration>__<tool>' connect to external systems "
+    "your organization configured (e.g. a ticketing system or internal API). Use them "
+    "when they are the right way to answer or act on the user's request. Each such "
+    "call requires the user's explicit approval before it runs, and may have real "
+    "side effects — call one only when it clearly serves what the user asked, and "
+    "explain what you intend to do."
+)
+
 # Appended when the document tools are available. Workflow: explore folders,
 # confirm the destination FIRST, then stream the report wrapped in SAVE_REPORT
 # markers — the app diverts the marked body to a file automatically (no fragile
@@ -104,13 +116,16 @@ _INSTRUCTIONS_REPORT_TARGET = (
 
 class ChatService:
     def __init__(self, config: Config, *, retriever: Optional[Retriever] = None, chat=None,
-                 search=None):
+                 search=None, mcp=None):
         self.config = config
         self.retriever = retriever or Retriever(config)
         self._chat = chat
         # SearchService for the document_search / get_document_text tools (RAG +
         # LLM-controlled direct interrogation). None ⇒ those two tools are omitted.
         self._search = search
+        # McpToolProvider (MCP_INTEGRATIONS): resolves the tenant's enabled external
+        # tools per turn. None ⇒ MCP integrations are off (no external tools).
+        self._mcp = mcp
 
     @property
     def chat(self):
@@ -123,7 +138,8 @@ class ChatService:
                history: Optional[List[dict]] = None, k: int = 8,
                web_search: Optional[bool] = None,
                conversation_id: Optional[str] = None,
-               report_target: Optional[dict] = None) -> Iterator[dict]:
+               report_target: Optional[dict] = None,
+               consent=None) -> Iterator[dict]:
         msg = guards.check_query(message, self.config.max_query_chars)
         k = guards.cap_k(k, self.config.max_chat_k)
         chunks = self.retriever.retrieve(identity, msg, k=k)
@@ -132,7 +148,7 @@ class ChatService:
         # Report mode is a focused "write the report now" task — offer NO tools so
         # the model can't wander off "gathering information" and answer briefly
         # instead of writing (the destination is already fixed by the user).
-        tools = [] if report_target is not None else self._select_tools(web_search)
+        tools = [] if report_target is not None else self._select_tools(identity, web_search)
         messages = list(history or []) + [{"role": "user", "content": msg}]
         system = self._build_system(system_prompt, chunks, tools=tools, report_target=report_target)
         doc_citations = self._doc_citations(chunks)
@@ -152,9 +168,9 @@ class ChatService:
             return
 
         # --- tool loop ---------------------------------------------------------
-        ctx = ToolContext(identity=identity, config=self.config)
-        web_citations: List[dict] = []
-        counters = {"marker": len(chunks), "searches": 0}  # web markers continue after docs
+        ctx = ToolContext(identity=identity, config=self.config, consent=consent)
+        tool_citations: List[dict] = []   # web + mcp sources, sharing the [n] numbering
+        counters = {"marker": len(chunks), "searches": 0}  # tool markers continue after docs
         tools_by_name = {t.name: t for t in tools}
 
         def execute(name: str, args: dict) -> str:
@@ -169,11 +185,22 @@ class ChatService:
             for s in out.sources:
                 counters["marker"] += 1
                 m = counters["marker"]
-                web_citations.append({"marker": m, "kind": "web",
-                                      "url": s["url"], "title": s.get("title", "")})
-                head = s.get("title") or s["url"]
-                lines.append(f"[{m}] {head} ({urlparse(s['url']).netloc})\n"
-                             f"{s.get('snippet', '')}\nSource: {s['url']}")
+                if s.get("kind") == "mcp":
+                    # An MCP tool call is a bibliographic source too: record it as a
+                    # citation and prefix its result with the [n] marker so the model
+                    # can attribute the answer to the external tool.
+                    tool_citations.append({"marker": m, "kind": "mcp",
+                                           "integration": s.get("integration", ""),
+                                           "tool": s.get("tool", "")})
+                    label = s.get("label") or (f"{s.get('integration', '')} · "
+                                               f"{s.get('tool', '')}").strip(" ·")
+                    lines.append(f"[{m}] {label}\n{out.text}")
+                else:
+                    tool_citations.append({"marker": m, "kind": "web",
+                                           "url": s["url"], "title": s.get("title", "")})
+                    head = s.get("title") or s["url"]
+                    lines.append(f"[{m}] {head} ({urlparse(s['url']).netloc})\n"
+                                 f"{s.get('snippet', '')}\nSource: {s['url']}")
             return "\n\n".join(lines)
 
         specs = [{"name": t.name, "description": t.description, "schema": t.schema} for t in tools]
@@ -193,7 +220,7 @@ class ChatService:
                 yield {"type": "tool_result", "name": ev.get("name")}
 
         # Save the report ONLY when the user pinned a destination (report mode).
-        citations = doc_citations + web_citations
+        citations = doc_citations + tool_citations
         if report_target is not None:
             prov = self._prov(identity, system_prompt, conversation_id, history, msg, citations)
             yield from self._save_marked_reports(identity, ctx.answer_text, ctx.saved, prov,
@@ -267,18 +294,30 @@ class ChatService:
             # Only the first marked block is the report; ignore any extras in report mode.
             break
 
-    def _select_tools(self, web_search: Optional[bool]):
+    def _select_tools(self, identity, web_search: Optional[bool]):
         """Decide which tools to offer this turn. Requires provider tool support.
         Web tools need the global enable + per-message opt-in (or the configured
         default); the folder-exploration tool is offered whenever the document
-        feature is enabled (saving itself is marker-driven, not a tool)."""
+        feature is enabled (saving itself is marker-driven, not a tool); the tenant's
+        enabled MCP tools (identity-scoped, consent-gated) are resolved per turn."""
         if not getattr(self.chat, "supports_tools", False):
             return []
         include_web = False
         if getattr(self.config, "web_search_enabled", False):
             include_web = (self.config.web_search_default if web_search is None
                            else bool(web_search))
-        return build_tools(self.config, include_web=include_web, search=self._search)
+        mcp_tools = []
+        if self._mcp is not None and getattr(self.config, "mcp_enabled", False):
+            try:
+                mcp_tools = self._mcp.tools_for(identity)
+            except Exception:  # fail open — MCP problems never break the chat
+                import logging
+                logging.getLogger("convert_search_ai.chat").warning(
+                    "MCP tool resolution failed; continuing without external tools",
+                    exc_info=True)
+                mcp_tools = []
+        return build_tools(self.config, include_web=include_web, search=self._search,
+                           mcp=mcp_tools)
 
     @staticmethod
     def _doc_citations(chunks: List[RetrievedChunk]) -> List[dict]:
@@ -314,5 +353,7 @@ class ChatService:
             parts.append(_INSTRUCTIONS_WEB if "web_search" in names else _INSTRUCTIONS)
             if "get_document_text" in names:
                 parts.append(_INSTRUCTIONS_DOC_TOOLS)
+            if any(n.startswith("mcp__") for n in names):
+                parts.append(_INSTRUCTIONS_MCP)
         parts.append("Context:\n" + context)
         return "\n\n".join(parts)
