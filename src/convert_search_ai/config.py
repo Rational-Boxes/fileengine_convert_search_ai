@@ -235,6 +235,31 @@ class Config:
         self.mcp_identity_secret = _first("CSAI_MCP_IDENTITY_SECRET", "FILEENGINE_JWT_SECRET", "")
         self.mcp_identity_ttl = int(_env("CSAI_MCP_IDENTITY_TTL", "120"))
 
+        # --- ONLYOFFICE in-browser editing (Phase 1.7 consumer; OFF by default) ---
+        # Edit office documents in an embedded ONLYOFFICE Document Server; every save
+        # writes back through the immutable versioned store as the *impersonated user*.
+        self.onlyoffice_enabled = _bool("CSAI_ONLYOFFICE_ENABLED", False)
+        # Public URL the browser loads the Document Server's api.js from (e.g.
+        # http://localhost:8080, or an https tunnel for a remote SPA).
+        self.onlyoffice_docserver_url = _env("CSAI_ONLYOFFICE_DOCSERVER_URL", "").rstrip("/")
+        # Shared secret for the Document Server's JWT contract (config + callback).
+        # Required when enabled — the Doc Server rejects an unsigned config with JWT on.
+        self.onlyoffice_jwt_secret = _env("CSAI_ONLYOFFICE_JWT_SECRET", "")
+        # Base URL the Document Server uses to reach CSAI for document download +
+        # save callback. MUST be reachable *from inside the Doc Server container*
+        # (host.docker.internal / a tunnel), NOT necessarily the same as the SPA's
+        # origin. Empty ⇒ derive from the incoming request base URL (dev fallback).
+        self.onlyoffice_callback_base = _env("CSAI_ONLYOFFICE_CALLBACK_BASE", "").rstrip("/")
+        # Signs the scoped download/callback tokens that bind the impersonated user
+        # to the editing session. Defaults to the shared bridge secret.
+        self.onlyoffice_signing_secret = _first("CSAI_ONLYOFFICE_SIGNING_SECRET",
+                                                "FILEENGINE_JWT_SECRET", "")
+        # Scoped-token lifetime — must outlast a long editing session (12h default),
+        # since the Doc Server may fire the save callback hours after config issuance.
+        self.onlyoffice_session_ttl = int(_env("CSAI_ONLYOFFICE_SESSION_TTL", "43200"))
+        # Cap on a written-back document (bytes).
+        self.onlyoffice_max_bytes = int(_env("CSAI_ONLYOFFICE_MAX_BYTES", str(100 * 1024 * 1024)))
+
         # HTML → PDF conversion (for .html documents, incl. chat-generated reports).
         # Chromium headless gives full-CSS fidelity; LibreOffice is the fallback.
         self.html_chromium = _env("CSAI_HTML_CHROMIUM", "chromium-browser")
