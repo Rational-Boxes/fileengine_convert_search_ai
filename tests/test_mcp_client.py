@@ -112,6 +112,32 @@ def test_bearer_auth_header_built(monkeypatch):
     assert headers["Authorization"] == "Bearer tok123"
 
 
+def test_oauth_client_credentials_header(monkeypatch):
+    # auth_type=oauth → CSAI exchanges the client secret for a bearer token (cached)
+    # and presents it to the MCP server.
+    from convert_search_ai import mcp_oauth
+    monkeypatch.setattr(mcp_oauth, "get_access_token", lambda integ, secret, **kw: "access-XYZ")
+    integ = _integ(auth_type="oauth", has_secret=True,
+                   token_url="https://auth.example.com/token", oauth_client_id="c1",
+                   oauth_scope="mcp.read")
+    headers = mc._build_headers(_cfg(), FakeStore(secret="client-secret"), integ,
+                                SimpleNamespace(user="u", tenant="t"))
+    assert headers["Authorization"] == "Bearer access-XYZ"
+
+
+def test_oauth_token_failure_omits_header(monkeypatch):
+    from convert_search_ai import mcp_oauth
+
+    def boom(integ, secret, **kw):
+        raise mcp_oauth.McpOAuthError("token endpoint down")
+    monkeypatch.setattr(mcp_oauth, "get_access_token", boom)
+    integ = _integ(auth_type="oauth", has_secret=True,
+                   token_url="https://auth.example.com/token", oauth_client_id="c1")
+    headers = mc._build_headers(_cfg(), FakeStore(secret="s"), integ,
+                                SimpleNamespace(user="u", tenant="t"))
+    assert "Authorization" not in headers  # fail-open: no token → no header
+
+
 def test_forward_identity_opt_in(monkeypatch):
     off = mc._build_headers(_cfg(mcp_identity_secret="k"), FakeStore(), _integ(),
                             SimpleNamespace(user="alice", tenant="acme"))

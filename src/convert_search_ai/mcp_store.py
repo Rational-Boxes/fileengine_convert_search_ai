@@ -41,13 +41,16 @@ class McpIntegration:
     description: str
     transport: str
     endpoint_url: str
-    auth_type: str          # none | bearer | header
+    auth_type: str          # none | bearer | header | oauth
     auth_header: str
     has_secret: bool
     headers: dict
     enabled: bool
     allowed_tools: Optional[List[str]]   # None = all discovered tools
     forward_identity: bool
+    token_url: str = ""          # oauth: token endpoint (client-credentials)
+    oauth_client_id: str = ""    # oauth: client id
+    oauth_scope: str = ""        # oauth: requested scope(s), space-separated
     created_by: str = ""
     created_at: str = ""
     updated_at: str = ""
@@ -62,6 +65,8 @@ class McpIntegration:
             "headers": self.headers, "enabled": self.enabled,
             "allowed_tools": self.allowed_tools,
             "forward_identity": self.forward_identity,
+            "token_url": self.token_url, "oauth_client_id": self.oauth_client_id,
+            "oauth_scope": self.oauth_scope,
             "created_by": self.created_by,
             "created_at": self.created_at, "updated_at": self.updated_at,
         }
@@ -69,13 +74,14 @@ class McpIntegration:
 
 _COLS = ("id, name, slug, description, transport, endpoint_url, auth_type, "
          "auth_header, (secret_enc IS NOT NULL) AS has_secret, headers, enabled, "
-         "allowed_tools, forward_identity, created_by, "
-         "created_at::text, updated_at::text")
+         "allowed_tools, forward_identity, token_url, oauth_client_id, oauth_scope, "
+         "created_by, created_at::text, updated_at::text")
 
 
 def _row(r) -> McpIntegration:
     (id_, name, slug, desc, transport, url, auth_type, auth_header, has_secret,
-     headers, enabled, allowed, fwd, created_by, created_at, updated_at) = r
+     headers, enabled, allowed, fwd, token_url, oauth_client_id, oauth_scope,
+     created_by, created_at, updated_at) = r
     return McpIntegration(
         id=id_, name=name, slug=slug, description=desc or "", transport=transport,
         endpoint_url=url, auth_type=auth_type, auth_header=auth_header or "",
@@ -84,7 +90,9 @@ def _row(r) -> McpIntegration:
         enabled=bool(enabled),
         allowed_tools=(list(allowed) if isinstance(allowed, list) else
                        (json.loads(allowed) if isinstance(allowed, str) else None)),
-        forward_identity=bool(fwd), created_by=created_by or "",
+        forward_identity=bool(fwd), token_url=token_url or "",
+        oauth_client_id=oauth_client_id or "", oauth_scope=oauth_scope or "",
+        created_by=created_by or "",
         created_at=created_at or "", updated_at=updated_at or "")
 
 
@@ -117,6 +125,7 @@ class McpIntegrationStore:
                auth_type: str, auth_header: str = "", secret_enc: Optional[bytes] = None,
                headers: Optional[dict] = None, allowed_tools: Optional[List[str]] = None,
                enabled: bool = False, forward_identity: bool = False,
+               token_url: str = "", oauth_client_id: str = "", oauth_scope: str = "",
                description: str = "", created_by: str = "") -> McpIntegration:
         id_ = uuid.uuid4().hex
         slug = self._unique_slug(tenant, name)
@@ -126,13 +135,13 @@ class McpIntegrationStore:
                 INSERT INTO mcp_integration
                     (id, name, slug, description, transport, endpoint_url, auth_type,
                      auth_header, secret_enc, headers, enabled, allowed_tools,
-                     forward_identity, created_by)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s,%s)
+                     forward_identity, token_url, oauth_client_id, oauth_scope, created_by)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s,%s,%s,%s,%s)
                 RETURNING """ + _COLS,
                 (id_, name, slug, description, transport, endpoint_url, auth_type,
                  auth_header, secret_enc, json.dumps(headers or {}), enabled,
                  (json.dumps(allowed_tools) if allowed_tools is not None else None),
-                 forward_identity, created_by))
+                 forward_identity, token_url, oauth_client_id, oauth_scope, created_by))
             row = cur.fetchone()
             conn.commit()
             return _row(row)
@@ -140,7 +149,8 @@ class McpIntegrationStore:
     # Fields a PUT may change. ``secret_enc``/``allowed_tools`` are sentinel-guarded
     # so "not provided" (leave as-is) is distinct from "clear it".
     _UPDATABLE = ("name", "description", "transport", "endpoint_url", "auth_type",
-                  "auth_header", "headers", "enabled", "forward_identity")
+                  "auth_header", "headers", "enabled", "forward_identity",
+                  "token_url", "oauth_client_id", "oauth_scope")
 
     def update(self, tenant: str, id_: str, *, secret_enc=_MISSING,
                allowed_tools=_MISSING, **fields) -> Optional[McpIntegration]:
