@@ -12,6 +12,13 @@ def test_document_type_for_office_formats():
     assert oo.document_type_for("notes.odt") == ("word", "odt")
 
 
+def test_html_is_editable_in_the_word_editor():
+    # HTML round-trips as HTML (graphical WYSIWYG editing of stored .html reports).
+    assert oo.document_type_for("report.html") == ("word", "html")
+    assert oo.document_type_for("PAGE.HTM") == ("word", "htm")
+    assert oo.is_editable("summary.html") is True
+
+
 def test_non_editable_types_return_none():
     for n in ("photo.png", "model.ifc", "archive.zip", "noext", "data.pdf"):
         assert oo.document_type_for(n) is None

@@ -25,8 +25,11 @@ import re
 from typing import Optional, Tuple
 
 # extension → (ONLYOFFICE documentType, canonical fileType). Editable office formats
-# only; everything else falls through to view/no-edit.
-_WORD = ("doc", "docx", "docm", "dot", "dotx", "odt", "ott", "rtf", "txt")
+# only; everything else falls through to view/no-edit. HTML is edited graphically in
+# the word editor and round-trips as HTML (the Document Server accepts html as both
+# an input and an output format) — so a stored .html (e.g. an AI-generated report)
+# can be edited WYSIWYG and saved back as HTML.
+_WORD = ("doc", "docx", "docm", "dot", "dotx", "odt", "ott", "rtf", "txt", "html", "htm")
 _CELL = ("xls", "xlsx", "xlsm", "xlt", "xltx", "ods", "ots", "csv")
 _SLIDE = ("ppt", "pptx", "pptm", "pot", "potx", "odp", "otp")
 
