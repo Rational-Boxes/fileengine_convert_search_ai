@@ -54,6 +54,9 @@ def test_build_editor_config_signs_when_secret_present():
     assert cfg["document"]["url"].endswith("token=d")
     assert cfg["editorConfig"]["callbackUrl"].endswith("token=c")
     assert cfg["editorConfig"]["user"] == {"id": "alice", "name": "Alice"}
+    # autosave + an active (forcesave) Save button so edits write a version on
+    # demand and on close, not just silently.
+    assert cfg["editorConfig"]["customization"] == {"autosave": True, "forcesave": True}
     # signed: token verifies and its payload matches the (unsigned) config
     claims = oo.verify_onlyoffice_jwt("s3cr3t", cfg["token"])
     assert claims["document"]["key"] == "k1"

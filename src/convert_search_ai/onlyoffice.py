@@ -123,6 +123,11 @@ def build_editor_config(*, doc_type: str, file_type: str, title: str, key: str,
             "mode": mode,
             "callbackUrl": callback_url,
             "user": {"id": user_id, "name": user_name or user_id},
+            # autosave + forcesave: the editor saves automatically (a callback on
+            # close writes a version), AND the Save button is active so the user can
+            # force an on-demand version (a status-6 forcesave callback). Without
+            # forcesave the Save icon greys out because saving is automatic.
+            "customization": {"autosave": True, "forcesave": True},
         },
     }
     if jwt_secret:
