@@ -87,8 +87,12 @@ def build_record(prov: dict, *, report_uid: str, report_version: str) -> dict:
 
 
 # -------------------------------------------------------------- HTML rendering
-def render_html(record: dict) -> bytes:
-    """A self-contained, previewable HTML transcript with the JSON record embedded."""
+def render_html(record: dict, *, linkify=None) -> bytes:
+    """A self-contained, previewable HTML transcript with the JSON record embedded.
+
+    ``linkify`` (optional) rewrites the model's '(file <uid>)' references — in the
+    transcript and the sources list — into named file deep-links (see
+    ``attach_provenance``); omit it to keep the raw text (used by unit tests)."""
     from .llm_tools import markdown_to_html  # lazy: avoids an import cycle
     e = html.escape
     rep = record.get("report", {})
@@ -99,15 +103,21 @@ def render_html(record: dict) -> bytes:
         # produced (e.g. the report body) render rather than showing as escaped
         # text. Isolated downstream by the viewer (shadow DOM / iframe document).
         body = markdown_to_html(m.get("content", ""))
+        if linkify:
+            body = linkify(body)  # "(file <uid>)" → named deep-link
         rows.append(f'<div class="msg {role}"><div class="role">{role}</div>'
                     f'<div class="body">{body}</div></div>')
     cites = []
     for c in record.get("citations", []):
+        marker = e(str(c.get("marker", "")))
         if c.get("kind") == "web":
-            cites.append(f'<li>[{e(str(c.get("marker","")))}] '
+            cites.append(f'<li>[{marker}] '
                          f'<a href="{e(c.get("url",""))}" rel="noopener">{e(c.get("title") or c.get("url",""))}</a></li>')
         else:
-            cites.append(f'<li>[{e(str(c.get("marker","")))}] document {e(c.get("file_uid",""))}</li>')
+            # Resolve the cited document to a named deep-link too (never a raw uid).
+            fu = c.get("file_uid", "")
+            label = linkify(f"(file {fu})") if (linkify and fu) else f"document {e(fu)}"
+            cites.append(f'<li>[{marker}] {label}</li>')
     cites_html = f'<ul class="cites">{"".join(cites)}</ul>' if cites else '<p class="muted">No citations.</p>'
     payload = json.dumps(record, ensure_ascii=False)
     return (
@@ -144,17 +154,27 @@ def render_html(record: dict) -> bytes:
 
 
 # --------------------------------------------------------------- attach to file
-def attach_provenance(mf, report_uid: str, tenant: str, prov: dict) -> Optional[str]:
+def attach_provenance(mf, report_uid: str, tenant: str, prov: dict,
+                      *, base_url: str = "", ref_cache: dict = None) -> Optional[str]:
     """Write the chat-provenance hidden child for a just-saved report, as the same
     user. Best-effort: returns the child name, or None on failure (logged) — a
-    provenance hiccup must never lose the report itself."""
+    provenance hiccup must never lose the report itself.
+
+    ``base_url`` (the SPA origin) + ``ref_cache`` (a shared uid→name map) are passed
+    through to linkify the transcript's '(file <uid>)' references into named file
+    deep-links, consistent with the report body itself."""
     try:
         info = mf.stat(report_uid, tenant=tenant)
         version = getattr(info, "version", "") or "0"
         record = build_record(prov, report_uid=report_uid, report_version=version)
         name = rendition_name(version, PROVENANCE_FMT, "html")
         child = mf.touch(report_uid, name, tenant=tenant)
-        mf.put(child, render_html(record), tenant=tenant)
+        # Reuse the report's linkifier so the chat log's file references resolve to
+        # the same named deep-links as the report body.
+        from .llm_tools import _linkify_file_refs  # lazy: avoids an import cycle
+        cache = ref_cache if ref_cache is not None else {}
+        linkify = lambda s: _linkify_file_refs(s, mf, tenant, base_url, cache)  # noqa: E731
+        mf.put(child, render_html(record, linkify=linkify), tenant=tenant)
         return name
     except Exception as e:  # noqa: BLE001 — provenance is best-effort
         log.warning("chat provenance log not attached to report %s: %s", report_uid, e)

@@ -151,6 +151,28 @@ def test_attach_provenance_writes_chatlog_child():
     assert b"Chat provenance" in mf.puts[child_uid]
 
 
+def test_attach_provenance_linkifies_file_refs_in_transcript_and_sources():
+    uid = "5a23e207-1c2d-4e5f-8a9b-0c1d2e3f4a5b"
+    mf = FakeMF()
+    mf.files["r1"] = ("report.html", "20260102_030405")
+    mf.files[uid] = ("Budget.xlsx", "v1")
+    name = provenance.attach_provenance(mf, "r1", "acme", {
+        "user": "u", "tenant": "acme", "message": "q",
+        "answer_text": f"the number is in (file {uid}) per the sheet",
+        "citations": [{"marker": 1, "kind": "doc", "file_uid": uid}],
+    }, base_url="https://app.example.com")
+    out = mf.puts[mf.children["r1"][name]].decode("utf-8")
+    # The embedded JSON audit record keeps raw data verbatim; the VISIBLE transcript
+    # is what gets linkified — so scope the "no raw ref" check to the visible HTML.
+    visible = out.split('<script id="provenance-record"')[0]
+    # transcript ref → absolute, named deep-link; raw "(file <uid>)" is gone
+    assert f'href="https://app.example.com/files?file={uid}&amp;tenant=acme"' in visible
+    assert "📄 Budget.xlsx" in visible
+    assert f"(file {uid})" not in visible
+    # the sources list resolves the cited document to a name too (no raw uid)
+    assert "document " + uid not in visible
+
+
 def test_attach_provenance_is_best_effort_on_error():
     class Boom(FakeMF):
         def stat(self, *a, **k):

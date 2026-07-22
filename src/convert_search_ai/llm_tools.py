@@ -212,16 +212,23 @@ def _looks_like_html(s: str) -> bool:
 _FILE_REF_RE = re.compile(r"\(file\s+([0-9a-fA-F-]{8,})\)")
 
 
-def _linkify_file_refs(html: str, mf, tenant: str) -> str:
-    """Rewrite '(file <uid>)' references in a report's HTML into tenant-scoped links
-    that show each file's name, resolved via the core AS THE USER (``mf`` is the
-    caller's already-open, identity-bound client). Best-effort: a uid that can't be
-    resolved (deleted / no access) degrades to a plain '📄 file' label rather than a
-    broken link, and any failure returns the HTML unchanged — linkifying must never
-    block saving the report."""
+def _linkify_file_refs(html: str, mf, tenant: str, base_url: str = "", cache: dict = None) -> str:
+    """Rewrite '(file <uid>)' references in report/provenance HTML into file
+    deep-links that show each file's name, resolved via the core AS THE USER (``mf``
+    is the caller's already-open, identity-bound client).
+
+    ``base_url`` (the SPA's public origin) makes the link ABSOLUTE
+    (``https://app/files?file=…&tenant=…``) so it survives PDF rendering and copying
+    the report to an external site; empty ⇒ a relative ``/files?…`` (dev). ``cache``
+    lets a caller share one uid→name map across several calls (the provenance log
+    linkifies many turns).
+
+    Best-effort: a uid that can't be resolved (deleted / no access) degrades to a
+    plain '📄 file' label rather than a broken link, and any failure returns the HTML
+    unchanged — linkifying must never block saving the report."""
     if not html or "(file " not in html:
         return html
-    resolved: dict = {}
+    resolved: dict = cache if cache is not None else {}
 
     def name_of(uid):
         if uid not in resolved:
@@ -239,7 +246,7 @@ def _linkify_file_refs(html: str, mf, tenant: str) -> str:
         if not name:
             # No reliable target (unresolved) — show a label, not a dead link.
             return f"({label})"
-        href = _htmllib.escape(f"/files?file={uid}&tenant={tenant}", quote=True)
+        href = _htmllib.escape(f"{base_url}/files?file={uid}&tenant={tenant}", quote=True)
         return f'(<a href="{href}">{label}</a>)'
 
     try:
@@ -376,11 +383,14 @@ def save_report_document(identity, config, *, path: str, filename: str, title: s
     html = body if _looks_like_html(body) else markdown_to_html(body)
     name = safe if safe.lower().endswith((".html", ".htm")) else safe + ".html"
     tenant = getattr(identity, "tenant", "") or getattr(config, "tenant", "")
+    base_url = getattr(config, "public_app_url", "") or ""
     mf = client_factory(identity, config)
+    ref_cache: dict = {}
     try:
-        # Rewrite the model's "(file <uid>)" references into named, tenant-scoped
-        # links (resolved as the user) before wrapping + size-checking the document.
-        html = _linkify_file_refs(html, mf, tenant)
+        # Rewrite the model's "(file <uid>)" references into named, absolute file
+        # deep-links (resolved as the user) before wrapping + size-checking the
+        # document — absolute so they survive PDF export / external hosting.
+        html = _linkify_file_refs(html, mf, tenant, base_url, ref_cache)
         document = wrap_html_document((title or safe).strip(), html).encode("utf-8")
         if len(document) > max_bytes:
             raise ReportSaveError("too_large", "the report is too large to save")
@@ -411,7 +421,7 @@ def save_report_document(identity, config, *, path: str, filename: str, title: s
                 **provenance,
                 "report_title": (title or safe).strip(),
                 "report_location": report_location(path, filename),
-            })
+            }, base_url=base_url, ref_cache=ref_cache)
     except ReportSaveError:
         raise
     except Exception as e:  # WriteUnavailable / permission / … — surface as save error

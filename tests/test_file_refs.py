@@ -53,3 +53,24 @@ def test_no_refs_is_untouched_and_never_stats():
 def test_wordy_or_short_parens_never_match():
     text = "open the (file cabinet) or (file 3)"
     assert _linkify_file_refs(text, FakeMF({}), "t") == text
+
+
+def test_absolute_base_url_is_external_hostable():
+    # A base_url makes the link absolute so it survives PDF export / external hosting.
+    out = _linkify_file_refs(f"(file {UID})", FakeMF({UID: "r.html"}), "acme",
+                             "https://app.example.com")
+    assert f'href="https://app.example.com/files?file={UID}&amp;tenant=acme"' in out
+
+
+def test_shared_cache_resolves_each_uid_once():
+    calls = []
+
+    class CountingMF(FakeMF):
+        def stat(self, uid, tenant=None, **kw):
+            calls.append(uid)
+            return super().stat(uid, tenant=tenant)
+
+    mf, cache = CountingMF({UID: "a.txt"}), {}
+    _linkify_file_refs(f"(file {UID})", mf, "t", "", cache)
+    _linkify_file_refs(f"again (file {UID})", mf, "t", "", cache)
+    assert calls == [UID]  # the second call hit the shared cache
