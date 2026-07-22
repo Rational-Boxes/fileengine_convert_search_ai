@@ -187,3 +187,34 @@ def test_provider_fails_open_on_bad_server(monkeypatch):
 def test_provider_off_when_disabled(monkeypatch):
     prov = McpToolProvider(_cfg(mcp_enabled=False), FakeStore([_integ()]))
     assert prov.tools_for(SimpleNamespace(user="u", tenant="t")) == []
+
+
+# ------------------------------ role gating --------------------------------
+def test_role_permitted_helper():
+    ident = SimpleNamespace(user="u", tenant="t", roles=["users", "engineering"])
+    assert mc.role_permitted(_integ(allowed_roles=None), ident) is True      # unset = all
+    assert mc.role_permitted(_integ(allowed_roles=[]), ident) is True        # empty = all
+    assert mc.role_permitted(_integ(allowed_roles=["engineering"]), ident) is True
+    assert mc.role_permitted(_integ(allowed_roles=["finance"]), ident) is False
+    # a user with no roles is barred from a restricted integration
+    assert mc.role_permitted(_integ(allowed_roles=["x"]), SimpleNamespace(roles=[])) is False
+
+
+def test_provider_filters_by_role(monkeypatch):
+    monkeypatch.setattr(mc, "discover_tools", lambda **kw: [ToolSpec("t", "", {})])
+    prov = McpToolProvider(_cfg(), FakeStore([_integ(allowed_roles=["finance"])]))
+    eng = SimpleNamespace(user="e", tenant="t", roles=["engineering"])
+    fin = SimpleNamespace(user="f", tenant="t", roles=["finance"])
+    assert prov.tools_for(eng) == []                              # no matching role → hidden
+    assert {t.name for t in prov.tools_for(fin)} == {"mcp__crm__t"}  # matching role → visible
+
+
+def test_tool_run_denies_barred_role(monkeypatch):
+    called = {"n": 0}
+    monkeypatch.setattr(mc, "call_tool", lambda **kw: called.__setitem__("n", called["n"] + 1) or "x")
+    integ = _integ(allowed_roles=["finance"])
+    tool = McpTool(_cfg(), FakeStore(), integ, ToolSpec("t", "", {}))
+    ctx = ToolContext(identity=SimpleNamespace(user="u", tenant="t", roles=["engineering"]),
+                      config=_cfg(), consent=lambda r: True)
+    out = tool.run({}, ctx)
+    assert "not permitted" in out.text and called["n"] == 0      # never reaches the network

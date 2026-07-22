@@ -29,22 +29,22 @@ class InMemoryStore:
 
     def create(self, tenant, *, name, transport, endpoint_url, auth_type, auth_header="",
                secret_enc=None, headers=None, allowed_tools=None, enabled=False,
-               forward_identity=False, token_url="", oauth_client_id="", oauth_scope="",
-               description="", created_by=""):
+               forward_identity=False, allowed_roles=None, token_url="", oauth_client_id="",
+               oauth_scope="", description="", created_by=""):
         id_ = uuid.uuid4().hex
         integ = McpIntegration(id=id_, name=name, slug=slugify(name), description=description,
                                transport=transport, endpoint_url=endpoint_url, auth_type=auth_type,
                                auth_header=auth_header, has_secret=secret_enc is not None,
                                headers=headers or {}, enabled=enabled, allowed_tools=allowed_tools,
-                               forward_identity=forward_identity, token_url=token_url,
-                               oauth_client_id=oauth_client_id, oauth_scope=oauth_scope,
-                               created_by=created_by)
+                               forward_identity=forward_identity, allowed_roles=allowed_roles,
+                               token_url=token_url, oauth_client_id=oauth_client_id,
+                               oauth_scope=oauth_scope, created_by=created_by)
         self.rows[id_] = integ
         if secret_enc is not None:
             self.secrets[id_] = secret_enc
         return integ
 
-    def update(self, tenant, id_, *, secret_enc=..., allowed_tools=..., **fields):
+    def update(self, tenant, id_, *, secret_enc=..., allowed_tools=..., allowed_roles=..., **fields):
         integ = self.rows[id_]
         for k, v in fields.items():
             if v is not None:
@@ -53,6 +53,8 @@ class InMemoryStore:
             integ.has_secret = secret_enc is not None
         if allowed_tools is not ...:
             integ.allowed_tools = allowed_tools
+        if allowed_roles is not ...:
+            integ.allowed_roles = allowed_roles
         return integ
 
     def delete(self, tenant, id_):
@@ -130,6 +132,26 @@ def test_bearer_requires_secret(monkeypatch):
     r = c.post(_BASE, json={"name": "x", "endpoint_url": "https://e.example/mcp",
                             "auth_type": "bearer"}, headers=_auth(app))
     assert r.status_code == 400 and "secret" in r.json()["detail"]
+
+
+def test_allowed_roles_create_and_normalization(monkeypatch):
+    app, c = _client(monkeypatch)
+    r = c.post(_BASE, json={"name": "Restricted", "endpoint_url": "https://mcp.example.com/mcp",
+                            "auth_type": "none", "allowed_roles": ["engineering", " ", "admins"],
+                            "enabled": True}, headers=_auth(app))
+    assert r.status_code == 200, r.text
+    # blanks dropped
+    assert r.json()["allowed_roles"] == ["engineering", "admins"]
+    cid = r.json()["id"]
+
+    # empty list normalizes to null (= all users)
+    up = c.put(f"{_BASE}/{cid}", json={"allowed_roles": []}, headers=_auth(app))
+    assert up.status_code == 200 and up.json()["allowed_roles"] is None
+
+    # bad type rejected
+    bad = c.post(_BASE, json={"name": "x", "endpoint_url": "https://e/mcp", "auth_type": "none",
+                              "allowed_roles": "engineering"}, headers=_auth(app))
+    assert bad.status_code == 400 and "allowed_roles" in bad.json()["detail"]
 
 
 def test_oauth_create_and_requirements(monkeypatch):

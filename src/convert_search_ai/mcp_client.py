@@ -144,6 +144,17 @@ def call_tool(*, endpoint_url: str, transport: str, headers: dict, timeout_s: fl
 # --------------------------------------------------------------------------- #
 # Header assembly (auth credential + opt-in identity forwarding).
 # --------------------------------------------------------------------------- #
+def role_permitted(integ: McpIntegration, identity) -> bool:
+    """Whether ``identity`` may use ``integ``. An integration with a non-empty
+    ``allowed_roles`` is restricted to users holding at least one of those roles;
+    an empty/unset allowlist is open to everyone in the tenant (the default)."""
+    roles = getattr(integ, "allowed_roles", None)
+    if not roles:
+        return True
+    user_roles = set(getattr(identity, "roles", None) or [])
+    return bool(user_roles & set(roles))
+
+
 def _build_headers(config: Config, store: McpIntegrationStore, integ: McpIntegration,
                    identity) -> dict:
     headers = dict(integ.headers or {})
@@ -218,6 +229,14 @@ class McpTool(Tool):
         integ = self._integ
         user = getattr(ctx.identity, "user", "")
         tenant = getattr(ctx.identity, "tenant", "")
+
+        # (a0) Role gate (defense-in-depth): a barred user should never have this tool
+        # in their toolset (tools_for filters it), but re-check at call time so a stale
+        # cache or any other path can't run an integration the user isn't permitted.
+        if not role_permitted(integ, ctx.identity):
+            audit.record(action="mcp_tool", user=user, tenant=tenant, result="denied",
+                         integration=integ.slug, tool=self._tool_name, reason="role")
+            return ToolOutput(text="(you are not permitted to use this integration)")
 
         # (a) Consent is mandatory. No consent channel ⇒ deny (fail-closed).
         consent = getattr(ctx, "consent", None)
@@ -309,6 +328,12 @@ class McpToolProvider:
             return []
         tools: List[Tool] = []
         for integ in integrations:
+            # Role gate (optional): an integration with allowed_roles restricts which
+            # users may invoke it — the user needs at least one matching role. An empty
+            # /unset allowlist means all users (backward compatible). Gating here (the
+            # exposure point) means a barred user never even sees the tools.
+            if not role_permitted(integ, identity):
+                continue
             try:
                 specs = self._discover_cached(tenant, integ)
             except McpConnectionError as e:

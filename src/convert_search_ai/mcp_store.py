@@ -48,6 +48,7 @@ class McpIntegration:
     enabled: bool
     allowed_tools: Optional[List[str]]   # None = all discovered tools
     forward_identity: bool
+    allowed_roles: Optional[List[str]] = None  # None/empty = all users; else only these roles
     token_url: str = ""          # oauth: token endpoint (client-credentials)
     oauth_client_id: str = ""    # oauth: client id
     oauth_scope: str = ""        # oauth: requested scope(s), space-separated
@@ -64,6 +65,7 @@ class McpIntegration:
             "auth_header": self.auth_header, "has_secret": self.has_secret,
             "headers": self.headers, "enabled": self.enabled,
             "allowed_tools": self.allowed_tools,
+            "allowed_roles": self.allowed_roles,
             "forward_identity": self.forward_identity,
             "token_url": self.token_url, "oauth_client_id": self.oauth_client_id,
             "oauth_scope": self.oauth_scope,
@@ -75,22 +77,31 @@ class McpIntegration:
 _COLS = ("id, name, slug, description, transport, endpoint_url, auth_type, "
          "auth_header, (secret_enc IS NOT NULL) AS has_secret, headers, enabled, "
          "allowed_tools, forward_identity, token_url, oauth_client_id, oauth_scope, "
-         "created_by, created_at::text, updated_at::text")
+         "allowed_roles, created_by, created_at::text, updated_at::text")
+
+
+def _json_list(v):
+    """Parse a JSONB list column to a Python list, or None when unset."""
+    if isinstance(v, list):
+        return list(v)
+    if isinstance(v, str):
+        return json.loads(v)
+    return None
 
 
 def _row(r) -> McpIntegration:
     (id_, name, slug, desc, transport, url, auth_type, auth_header, has_secret,
      headers, enabled, allowed, fwd, token_url, oauth_client_id, oauth_scope,
-     created_by, created_at, updated_at) = r
+     allowed_roles, created_by, created_at, updated_at) = r
     return McpIntegration(
         id=id_, name=name, slug=slug, description=desc or "", transport=transport,
         endpoint_url=url, auth_type=auth_type, auth_header=auth_header or "",
         has_secret=bool(has_secret),
         headers=headers if isinstance(headers, dict) else (json.loads(headers) if headers else {}),
         enabled=bool(enabled),
-        allowed_tools=(list(allowed) if isinstance(allowed, list) else
-                       (json.loads(allowed) if isinstance(allowed, str) else None)),
-        forward_identity=bool(fwd), token_url=token_url or "",
+        allowed_tools=_json_list(allowed),
+        forward_identity=bool(fwd), allowed_roles=_json_list(allowed_roles),
+        token_url=token_url or "",
         oauth_client_id=oauth_client_id or "", oauth_scope=oauth_scope or "",
         created_by=created_by or "",
         created_at=created_at or "", updated_at=updated_at or "")
@@ -125,6 +136,7 @@ class McpIntegrationStore:
                auth_type: str, auth_header: str = "", secret_enc: Optional[bytes] = None,
                headers: Optional[dict] = None, allowed_tools: Optional[List[str]] = None,
                enabled: bool = False, forward_identity: bool = False,
+               allowed_roles: Optional[List[str]] = None,
                token_url: str = "", oauth_client_id: str = "", oauth_scope: str = "",
                description: str = "", created_by: str = "") -> McpIntegration:
         id_ = uuid.uuid4().hex
@@ -135,13 +147,16 @@ class McpIntegrationStore:
                 INSERT INTO mcp_integration
                     (id, name, slug, description, transport, endpoint_url, auth_type,
                      auth_header, secret_enc, headers, enabled, allowed_tools,
-                     forward_identity, token_url, oauth_client_id, oauth_scope, created_by)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s,%s,%s,%s,%s)
+                     forward_identity, allowed_roles, token_url, oauth_client_id,
+                     oauth_scope, created_by)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s,%s::jsonb,%s,%s,%s,%s)
                 RETURNING """ + _COLS,
                 (id_, name, slug, description, transport, endpoint_url, auth_type,
                  auth_header, secret_enc, json.dumps(headers or {}), enabled,
                  (json.dumps(allowed_tools) if allowed_tools is not None else None),
-                 forward_identity, token_url, oauth_client_id, oauth_scope, created_by))
+                 forward_identity,
+                 (json.dumps(allowed_roles) if allowed_roles is not None else None),
+                 token_url, oauth_client_id, oauth_scope, created_by))
             row = cur.fetchone()
             conn.commit()
             return _row(row)
@@ -153,7 +168,7 @@ class McpIntegrationStore:
                   "token_url", "oauth_client_id", "oauth_scope")
 
     def update(self, tenant: str, id_: str, *, secret_enc=_MISSING,
-               allowed_tools=_MISSING, **fields) -> Optional[McpIntegration]:
+               allowed_tools=_MISSING, allowed_roles=_MISSING, **fields) -> Optional[McpIntegration]:
         sets, params = [], []
         for k in self._UPDATABLE:
             if k in fields and fields[k] is not None:
@@ -169,6 +184,9 @@ class McpIntegrationStore:
         if allowed_tools is not _MISSING:
             sets.append("allowed_tools = %s::jsonb")
             params.append(json.dumps(allowed_tools) if allowed_tools is not None else None)
+        if allowed_roles is not _MISSING:
+            sets.append("allowed_roles = %s::jsonb")
+            params.append(json.dumps(allowed_roles) if allowed_roles is not None else None)
         if not sets:
             return self.get(tenant, id_)
         sets.append("updated_at = now()")

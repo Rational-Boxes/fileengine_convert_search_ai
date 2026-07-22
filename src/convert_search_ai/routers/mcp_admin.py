@@ -128,6 +128,13 @@ def _validate_write(body: dict, config: Config, *, creating: bool, existing=None
             raise HTTPException(status_code=400, detail="allowed_tools must be a list of strings or null")
         out["allowed_tools"] = at  # None = all
 
+    if "allowed_roles" in body:
+        ar = body.get("allowed_roles")
+        if ar is not None and (not isinstance(ar, list) or any(not isinstance(x, str) for x in ar)):
+            raise HTTPException(status_code=400, detail="allowed_roles must be a list of strings or null")
+        # Normalize: drop blanks; an empty list means "all users" (same as null).
+        out["allowed_roles"] = ([r.strip() for r in ar if r and r.strip()] or None) if ar is not None else None
+
     if "enabled" in body:
         out["enabled"] = bool(body.get("enabled"))
 
@@ -206,6 +213,7 @@ def create_integration(request: Request, body: dict = Body(...),
         headers=clean.get("headers"), allowed_tools=clean.get("allowed_tools"),
         enabled=clean.get("enabled", False),
         forward_identity=clean.get("forward_identity", False),
+        allowed_roles=clean.get("allowed_roles"),
         token_url=clean.get("token_url", ""),
         oauth_client_id=clean.get("oauth_client_id", ""),
         oauth_scope=clean.get("oauth_scope", ""),
@@ -245,6 +253,9 @@ def update_integration(id_: str, request: Request, body: dict = Body(...),
     if "allowed_tools" in body:
         kwargs["allowed_tools"] = clean.get("allowed_tools")
         clean.pop("allowed_tools", None)  # passed explicitly, not via **fields
+    if "allowed_roles" in body:
+        kwargs["allowed_roles"] = clean.get("allowed_roles")
+        clean.pop("allowed_roles", None)  # sentinel-guarded explicit param in the store
     integ = store.update(ident.tenant, id_, **kwargs)
     audit.record(action="mcp_admin", user=ident.user, tenant=ident.tenant, result="ok",
                  op="update", integration=integ.slug,

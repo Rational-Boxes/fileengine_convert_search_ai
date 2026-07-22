@@ -132,6 +132,7 @@ CREATE TABLE IF NOT EXISTS "{schema}".mcp_integration (
     headers          JSONB       NOT NULL DEFAULT '{{}}'::jsonb,
     enabled          BOOLEAN     NOT NULL DEFAULT false,
     allowed_tools    JSONB,                             -- NULL = expose all discovered tools
+    allowed_roles    JSONB,                             -- NULL/empty = all users; else only these roles may use it
     forward_identity BOOLEAN     NOT NULL DEFAULT false,
     created_by       TEXT        NOT NULL DEFAULT '',
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -146,6 +147,7 @@ CREATE INDEX IF NOT EXISTS idx_mcp_integration_enabled
 ALTER TABLE "{schema}".mcp_integration ADD COLUMN IF NOT EXISTS token_url TEXT NOT NULL DEFAULT '';
 ALTER TABLE "{schema}".mcp_integration ADD COLUMN IF NOT EXISTS oauth_client_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE "{schema}".mcp_integration ADD COLUMN IF NOT EXISTS oauth_scope TEXT NOT NULL DEFAULT '';
+ALTER TABLE "{schema}".mcp_integration ADD COLUMN IF NOT EXISTS allowed_roles JSONB;
 ALTER TABLE "{schema}".mcp_integration DROP CONSTRAINT IF EXISTS mcp_integration_auth_type_check;
 '''
 
