@@ -137,14 +137,16 @@ class Config:
             o.strip() for o in _env("CSAI_CORS_ORIGINS", "").split(",") if o.strip()
         ]
 
-        # Public base URL of the SPA (e.g. https://app.example.com). Used to build
-        # ABSOLUTE file deep-links baked into generated report HTML (and the chat
-        # provenance log) so they still resolve when the report is rendered to PDF
-        # or copied to an externally hosted site — a relative "/files?…" would not.
-        # Falls back to the first CORS origin (the SPA); empty ⇒ relative links (dev).
+        # Public base URL of the SPA, used to build ABSOLUTE file deep-links baked
+        # into generated report HTML (and the chat provenance log) so they still
+        # resolve when the report is rendered to PDF or copied to an externally hosted
+        # site — a relative "/files?…" would not. MULTI-TENANT: put a {tenant}
+        # placeholder in the value (e.g. https://{tenant}.example.com) and each
+        # report links to its OWN tenant's host, since tenants get unique URLs; a
+        # plain origin instead carries the tenant only in the ?tenant= query. Empty ⇒
+        # relative links (dev). NB: no CORS-origin fallback — that is a single global
+        # origin, which would mislink every tenant to one host.
         self.public_app_url = _env("CSAI_PUBLIC_APP_URL", "").rstrip("/")
-        if not self.public_app_url and self.cors_origins:
-            self.public_app_url = self.cors_origins[0].rstrip("/")
 
         # --- Permission cache (DEVELOPMENT_PLAN §8): cap decisions to this many seconds ---
         self.permission_cache_ttl = int(_env("CSAI_PERMISSION_CACHE_TTL", "300"))

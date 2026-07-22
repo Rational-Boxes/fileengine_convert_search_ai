@@ -62,6 +62,16 @@ def test_absolute_base_url_is_external_hostable():
     assert f'href="https://app.example.com/files?file={UID}&amp;tenant=acme"' in out
 
 
+def test_tenant_template_links_each_tenant_to_its_own_host():
+    # Multi-tenant: {tenant} in the base makes each report link to its own host.
+    tmpl = "https://{tenant}.example.com"
+    a = _linkify_file_refs(f"(file {UID})", FakeMF({UID: "r.html"}), "acme", tmpl)
+    b = _linkify_file_refs(f"(file {UID})", FakeMF({UID: "r.html"}), "globex", tmpl)
+    assert 'href="https://acme.example.com/files?' in a
+    assert 'href="https://globex.example.com/files?' in b
+    assert "{tenant}" not in a and "{tenant}" not in b
+
+
 def test_shared_cache_resolves_each_uid_once():
     calls = []
 

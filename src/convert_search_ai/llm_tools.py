@@ -219,15 +219,21 @@ def _linkify_file_refs(html: str, mf, tenant: str, base_url: str = "", cache: di
 
     ``base_url`` (the SPA's public origin) makes the link ABSOLUTE
     (``https://app/files?file=…&tenant=…``) so it survives PDF rendering and copying
-    the report to an external site; empty ⇒ a relative ``/files?…`` (dev). ``cache``
-    lets a caller share one uid→name map across several calls (the provenance log
-    linkifies many turns).
+    the report to an external site; empty ⇒ a relative ``/files?…`` (dev). It may
+    carry a ``{tenant}`` placeholder — substituted with this report's tenant — so a
+    multi-tenant deployment that gives each tenant its own host
+    (``https://{tenant}.example.com``) links to the RIGHT tenant's URL; a plain origin
+    instead carries the tenant only in the ``?tenant=`` query. ``cache`` lets a caller
+    share one uid→name map across several calls (the provenance log linkifies many
+    turns).
 
     Best-effort: a uid that can't be resolved (deleted / no access) degrades to a
     plain '📄 file' label rather than a broken link, and any failure returns the HTML
     unchanged — linkifying must never block saving the report."""
     if not html or "(file " not in html:
         return html
+    # Resolve the per-tenant host (no-op for a plain origin or the relative fallback).
+    base = base_url.replace("{tenant}", tenant) if base_url else ""
     resolved: dict = cache if cache is not None else {}
 
     def name_of(uid):
@@ -246,7 +252,7 @@ def _linkify_file_refs(html: str, mf, tenant: str, base_url: str = "", cache: di
         if not name:
             # No reliable target (unresolved) — show a label, not a dead link.
             return f"({label})"
-        href = _htmllib.escape(f"{base_url}/files?file={uid}&tenant={tenant}", quote=True)
+        href = _htmllib.escape(f"{base}/files?file={uid}&tenant={tenant}", quote=True)
         return f'(<a href="{href}">{label}</a>)'
 
     try:
