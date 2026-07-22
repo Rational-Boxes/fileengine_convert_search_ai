@@ -29,13 +29,16 @@ class InMemoryStore:
 
     def create(self, tenant, *, name, transport, endpoint_url, auth_type, auth_header="",
                secret_enc=None, headers=None, allowed_tools=None, enabled=False,
-               forward_identity=False, description="", created_by=""):
+               forward_identity=False, token_url="", oauth_client_id="", oauth_scope="",
+               description="", created_by=""):
         id_ = uuid.uuid4().hex
         integ = McpIntegration(id=id_, name=name, slug=slugify(name), description=description,
                                transport=transport, endpoint_url=endpoint_url, auth_type=auth_type,
                                auth_header=auth_header, has_secret=secret_enc is not None,
                                headers=headers or {}, enabled=enabled, allowed_tools=allowed_tools,
-                               forward_identity=forward_identity, created_by=created_by)
+                               forward_identity=forward_identity, token_url=token_url,
+                               oauth_client_id=oauth_client_id, oauth_scope=oauth_scope,
+                               created_by=created_by)
         self.rows[id_] = integ
         if secret_enc is not None:
             self.secrets[id_] = secret_enc
@@ -126,6 +129,35 @@ def test_bearer_requires_secret(monkeypatch):
     app, c = _client(monkeypatch)
     r = c.post(_BASE, json={"name": "x", "endpoint_url": "https://e.example/mcp",
                             "auth_type": "bearer"}, headers=_auth(app))
+    assert r.status_code == 400 and "secret" in r.json()["detail"]
+
+
+def test_oauth_create_and_requirements(monkeypatch):
+    app, c = _client(monkeypatch)
+    # happy path: oauth with token_url + client_id + secret
+    ok = c.post(_BASE, json={
+        "name": "OAuth MCP", "endpoint_url": "https://mcp.example.com/mcp",
+        "auth_type": "oauth", "token_url": "https://auth.example.com/token",
+        "oauth_client_id": "client-1", "oauth_scope": "mcp.read", "secret": "client-secret",
+        "enabled": True}, headers=_auth(app))
+    assert ok.status_code == 200, ok.text
+    body = ok.json()
+    assert body["auth_type"] == "oauth" and body["token_url"] == "https://auth.example.com/token"
+    assert body["oauth_client_id"] == "client-1" and body["has_secret"] is True
+    assert "secret" not in body  # client secret never returned
+
+    # missing token_url → 400
+    r = c.post(_BASE, json={"name": "a", "endpoint_url": "https://e/mcp", "auth_type": "oauth",
+                            "oauth_client_id": "c", "secret": "s"}, headers=_auth(app))
+    assert r.status_code == 400 and "token_url" in r.json()["detail"]
+    # missing client_id → 400
+    r = c.post(_BASE, json={"name": "b", "endpoint_url": "https://e/mcp", "auth_type": "oauth",
+                            "token_url": "https://auth/token", "secret": "s"}, headers=_auth(app))
+    assert r.status_code == 400 and "oauth_client_id" in r.json()["detail"]
+    # missing secret → 400
+    r = c.post(_BASE, json={"name": "d", "endpoint_url": "https://e/mcp", "auth_type": "oauth",
+                            "token_url": "https://auth/token", "oauth_client_id": "c"},
+               headers=_auth(app))
     assert r.status_code == 400 and "secret" in r.json()["detail"]
 
 

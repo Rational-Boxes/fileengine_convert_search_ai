@@ -154,6 +154,20 @@ def _build_headers(config: Config, store: McpIntegrationStore, integ: McpIntegra
                 headers["Authorization"] = f"Bearer {secret}"
             else:
                 headers[integ.auth_header or "Authorization"] = secret
+    elif integ.auth_type == "oauth" and identity is not None:
+        # Client-credentials: exchange the stored client secret for a bearer token
+        # (cached/refreshed) and present it to the MCP server. A token-endpoint
+        # failure omits the header (fail-open — the server rejects the unauthenticated
+        # call, and discovery drops the integration's tools rather than raising).
+        secret = store.decrypted_secret(getattr(identity, "tenant", ""), integ.id)
+        if secret and integ.token_url and integ.oauth_client_id:
+            from . import mcp_oauth
+            try:
+                token = mcp_oauth.get_access_token(
+                    integ, secret, timeout_s=max(1.0, config.mcp_tool_timeout_ms / 1000.0))
+                headers["Authorization"] = f"Bearer {token}"
+            except mcp_oauth.McpOAuthError as e:
+                log.warning("MCP oauth token fetch failed for '%s': %s", integ.slug, e)
     # Opt-in, minimal identity forwarding (§7): never roles/tokens/ACLs.
     if integ.forward_identity and identity is not None:
         from .crypto import sign_identity_assertion

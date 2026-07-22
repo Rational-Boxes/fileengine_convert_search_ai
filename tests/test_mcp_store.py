@@ -61,3 +61,21 @@ def test_unique_slug_disambiguates(store, tenant):
     b = store.create(tenant, name="Same-Name", transport="sse",
                      endpoint_url="https://b.example/mcp", auth_type="none")
     assert a.slug != b.slug and b.slug.startswith("same-name")
+
+
+def test_oauth_fields_roundtrip(store, tenant):
+    key = generate_key()
+    integ = store.create(tenant, name="OAuth MCP", transport="streamable-http",
+                         endpoint_url="https://mcp.example.com/mcp", auth_type="oauth",
+                         secret_enc=encrypt_secret(key, "client-secret"),
+                         token_url="https://auth.example.com/token",
+                         oauth_client_id="client-1", oauth_scope="mcp.read mcp.write",
+                         enabled=True)
+    assert integ.auth_type == "oauth" and integ.has_secret
+    assert integ.token_url == "https://auth.example.com/token"
+    assert integ.oauth_client_id == "client-1" and integ.oauth_scope == "mcp.read mcp.write"
+    got = store.get(tenant, integ.id)
+    assert got.token_url == integ.token_url and got.oauth_client_id == "client-1"
+    # update the scope + rotate client id
+    upd = store.update(tenant, integ.id, oauth_scope="mcp.read", oauth_client_id="client-2")
+    assert upd.oauth_scope == "mcp.read" and upd.oauth_client_id == "client-2"

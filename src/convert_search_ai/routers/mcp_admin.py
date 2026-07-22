@@ -27,7 +27,7 @@ router = APIRouter(prefix="/v1/admin/mcp-integrations", tags=["mcp-admin"])
 
 _ADMIN_ROLES = {"administrators", "tenant_admin", "system_admin"}
 _TRANSPORTS = {"streamable-http", "sse"}
-_AUTH_TYPES = {"none", "bearer", "header"}
+_AUTH_TYPES = {"none", "bearer", "header", "oauth"}
 
 
 # ------------------------------- auth gate ---------------------------------
@@ -134,18 +134,40 @@ def _validate_write(body: dict, config: Config, *, creating: bool, existing=None
     if "forward_identity" in body:
         out["forward_identity"] = bool(body.get("forward_identity"))
 
-    # A secret is required to enable bearer/header auth on create (or when switching
-    # to it without one already stored). We can only store a secret if a key exists.
+    # OAuth (client-credentials) fields.
+    if "token_url" in body or (creating and eff_auth == "oauth"):
+        turl = str(body.get("token_url") or "").strip()
+        if turl:
+            from ..mcp_client import validate_endpoint
+            try:
+                validate_endpoint(turl)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"token_url rejected: {e}")
+        out["token_url"] = turl
+    if "oauth_client_id" in body:
+        out["oauth_client_id"] = str(body.get("oauth_client_id") or "").strip()
+    if "oauth_scope" in body:
+        out["oauth_scope"] = str(body.get("oauth_scope") or "").strip()
+
+    # A secret is required to enable bearer/header/oauth auth on create (or when
+    # switching to it without one already stored). Store a secret only if a key exists.
     secret = body.get("secret")
     if secret is not None and str(secret) != "":
         if not config.mcp_secret_key:
             raise HTTPException(status_code=400, detail=(
                 "cannot store a secret: CSAI_MCP_SECRET_KEY is not configured"))
-    if eff_auth in ("bearer", "header"):
+    if eff_auth in ("bearer", "header", "oauth"):
         has_existing = bool(getattr(existing, "has_secret", False))
         if not (secret or has_existing):
             raise HTTPException(status_code=400, detail=(
                 f"auth_type '{eff_auth}' requires a secret"))
+    if eff_auth == "oauth":
+        eff_turl = out.get("token_url") if "token_url" in out else getattr(existing, "token_url", "")
+        eff_cid = out.get("oauth_client_id") if "oauth_client_id" in out else getattr(existing, "oauth_client_id", "")
+        if not eff_turl:
+            raise HTTPException(status_code=400, detail="auth_type 'oauth' requires token_url")
+        if not eff_cid:
+            raise HTTPException(status_code=400, detail="auth_type 'oauth' requires oauth_client_id")
     return out
 
 
@@ -184,6 +206,9 @@ def create_integration(request: Request, body: dict = Body(...),
         headers=clean.get("headers"), allowed_tools=clean.get("allowed_tools"),
         enabled=clean.get("enabled", False),
         forward_identity=clean.get("forward_identity", False),
+        token_url=clean.get("token_url", ""),
+        oauth_client_id=clean.get("oauth_client_id", ""),
+        oauth_scope=clean.get("oauth_scope", ""),
         description=clean.get("description", ""), created_by=ident.user)
     audit.record(action="mcp_admin", user=ident.user, tenant=ident.tenant, result="ok",
                  op="create", integration=integ.slug, fields=_changed_fields(clean, secret_set=bool(secret)))
@@ -297,3 +322,9 @@ def _bust(request: Request, tenant: str, integ_id: str = "") -> None:
             prov.invalidate(tenant, integ_id)
         except Exception:
             log.debug("MCP cache invalidation failed", exc_info=True)
+    # Drop any cached OAuth token for this integration (creds/URL may have changed).
+    try:
+        from .. import mcp_oauth
+        mcp_oauth.invalidate(integ_id)
+    except Exception:
+        log.debug("MCP oauth cache invalidation failed", exc_info=True)

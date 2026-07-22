@@ -118,10 +118,17 @@ CREATE TABLE IF NOT EXISTS "{schema}".mcp_integration (
     transport        TEXT        NOT NULL DEFAULT 'streamable-http'
                      CHECK (transport IN ('streamable-http','sse')),
     endpoint_url     TEXT        NOT NULL,
-    auth_type        TEXT        NOT NULL DEFAULT 'none'
-                     CHECK (auth_type IN ('none','bearer','header')),
+    -- none | bearer | header | oauth. Validated in the app layer (mcp_admin); no DB
+    -- CHECK so adding an auth type is a code change, not a schema migration.
+    auth_type        TEXT        NOT NULL DEFAULT 'none',
     auth_header      TEXT        NOT NULL DEFAULT '',   -- header name when auth_type='header'
-    secret_enc       BYTEA,                             -- Fernet(token); NULL when auth_type='none'
+    secret_enc       BYTEA,                             -- Fernet(token/client_secret); NULL when none
+    -- OAuth 2.0 client-credentials (auth_type='oauth'): CSAI fetches a bearer token
+    -- from token_url with oauth_client_id + the decrypted secret, and calls the MCP
+    -- server with it. secret_enc holds the client_secret.
+    token_url        TEXT        NOT NULL DEFAULT '',
+    oauth_client_id  TEXT        NOT NULL DEFAULT '',
+    oauth_scope      TEXT        NOT NULL DEFAULT '',
     headers          JSONB       NOT NULL DEFAULT '{{}}'::jsonb,
     enabled          BOOLEAN     NOT NULL DEFAULT false,
     allowed_tools    JSONB,                             -- NULL = expose all discovered tools
@@ -134,6 +141,12 @@ CREATE TABLE IF NOT EXISTS "{schema}".mcp_integration (
 );
 CREATE INDEX IF NOT EXISTS idx_mcp_integration_enabled
     ON "{schema}".mcp_integration (enabled);
+-- Idempotent migration for tenants provisioned before OAuth support: add the
+-- columns and drop the old auth_type CHECK (which forbade 'oauth').
+ALTER TABLE "{schema}".mcp_integration ADD COLUMN IF NOT EXISTS token_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE "{schema}".mcp_integration ADD COLUMN IF NOT EXISTS oauth_client_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE "{schema}".mcp_integration ADD COLUMN IF NOT EXISTS oauth_scope TEXT NOT NULL DEFAULT '';
+ALTER TABLE "{schema}".mcp_integration DROP CONSTRAINT IF EXISTS mcp_integration_auth_type_check;
 '''
 
 

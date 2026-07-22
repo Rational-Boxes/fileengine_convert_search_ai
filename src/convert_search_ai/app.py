@@ -151,6 +151,8 @@ def build_app(config: Config | None = None, *, search: SearchService | None = No
     app.include_router(router)
     from .routers.mcp_admin import router as mcp_admin_router
     app.include_router(mcp_admin_router)
+    from .routers.onlyoffice import router as onlyoffice_router
+    app.include_router(onlyoffice_router)
     return app
 
 

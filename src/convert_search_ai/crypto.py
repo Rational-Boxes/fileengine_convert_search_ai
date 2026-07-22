@@ -82,3 +82,38 @@ def sign_identity_assertion(secret: str, *, user: str, tenant: str,
     sig = hmac.new(secret.encode("utf-8"), f"{h}.{p}".encode("ascii"),
                    hashlib.sha256).digest()
     return f"{h}.{p}.{_b64url(sig)}"
+
+
+# ------------------------- scoped service tokens -----------------------------
+# Short-lived HS256 tokens CSAI issues *and* verifies itself, to authorize a
+# trusted peer service (the ONLYOFFICE Document Server) to fetch/write a specific
+# file+version on behalf of a bound end-user — without a browser session. The
+# ``purpose`` claim pins each token to one operation (a download token can't be
+# replayed as a callback token) and the identity claims carry the impersonation
+# subject so the write attributes to the right user.
+def sign_scoped_token(secret: str, *, purpose: str, ttl: int, **claims) -> Optional[str]:
+    """Issue a scoped HS256 token: ``purpose`` + ``exp`` + arbitrary ``claims``
+    (e.g. file_uid, version, user, roles, tenant). Returns None with no secret."""
+    if not secret:
+        return None
+    now = int(time.time())
+    header = {"alg": "HS256", "typ": "JWT"}
+    payload = {**claims, "purpose": purpose, "iat": now,
+               "exp": now + max(1, int(ttl)), "src": "convert_search_ai"}
+    h = _b64url(json.dumps(header, separators=(",", ":")).encode("utf-8"))
+    p = _b64url(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    sig = hmac.new(secret.encode("utf-8"), f"{h}.{p}".encode("ascii"),
+                   hashlib.sha256).digest()
+    return f"{h}.{p}.{_b64url(sig)}"
+
+
+def verify_scoped_token(secret: str, token: str, *, purpose: str) -> Optional[dict]:
+    """Verify signature + ``exp`` + that ``purpose`` matches. Returns the claims or
+    ``None``. Reuses the constant-time HS256 verifier."""
+    from .jwt_verify import verify_hs256
+    if not secret or not token:
+        return None
+    claims = verify_hs256(token, secret)
+    if claims is None or claims.get("purpose") != purpose:
+        return None
+    return claims
