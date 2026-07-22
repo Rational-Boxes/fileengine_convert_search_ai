@@ -63,6 +63,17 @@ def test_unique_slug_disambiguates(store, tenant):
     assert a.slug != b.slug and b.slug.startswith("same-name")
 
 
+def test_allowed_roles_roundtrip(store, tenant):
+    integ = store.create(tenant, name="Restricted MCP", transport="streamable-http",
+                         endpoint_url="https://mcp.example.com/mcp", auth_type="none",
+                         allowed_roles=["engineering", "leadership"], enabled=True)
+    assert integ.allowed_roles == ["engineering", "leadership"]
+    assert store.get(tenant, integ.id).allowed_roles == ["engineering", "leadership"]
+    # narrow the roles, then clear (None = all users)
+    assert store.update(tenant, integ.id, allowed_roles=["leadership"]).allowed_roles == ["leadership"]
+    assert store.update(tenant, integ.id, allowed_roles=None).allowed_roles is None
+
+
 def test_oauth_fields_roundtrip(store, tenant):
     key = generate_key()
     integ = store.create(tenant, name="OAuth MCP", transport="streamable-http",
