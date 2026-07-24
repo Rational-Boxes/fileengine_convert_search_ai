@@ -453,11 +453,82 @@ def test_ifc_render_via_ifcopenshell_backend(monkeypatch):
                         lambda cmd, **kw: (calls.append(cmd[0]), _orig(cmd, **kw))[1])
     rends = Xeokit3DPlugin(Config()).render(
         fx("pillar_ifc4.ifc"), "application/x-ifc", "pillar_ifc4.ifc")
-    assert len(rends) == 1
-    r = rends[0]
+    # The geometry "model" rendition (a metamodel sidecar may accompany it, M1).
+    r = next(x for x in rends if x.fmt == "model")
     assert (r.fmt, r.ext, r.mime) == ("model", "xkt", "application/octet-stream")
     assert struct.unpack("<I", r.data[:4])[0] == 12   # xeokit XKT v12 header
     # geometry came through IfcOpenShell's IfcConvert (GLB), then convert2xkt —
     # NOT convert2xkt consuming the .ifc directly (that would be web-ifc/xeokit).
     assert any("IfcConvert" in c or c.endswith("ifcConvert") for c in calls)
     assert any("convert2xkt" in c for c in calls)
+
+
+# --------------------------------------------------------------------------- #
+# IFC metamodel (§5.2 / M1)
+# --------------------------------------------------------------------------- #
+
+def _tiny_ifc():
+    """A minimal IFC4 model (Project→Site→Wall) built in-memory, returned as bytes
+    plus the GlobalIds so tests can assert the metamodel hierarchy. (The on-disk
+    fixtures use schema IFC4RC4, which this ifcopenshell build can't open.)"""
+    ifcopenshell = pytest.importorskip("ifcopenshell")
+    from ifcopenshell import guid
+    m = ifcopenshell.file(schema="IFC4")
+    proj = m.create_entity("IfcProject", GlobalId=guid.new(), Name="Proj")
+    site = m.create_entity("IfcSite", GlobalId=guid.new(), Name="Site")
+    wall = m.create_entity("IfcWall", GlobalId=guid.new(), Name="Wall A")
+    m.create_entity("IfcRelAggregates", GlobalId=guid.new(), RelatingObject=proj, RelatedObjects=[site])
+    m.create_entity("IfcRelContainedInSpatialStructure", GlobalId=guid.new(),
+                    RelatingStructure=site, RelatedElements=[wall])
+    return m.to_string().encode("utf-8"), {"proj": proj.GlobalId, "site": site.GlobalId, "wall": wall.GlobalId}
+
+
+def test_metamodel_dict_shape():
+    from convert_search_ai.plugins.xeokit3d import _metamodel_dict
+    doc = _metamodel_dict([{"id": "g1", "type": "IfcWall", "name": "W"}], project_id="P")
+    assert doc["projectId"] == "P"
+    assert doc["metaObjects"][0] == {"id": "g1", "type": "IfcWall", "name": "W"}
+    assert doc["propertySets"] == []
+
+
+def test_build_ifc_metamodel_hierarchy():
+    from convert_search_ai.plugins.xeokit3d import build_ifc_metamodel
+    data, gid = _tiny_ifc()
+    mm = build_ifc_metamodel(data)
+    assert mm is not None
+    by_id = {o["id"]: o for o in mm["metaObjects"]}
+    # Every object carries a stable GlobalId, type and name.
+    assert by_id[gid["wall"]]["type"] == "IfcWall"
+    assert by_id[gid["wall"]]["name"] == "Wall A"
+    # The spatial/aggregation tree is captured as parent links.
+    assert by_id[gid["wall"]]["parent"] == gid["site"]
+    assert by_id[gid["site"]]["parent"] == gid["proj"]
+    assert "parent" not in by_id[gid["proj"]]  # the project is the root
+    assert mm["projectId"] == gid["proj"]
+
+
+def test_build_ifc_metamodel_none_on_garbage():
+    from convert_search_ai.plugins.xeokit3d import build_ifc_metamodel
+    assert build_ifc_metamodel(b"this is not an IFC file") is None
+
+
+def test_render_ifc_ships_metamodel_sidecar(monkeypatch):
+    import json
+    from convert_search_ai.plugins.xeokit3d import build_ifc_metamodel
+    data, gid = _tiny_ifc()
+    if build_ifc_metamodel(data) is None:
+        pytest.skip("ifcopenshell unavailable")
+    _stub_tools(monkeypatch, {"convert2xkt"})  # geometry hop stubbed → fake .xkt
+    rends = _plugin().render(data, "application/x-ifc", "m.ifc")
+    fmts = {r.fmt for r in rends}
+    assert {"model", "metamodel"} <= fmts
+    mm = next(r for r in rends if r.fmt == "metamodel")
+    assert (mm.ext, mm.mime) == ("json", "application/json")
+    doc = json.loads(mm.data)
+    assert gid["wall"] in {o["id"] for o in doc["metaObjects"]}
+
+
+def test_render_non_ifc_has_no_metamodel(monkeypatch):
+    _stub_tools(monkeypatch, {"convert2xkt"})
+    rends = _plugin().render(fx("box.glb"), "model/gltf-binary", "box.glb")
+    assert {r.fmt for r in rends} == {"model"}  # glTF metamodel is M2

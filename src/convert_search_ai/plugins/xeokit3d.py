@@ -242,6 +242,77 @@ def extract_ifc_text(data: bytes) -> Optional[str]:
 
 
 # --------------------------------------------------------------------------- #
+# IFC metamodel (§5.2 / M1) — a xeokit MetaModel delivered alongside the .xkt so
+# the viewer has real objects (tree, selection, property inspection, annotation
+# anchoring), not just triangles. Object ids are IFC GlobalIds — the same ids
+# web-ifc/convert2xkt assigns to geometry — so a saved viewpoint's selection /
+# visibility resolves without a mapping.
+# --------------------------------------------------------------------------- #
+
+def _metamodel_dict(meta_objects: List[dict], *, project_id: str = "Project") -> dict:
+    """Assemble a xeokit MetaModel JSON from prepared MetaObjects. Pure (no IFC
+    dependency) so the delivered shape is unit-testable."""
+    return {
+        "id": project_id,
+        "projectId": project_id,
+        "metaObjects": meta_objects,
+        "propertySets": [],  # enriched in a follow-on; the sidecar regenerates cheaply
+    }
+
+
+def build_ifc_metamodel(data: bytes) -> Optional[dict]:
+    """Build a xeokit MetaModel (MetaObjects: stable id, type, name, parent) from
+    an IFC via ifcopenshell (§5.2 / M1). Parent is the spatial-containment /
+    aggregation owner's GlobalId, giving the Site→Building→Storey→Space→element
+    tree. Returns None if ifcopenshell is absent, the parse fails, or the model
+    has no objects — the pipeline then simply ships the geometry-only model, as
+    today."""
+    try:
+        import ifcopenshell  # type: ignore
+    except Exception:
+        return None
+    try:
+        with tools.workdir() as d:
+            path = tools.write_temp(d, "in.ifc", data)
+            model = ifcopenshell.open(path)
+
+            # Parent map: aggregation (IfcRelAggregates) + spatial containment
+            # (IfcRelContainedInSpatialStructure). Later rels win, which is fine —
+            # an element has one spatial container.
+            parent: "dict[str, str]" = {}
+            for rel in model.by_type("IfcRelAggregates"):
+                pgid = getattr(getattr(rel, "RelatingObject", None), "GlobalId", None)
+                for child in (getattr(rel, "RelatedObjects", None) or []):
+                    cgid = getattr(child, "GlobalId", None)
+                    if pgid and cgid:
+                        parent[cgid] = pgid
+            for rel in model.by_type("IfcRelContainedInSpatialStructure"):
+                pgid = getattr(getattr(rel, "RelatingStructure", None), "GlobalId", None)
+                for child in (getattr(rel, "RelatedElements", None) or []):
+                    cgid = getattr(child, "GlobalId", None)
+                    if pgid and cgid:
+                        parent[cgid] = pgid
+
+            meta_objects: List[dict] = []
+            for el in model.by_type("IfcObjectDefinition"):
+                gid = getattr(el, "GlobalId", None)
+                if not gid:
+                    continue
+                obj = {"id": gid, "type": el.is_a(), "name": getattr(el, "Name", None) or el.is_a()}
+                if parent.get(gid):
+                    obj["parent"] = parent[gid]
+                meta_objects.append(obj)
+            if not meta_objects:
+                return None
+
+            projects = model.by_type("IfcProject")
+            project_id = (getattr(projects[0], "GlobalId", None) if projects else None) or "Project"
+            return _metamodel_dict(meta_objects, project_id=project_id)
+    except Exception:
+        return None
+
+
+# --------------------------------------------------------------------------- #
 # STEP (ISO-10303-21) — generic CAD, reuses the IFC/Part-21 scanner
 # --------------------------------------------------------------------------- #
 
@@ -642,7 +713,18 @@ class Xeokit3DPlugin(ConversionPlugin):
         xkt = self._to_xkt(data, mime)
         if not xkt:
             return []
-        return [Rendition("model", "xkt", xkt, "application/octet-stream")]
+        rends = [Rendition("model", "xkt", xkt, "application/octet-stream")]
+        # M1 (§5.2): ship a xeokit MetaModel sidecar for IFC so the viewer gets
+        # real objects (tree/selection/property/anchoring), not just geometry.
+        # Best-effort — a geometry-only model still ships if this yields nothing.
+        if mime == "application/x-ifc":
+            metamodel = build_ifc_metamodel(data)
+            if metamodel:
+                rends.append(Rendition(
+                    "metamodel", "json",
+                    json.dumps(metamodel, separators=(",", ":")).encode("utf-8"),
+                    "application/json"))
+        return rends
 
     def _to_xkt(self, data: bytes, mime: str) -> Optional[bytes]:
         if mime == "application/x-ifc":
