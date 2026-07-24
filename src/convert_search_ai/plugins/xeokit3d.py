@@ -312,6 +312,84 @@ def build_ifc_metamodel(data: bytes) -> Optional[dict]:
         return None
 
 
+def build_gltf_metamodel(data: bytes, mime: str) -> Optional[dict]:
+    """xeokit MetaModel from a glTF/GLB scene graph (§5.2 / M2): one MetaObject per
+    node — id = the node name (deduped) or ``node-<index>``, typed Mesh/Node, and
+    parented by the scene graph's ``children`` links. A straight JSON parse (no
+    geometry). None if the input isn't glTF or has no nodes. (Node-name/index is the
+    documented glТF object identity — §16 flags that strict id-alignment with the
+    XKT entities is best-effort.)"""
+    try:
+        obj = _gltf_json(data, mime)
+    except Exception:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    nodes = obj.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        return None
+
+    def _node_name(node) -> Optional[str]:
+        n = node.get("name") if isinstance(node, dict) else None
+        return n.strip() if isinstance(n, str) and n.strip() else None
+
+    ids: List[str] = []
+    seen: set = set()
+    for i, node in enumerate(nodes):
+        base = _node_name(node) or f"node-{i}"
+        nid = base if base not in seen else f"{base}-{i}"
+        seen.add(nid)
+        ids.append(nid)
+
+    parent: "dict[int, int]" = {}
+    for i, node in enumerate(nodes):
+        children = node.get("children") if isinstance(node, dict) else None
+        for c in children or []:
+            if isinstance(c, int) and 0 <= c < len(nodes):
+                parent[c] = i
+
+    meta_objects: List[dict] = []
+    for i, node in enumerate(nodes):
+        has_mesh = isinstance(node, dict) and node.get("mesh") is not None
+        obj_meta = {"id": ids[i], "type": "Mesh" if has_mesh else "Node",
+                    "name": _node_name(node) or ids[i]}
+        if i in parent:
+            obj_meta["parent"] = ids[parent[i]]
+        meta_objects.append(obj_meta)
+    return _metamodel_dict(meta_objects, project_id="glTF")
+
+
+def build_cityjson_metamodel(data: bytes) -> Optional[dict]:
+    """xeokit MetaModel from CityJSON CityObjects (§5.2 / M2): id = the CityObject
+    id (its natural, stable key), type = its ``type``, name from ``attributes.name``
+    when present, and parent from CityJSON's ``parents[]``. None if the input isn't
+    CityJSON or has no CityObjects."""
+    try:
+        obj = json.loads(data.decode("utf-8", "replace"))
+    except Exception:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    city_objects = obj.get("CityObjects")
+    if not isinstance(city_objects, dict) or not city_objects:
+        return None
+    meta_objects: List[dict] = []
+    for oid, co in city_objects.items():
+        if not isinstance(co, dict):
+            continue
+        meta = {"id": str(oid), "type": co.get("type") or "CityObject", "name": str(oid)}
+        attrs = co.get("attributes")
+        if isinstance(attrs, dict) and isinstance(attrs.get("name"), str):
+            meta["name"] = attrs["name"]
+        parents = co.get("parents")
+        if isinstance(parents, list) and parents:
+            meta["parent"] = str(parents[0])
+        meta_objects.append(meta)
+    if not meta_objects:
+        return None
+    return _metamodel_dict(meta_objects, project_id="CityJSON")
+
+
 # --------------------------------------------------------------------------- #
 # STEP (ISO-10303-21) — generic CAD, reuses the IFC/Part-21 scanner
 # --------------------------------------------------------------------------- #
@@ -714,17 +792,27 @@ class Xeokit3DPlugin(ConversionPlugin):
         if not xkt:
             return []
         rends = [Rendition("model", "xkt", xkt, "application/octet-stream")]
-        # M1 (§5.2): ship a xeokit MetaModel sidecar for IFC so the viewer gets
-        # real objects (tree/selection/property/anchoring), not just geometry.
-        # Best-effort — a geometry-only model still ships if this yields nothing.
-        if mime == "application/x-ifc":
-            metamodel = build_ifc_metamodel(data)
-            if metamodel:
-                rends.append(Rendition(
-                    "metamodel", "json",
-                    json.dumps(metamodel, separators=(",", ":")).encode("utf-8"),
-                    "application/json"))
+        # §5.2: ship a xeokit MetaModel sidecar so the viewer gets real objects
+        # (tree/selection/property/anchoring), not just geometry. Best-effort — a
+        # geometry-only model still ships if this yields nothing.
+        metamodel = self._metamodel_for(data, mime)
+        if metamodel:
+            rends.append(Rendition(
+                "metamodel", "json",
+                json.dumps(metamodel, separators=(",", ":")).encode("utf-8"),
+                "application/json"))
         return rends
+
+    def _metamodel_for(self, data: bytes, mime: str) -> Optional[dict]:
+        """Build the xeokit MetaModel for a source, per format (§5.2). IFC (M1) and
+        glTF + CityJSON (M2) are covered; CAD (M3) and point clouds (M4) follow."""
+        if mime == "application/x-ifc":
+            return build_ifc_metamodel(data)
+        if mime in ("model/gltf+json", "model/gltf-binary"):
+            return build_gltf_metamodel(data, mime)
+        if mime == "application/city+json":
+            return build_cityjson_metamodel(data)
+        return None
 
     def _to_xkt(self, data: bytes, mime: str) -> Optional[bytes]:
         if mime == "application/x-ifc":
