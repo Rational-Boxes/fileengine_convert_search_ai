@@ -21,7 +21,7 @@ uses cosine distance (``<=>``) against the HNSW index from the baseline schema."
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Sequence, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 from .config import Config
 
@@ -64,13 +64,25 @@ class ChunkStore:
             cur.execute("DELETE FROM chunks WHERE file_uid = %s", (file_uid,))
             conn.commit()
 
-    def ann_search(self, tenant: str, query_embedding: Sequence[float], k: int) -> List[RetrievedChunk]:
+    def ann_search(self, tenant: str, query_embedding: Sequence[float], k: int,
+                   *, file_uids: Optional[Iterable[str]] = None) -> List[RetrievedChunk]:
+        """ANN-search chunks by cosine distance. When ``file_uids`` is given (the
+        conversation's folder scope, already expanded to a document set), the search
+        is confined to those documents; ``None`` searches the whole tenant."""
         ql = _vec_literal(query_embedding)
         with self._conn(tenant, readonly=True) as conn, conn.cursor() as cur:
-            cur.execute(
-                "SELECT file_uid, ordinal, text, embedding <=> %s::vector AS distance "
-                "FROM chunks WHERE embedding IS NOT NULL "
-                "ORDER BY embedding <=> %s::vector LIMIT %s",
-                (ql, ql, k),
-            )
+            if file_uids is not None:
+                cur.execute(
+                    "SELECT file_uid, ordinal, text, embedding <=> %s::vector AS distance "
+                    "FROM chunks WHERE embedding IS NOT NULL AND file_uid = ANY(%s) "
+                    "ORDER BY embedding <=> %s::vector LIMIT %s",
+                    (ql, list(file_uids), ql, k),
+                )
+            else:
+                cur.execute(
+                    "SELECT file_uid, ordinal, text, embedding <=> %s::vector AS distance "
+                    "FROM chunks WHERE embedding IS NOT NULL "
+                    "ORDER BY embedding <=> %s::vector LIMIT %s",
+                    (ql, ql, k),
+                )
             return [RetrievedChunk(r[0], r[1], r[2], float(r[3])) for r in cur.fetchall()]

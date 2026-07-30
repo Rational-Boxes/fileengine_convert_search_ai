@@ -27,7 +27,7 @@ from convert_search_ai.vectorstore import RetrievedChunk
 
 
 class FakeRetriever:
-    def retrieve(self, identity, message, k=8):
+    def retrieve(self, identity, message, k=8, **_):
         return [RetrievedChunk("f0", 0, "chunk", 0.1)]
 
 

@@ -52,20 +52,32 @@ class Retriever:
         from .core_client import client_for
         return client_for(identity, self.config)
 
-    def retrieve(self, identity, query: str, *, k: int = 8, fetch: Optional[int] = None) -> List[RetrievedChunk]:
+    def retrieve(self, identity, query: str, *, k: int = 8, fetch: Optional[int] = None,
+                 scope_folder_uids: Optional[List[str]] = None) -> List[RetrievedChunk]:
         if not query or not query.strip():
             return []
+        scoped = bool(scope_folder_uids)
         qv = self.embedder.embed_query(query)
-        try:
-            rows = self.chunks.ann_search(identity.tenant, qv, fetch or max(k * 4, k))
-        except Exception as e:
-            # A vector-store outage shouldn't 500 the chat — degrade to no document
-            # context (the answer falls back to general knowledge / web search).
-            _log.warning("vector retrieval unavailable; answering without document "
-                         "context: %s", e)
-            return []
         mf = self._client(identity)
         try:
+            file_uids: Optional[set] = None
+            if scoped:
+                # The conversation is scoped to chosen folders: expand them (and their
+                # subfolders) to a document set, walked as the caller so it's ACL-safe.
+                file_uids = self._resolve_scope_file_uids(mf, identity.tenant, scope_folder_uids)
+                if not file_uids:
+                    # A scope was chosen but nothing readable is in it → no doc context.
+                    return []
+            # Over-fetch more when scoped so the post-ANN permission filter still fills k.
+            want = fetch or max(k * (8 if scoped else 4), k)
+            try:
+                rows = self.chunks.ann_search(identity.tenant, qv, want, file_uids=file_uids)
+            except Exception as e:
+                # A vector-store outage shouldn't 500 the chat — degrade to no document
+                # context (the answer falls back to general knowledge / web search).
+                _log.warning("vector retrieval unavailable; answering without document "
+                             "context: %s", e)
+                return []
             out: List[RetrievedChunk] = []
             for r in rows:
                 if self.gate.can_read(mf, identity, r.file_uid):
@@ -78,3 +90,29 @@ class Retriever:
                 mf.close()
             except Exception:
                 pass
+
+    def _resolve_scope_file_uids(self, mf, tenant: str, folder_uids: List[str],
+                                 *, max_folders: int = 2000) -> set:
+        """Expand the selected folder UIDs to the set of document (file) UIDs they
+        contain, recursively including subfolders. Walked one level at a time via
+        ``mf.dir()`` as the caller — so folders/files the user can't read are simply
+        absent. Bounded by ``max_folders`` to cap the traversal for very large trees."""
+        files: set = set()
+        seen: set = set()
+        stack = [u for u in (folder_uids or []) if u]
+        while stack and len(seen) < max_folders:
+            fuid = stack.pop()
+            if fuid in seen:
+                continue
+            seen.add(fuid)
+            try:
+                entries = mf.dir(fuid, tenant=tenant) or []
+            except Exception:
+                continue  # unreadable/missing folder → skip (fail-safe)
+            for e in entries:
+                if getattr(e, "is_container", False):
+                    if e.uid not in seen:
+                        stack.append(e.uid)
+                elif getattr(e, "uid", None):
+                    files.add(e.uid)
+        return files

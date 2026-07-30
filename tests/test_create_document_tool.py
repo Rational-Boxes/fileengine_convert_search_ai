@@ -16,12 +16,28 @@
 """Unit tests for the document-save layer: folder exploration (list_folders),
 the SAVE_REPORT stream-marker parser, and the shared save helper that writes a
 report into FileEngine as the user. Saving is marker-driven (no save tool)."""
+import io
+import shutil
+import zipfile
+
+import pytest
+
 from convert_search_ai.config import Config
+from convert_search_ai import llm_tools
 from convert_search_ai.llm_tools import (
     ListFoldersTool, ToolContext, build_tools, markdown_to_html, parse_report_markers,
     report_location, save_report_document, wrap_html_document, ReportSaveError,
     _norm_path, _safe_name,
 )
+
+# A fake html→docx so the save-mechanics tests stay hermetic (no pandoc subprocess);
+# a separate test exercises the real pandoc conversion.
+_FAKE_DOCX = b"PK\x03\x04fake-docx-bytes"
+
+
+@pytest.fixture
+def _mock_docx(monkeypatch):
+    monkeypatch.setattr(llm_tools, "_html_to_docx", lambda html, **kw: _FAKE_DOCX)
 
 
 class _Entry:
@@ -78,26 +94,40 @@ def _ctx():
 # Shared save helper (used by the marker path)
 # --------------------------------------------------------------------------- #
 
-def test_save_report_document_writes_and_creates_folders():
+def test_save_report_document_writes_and_creates_folders(_mock_docx):
     mf = FakeMF()
     uid, loc, n = save_report_document(
         _Ident(), Config(), path="/New/Deep", filename="r", title="R",
         body="# H\n\n**b**", create_folders=True, client_factory=lambda i, c: mf)
-    assert loc == report_location("/New/Deep", "r") == "/New/Deep/r.html"
+    # Reports are now editable Word (.docx) drafts.
+    assert loc == report_location("/New/Deep", "r") == "/New/Deep/r.docx"
     assert n > 0
-    saved = mf.puts[-1][1].decode()
-    assert saved.startswith("<!doctype html>") and "<h1>" in saved and "<strong>b</strong>" in saved
+    assert mf.puts[-1][1] == _FAKE_DOCX
     assert mf.closed is True
     names = {e.name for entries in mf.tree.values() for e in entries}
     assert {"New", "Deep"} <= names
 
 
-def test_save_report_document_appends_html_extension_only_when_missing():
+def test_save_report_retargets_html_filename_to_docx(_mock_docx):
     mf = FakeMF()
     _, loc, _ = save_report_document(_Ident(), Config(), path="/Reports", filename="report.html",
                                      title="", body="<p>x</p>", create_folders=False,
                                      client_factory=lambda i, c: mf)
-    assert loc == "/Reports/report.html" and mf.files[mf.puts[-1][0]] == "report.html"
+    # A user-supplied .html name is retargeted to .docx (one report, one editable draft).
+    assert loc == "/Reports/report.docx" and mf.files[mf.puts[-1][0]] == "report.docx"
+
+
+@pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc not installed")
+def test_save_report_produces_a_valid_docx_via_pandoc():
+    mf = FakeMF()
+    uid, loc, n = save_report_document(
+        _Ident(), Config(), path="/Reports", filename="r", title="Quarterly",
+        body="# Heading\n\nBody **bold**.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n",
+        create_folders=True, client_factory=lambda i, c: mf)
+    data = mf.puts[-1][1]
+    assert data[:2] == b"PK"  # a real .docx (zip)
+    xml = zipfile.ZipFile(io.BytesIO(data)).read("word/document.xml").decode("utf-8", "ignore")
+    assert "Heading" in xml and "<w:tbl" in xml  # heading + table survive the conversion
 
 
 def test_save_report_document_missing_folder_raises():

@@ -82,7 +82,17 @@ in the SPECIFICATION / DEVELOPMENT_PLAN; this doc starts at **retrieval + chat**
 - **Vector search** (`retrieval.py`, `vectorstore.py`): the query is embedded and
   matched against the tenant's `chunks` table using a **pgvector HNSW** index with
   **cosine** distance. To survive permission filtering, it **over‑fetches**
-  `max(k·4, k)` candidates, then keeps the first `k` the user may read.
+  `max(k·4, k)` candidates (`k·8` when a folder scope is active — see below), then
+  keeps the first `k` the user may read.
+- **Folder scope (optional, per conversation)** (`retrieval.py`): the caller may pass
+  `scope_folder_uids` — the chat frame field the SPA's "Limit to folders" tool sets.
+  When present, `Retriever._resolve_scope_file_uids()` walks each folder with
+  `mf.dir()` **as the user** (so it is ACL‑filtered and needs no descendant RPC),
+  collecting the file UIDs in those folders **and all subfolders**; `ann_search`
+  then adds `AND file_uid = ANY(...)`. Absent/empty ⇒ the whole tenant (default). A
+  scope that resolves to nothing readable ⇒ no document context (the model falls back
+  to general knowledge / web). This is a UID set, not a path filter, because
+  `documents.path` is not populated at ingest.
 - **Per‑chunk permission gating (query time)** (`permissions.py`): for each
   candidate, `PermissionGate.can_read()` calls the core's `CheckPermission(READ)`
   **as the requesting user**. Results are cached per `(tenant, user, file_uid)` with
@@ -132,12 +142,17 @@ via the provider's native function‑calling (`chat.py`, `llm_tools.py`,
 
 **Report saving** (`llm_tools.py`, marker‑driven, on by default) — the model can
 wrap a generated report in `[[SAVE_REPORT path="…" file="…" title="…"]] … [[/SAVE_REPORT]]`
-markers; CSAI parses them, renders Markdown → styled HTML, and writes the file into
-FileEngine **as the user** (subject to WRITE on the destination; capped at
-`CSAI_CHAT_DOCUMENT_MAX_BYTES`, default 5 MB). The core generates a PDF preview.
-Today the *model* chooses the path; a planned **"Generate report"** UI lets the
-*user* pin the exact destination folder + filename (authoritative) — see
-[`GENERATE_REPORT_TO_TARGET.md`](./GENERATE_REPORT_TO_TARGET.md).
+markers; CSAI parses them, renders the Markdown/HTML body to an **editable Word
+(`.docx`) draft via pandoc** (`_html_to_docx`, `CSAI_PANDOC_BIN`/`CSAI_PANDOC_TIMEOUT_S`),
+and writes the file into FileEngine **as the user** (subject to WRITE on the
+destination; capped at `CSAI_CHAT_DOCUMENT_MAX_BYTES`, default 5 MB). The report is a
+`.docx` so the user can revise it in the ONLYOFFICE editor; the SPA's "Open report"
+opens its **preview** (the core-generated PDF), from which the user can open the
+editor. File
+references in the body are rewritten to absolute deep‑links (hyperlinks in the
+DOCX). **pandoc must be on PATH in the deploy image.** The *user* pins the exact
+destination folder + filename (authoritative) via the **"Generate report"** UI —
+see [`GENERATE_REPORT_TO_TARGET.md`](./GENERATE_REPORT_TO_TARGET.md).
 *(Planned: attach a tamper‑evident chat provenance log to every saved report — see
 §4.6.)*
 
@@ -203,6 +218,8 @@ Pluggable, provider‑agnostic (`providers/`):
 | `CSAI_PERMISSION_CACHE_TTL` | `300` | READ‑permission cache TTL (s) |
 | `CSAI_CHAT_DOCUMENT_TOOL` | `true` | enable `list_folders` + report saving |
 | `CSAI_CHAT_DOCUMENT_MAX_BYTES` | `5 MB` | saved‑report size cap |
+| `CSAI_PANDOC_BIN` | `pandoc` | pandoc binary for report Markdown/HTML → `.docx` (must be on PATH) |
+| `CSAI_PANDOC_TIMEOUT_S` | `30` | report conversion timeout (s) |
 | `CSAI_WEB_SEARCH_ENABLED` | `false` | master switch for web tools |
 | `CSAI_WEB_SEARCH_DEFAULT` | `false` | web search on by default per turn |
 | `CSAI_WEB_SEARCH_PROVIDER` | `duckduckgo` | `duckduckgo`/`fake`/`none` |
@@ -226,8 +243,8 @@ implemented yet.
   back to web/general knowledge only if allowed).
 - **Reranking** — an optional cross‑encoder / provider rerank pass over the
   over‑fetched candidates before the top‑`k` cut, improving citation precision.
-- **Scoped retrieval** — let a turn restrict RAG to a folder, a tag/claim, or a
-  selected set of documents ("chat about this folder").
+- **Scoped retrieval** — *(folder scope shipped — see §2.2, `scope_folder_uids`.)*
+  Remaining: restrict by a tag/claim or an explicit document set ("chat about these").
 - **Larger‑than‑context handling** — map‑reduce / iterative retrieval for questions
   that need many chunks beyond the context budget.
 

@@ -54,7 +54,7 @@ decides the path — that capability is **removed** (§3a); the *user* owns it n
   After the stream, `ChatService._save_marked_reports()` calls
   `llm_tools.parse_report_markers()` → `llm_tools.save_report_document()`.
 - **`save_report_document()`** (`llm_tools.py`): sanitizes the name (`_safe_name`,
-  strips separators/traversal, ensures `.html`), Markdown→HTML +
+  strips separators/traversal, ensures `.docx`), Markdown/HTML → pandoc DOCX +
   `wrap_html_document`, resolves the folder (`_resolve_folder`), then writes **as the
   user**: `uid = mf.touch(parent, name)` then `mf.put(uid, document)`. Raises
   `ReportSaveError(kind ∈ empty|too_large|missing_folder|write)`.
@@ -127,7 +127,7 @@ Add three optional fields; their presence puts the turn in **report mode**:
 | Field | Type | Meaning |
 |---|---|---|
 | `report_target_folder_uid` | string | **Authoritative** destination folder UID (a core/bridge UID; `""`/root‑UUID = filesystem root). Presence ⇒ report mode. |
-| `report_target_filename` | string | User‑supplied name; sanitized server‑side (`_safe_name`, `.html` ensured). |
+| `report_target_filename` | string | User‑supplied name; sanitized server‑side (`_safe_name`, `.docx` ensured). |
 | `report_target_path` | string | Human‑readable path (e.g. `/Projects/Q3`) for logging + the confirmation message only. **Not** used to resolve the write. |
 
 Absent ⇒ ordinary chat with **no** report save (the old "model chooses a path and
@@ -138,7 +138,7 @@ human‑readable confirmation token) so the SPA can render an **"Open report" li
 that launches the in‑app **preview modal** for the saved file:
 
 ```json
-{ "type": "report_saved", "uid": "<file-uid>", "name": "q3-summary.html", "path": "/Projects/Q3" }
+{ "type": "report_saved", "uid": "<file-uid>", "name": "q3-summary.docx", "path": "/Projects/Q3" }
 ```
 
 The `uid` is the saved file's core UID — everything the SPA needs to open the
@@ -188,9 +188,9 @@ When `report_target` is present:
 - No change to retrieval or web‑search.
 - The report writer stays **marker‑driven** (no new provider/tool schema); the marker
   is now content‑only.
-- HTML remains the stored format (Markdown→HTML). The **PDF preview is produced by
-  the existing default preview‑generation pipeline** — not by this feature. A
-  Markdown/PDF *export* is a possible follow‑up (§9.1).
+- The stored format is now an **editable Word `.docx` draft** (Markdown/HTML → pandoc
+  → DOCX; updated 2026‑07‑30, §9.1). The **PDF preview is still produced by the
+  existing default preview‑generation pipeline** — not by this feature.
 - **Removed:** destination guidance in `_INSTRUCTIONS_DOCUMENT` and marker
   `path`/`file` parsing (§3a). The `list_folders` **tool is kept** for general folder
   navigation — only its destination‑selection role is gone.
@@ -213,7 +213,7 @@ Fork the `ConfirmModal.vue` shell (Teleport, backdrop, focus‑trap, Esc). Conte
   then re‑lists and enters it — so the user can make the destination on the spot. The
   create runs **as the user** (the bridge/core ACL‑gates it); a failure (e.g. no
   WRITE) shows an inline error and doesn't close the dialog.
-- **Filename input** (plain text; the `.html` extension is ensured server‑side, and
+- **Filename input** (plain text; the `.docx` extension is ensured server‑side, and
   previewed in the dialog).
 - Validation: a folder must be chosen and the filename non‑empty. Emit
   `select { folderUid, folderPath, filename }`; `cancel` closes.
@@ -229,7 +229,7 @@ handler interface and parse the `report_saved` event in `parseChatEvent`.
   opens `ReportTargetDialog`.
 - On `select`, send a report‑generation turn: the conversation `history` + a command
   message (e.g. *"Generate a report of our conversation."*) + `opts.reportTarget`.
-  Push a user‑visible chip like `📄 Generate report → /Projects/Q3/q3-summary.html`.
+  Push a user‑visible chip like `📄 Generate report → /Projects/Q3/q3-summary.docx`.
   (The command message no longer contains the destination — that rides in
   `reportTarget`, per §3a.)
 - Reuse the existing `onToolCall`/`onToolResult` indicator pattern for a
@@ -258,7 +258,7 @@ handler interface and parse the `report_saved` event in `parseChatEvent`.
   escalates. The `folder_uid` is *not* trusted for authorization (the core re‑checks
   on `touch`/`put`); it is only a destination hint.
 - **Path traversal / injection.** `report_target_filename` is sanitized by
-  `_safe_name` (strip separators, `..`, control chars; ensure `.html`). The
+  `_safe_name` (strip separators, `..`, control chars; ensure `.docx`). The
   `folder_uid` is opaque; the UID‑anchored branch does no name concatenation, so no
   supplied string can escape the chosen folder.
 - **The model can't influence the destination at all.** It never receives a folder,
@@ -291,10 +291,14 @@ handler interface and parse the `report_saved` event in `parseChatEvent`.
 
 ## 9. Decisions (resolved)
 
-1. **Output format — HTML.** The report is stored as HTML (Markdown→HTML). PDF is
-   **already a free default preview** (CSAI's convert pipeline renders a PDF rendition
-   automatically); this feature produces no PDF itself. A downloadable Markdown/PDF
-   *export* remains an orthogonal possible follow‑up.
+1. **Output format — DOCX** *(updated 2026‑07‑30).* The report is stored as an
+   **editable Word `.docx` draft**, converted from the model's Markdown/HTML by
+   **pandoc** (`_html_to_docx`), so the user can revise it in the ONLYOFFICE editor.
+   The SPA's "Open report" still opens the **preview** (the PDF), from which the user
+   can enter the editor — PDF remains **a free default preview** (CSAI's convert
+   pipeline renders a PDF rendition from the `.docx` automatically); this feature
+   produces no PDF itself. pandoc must be on PATH in the deploy image
+   (`CSAI_PANDOC_BIN`). *(Was HTML before 2026‑07‑30.)*
 2. **`list_folders` — kept.** The read‑only folder‑navigation tool stays so the model
    can browse the user's folders; it no longer selects the save destination (§3a).
 3. **Overwrite — silent versioning, no callout.** Re‑saving to an existing filename

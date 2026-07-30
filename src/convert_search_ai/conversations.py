@@ -59,8 +59,14 @@ class ConversationStore:
     def get(self, tenant: str, user: str, conversation_id: str) -> Optional[dict]:
         """The conversation + its messages, or None if it isn't the user's."""
         with self._conn(tenant, readonly=True) as conn, conn.cursor() as cur:
-            cur.execute("SELECT id, title FROM conversations WHERE id = %s AND user_id = %s",
-                        (conversation_id, user))
+            # Read `scope` via to_jsonb(row) so a conversation that predates the scope
+            # column still loads (the key is simply absent → NULL → []). Reading the
+            # column by name would raise UndefinedColumn on old tables (this path is
+            # read-only, so the self-heal ALTER never runs here).
+            cur.execute(
+                "SELECT id, title, to_jsonb(c) -> 'scope' AS scope "
+                "FROM conversations c WHERE id = %s AND user_id = %s",
+                (conversation_id, user))
             row = cur.fetchone()
             if not row:
                 return None
@@ -69,7 +75,19 @@ class ConversationStore:
                 "WHERE conversation_id = %s ORDER BY id", (conversation_id,))
             messages = [{"role": m[0], "content": m[1], "citations": m[2] or []}
                         for m in cur.fetchall()]
-            return {"id": row[0], "title": row[1], "messages": messages}
+            # `scope` restores the "Limit to folders" tool state on resume.
+            return {"id": row[0], "title": row[1], "scope": row[2] or [], "messages": messages}
+
+    def set_scope(self, tenant: str, user: str, conversation_id: str, scope: Optional[list]) -> bool:
+        """Persist the conversation's RAG folder scope (owner-scoped). ``scope`` is a
+        list of ``{uid, path}`` (empty ⇒ all documents). False if not owned."""
+        with self._conn(tenant, provision=True) as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE conversations SET scope = %s::jsonb "
+                "WHERE id = %s AND user_id = %s",
+                (json.dumps(scope or []), conversation_id, user))
+            conn.commit()
+            return cur.rowcount > 0
 
     def owns(self, tenant: str, user: str, conversation_id: str) -> bool:
         with self._conn(tenant, readonly=True) as conn, conn.cursor() as cur:

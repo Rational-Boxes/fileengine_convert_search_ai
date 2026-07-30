@@ -24,7 +24,7 @@ class FakeRetriever:
     def __init__(self, chunks):
         self.chunks = chunks
 
-    def retrieve(self, identity, message, k=8):
+    def retrieve(self, identity, message, k=8, **_):
         return list(self.chunks)
 
 
@@ -129,6 +129,9 @@ def test_report_mode_saves_to_the_user_pinned_target(monkeypatch):
     from convert_search_ai import llm_tools
     mf = _FakeMF()
     monkeypatch.setattr(llm_tools, "_default_client", lambda identity, config: mf)
+    # Stub the pandoc html→docx step so the test is hermetic but still asserts the
+    # markdown→html pipeline feeding it (the real conversion is covered elsewhere).
+    monkeypatch.setattr(llm_tools, "_html_to_docx", lambda html, **kw: b"DOCX::" + html.encode("utf-8"))
     dest = mf.mkdir("", "Reports")                                  # user pre-chose this folder
     chat = _MarkerChat(
         'Sure — here it is.\n[[SAVE_REPORT title="Q3"]]\n',         # content-only marker
@@ -138,13 +141,14 @@ def test_report_mode_saves_to_the_user_pinned_target(monkeypatch):
         _id(), message="write a report",
         report_target={"folder_uid": dest, "filename": "q3", "path": "/Reports"}))
     text = "".join(e["text"] for e in events if e["type"] == "token")
-    assert "Saved the report to /Reports/q3.html" in text          # deterministic confirmation
-    # a report_saved event drives the SPA's "Open report" preview link
+    assert "Saved the report to /Reports/q3.docx" in text          # deterministic confirmation
+    # a report_saved event drives the SPA's "Open report" link
     saved_ev = next(e for e in events if e["type"] == "report_saved")
-    assert saved_ev["name"] == "q3.html" and saved_ev["uid"] == mf.puts[-1][0]
-    assert mf.files[mf.puts[-1][0]] == "q3.html"                   # written into the pinned folder
-    saved = mf.puts[-1][1].decode()
-    assert "<h1>" in saved and "<strong>up</strong>" in saved      # markdown rendered to HTML
+    assert saved_ev["name"] == "q3.docx" and saved_ev["uid"] == mf.puts[-1][0]
+    assert mf.files[mf.puts[-1][0]] == "q3.docx"                   # written into the pinned folder
+    saved = mf.puts[-1][1]
+    assert saved.startswith(b"DOCX::")                             # authored as a .docx
+    assert b"<h1>" in saved and b"<strong>up</strong>" in saved   # markdown rendered before conversion
 
 
 def test_no_report_target_means_no_save(monkeypatch):
@@ -164,12 +168,13 @@ def test_marker_cutoff_without_closing_still_saves_with_note(monkeypatch):
     from convert_search_ai import llm_tools
     mf = _FakeMF()
     monkeypatch.setattr(llm_tools, "_default_client", lambda identity, config: mf)
+    monkeypatch.setattr(llm_tools, "_html_to_docx", lambda html, **kw: b"DOCX::" + html.encode("utf-8"))
     dest = mf.mkdir("", "Reports")
     chat = _MarkerChat('[[SAVE_REPORT title="Big"]]\n# Partial\n\nGot cut off mid-stream')
     events = list(ChatService(Config(), retriever=FakeRetriever([]), chat=chat).answer(
         _id(), message="report",
         report_target={"folder_uid": dest, "filename": "big", "path": "/Reports"}))
     text = "".join(e["text"] for e in events if e["type"] == "token")
-    assert "Saved the report to /Reports/big.html" in text
+    assert "Saved the report to /Reports/big.docx" in text
     assert "cut off" in text                                       # truncation noted
     assert mf.puts

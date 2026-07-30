@@ -107,7 +107,7 @@ class _McpToolCallingProvider(ChatProvider):
 
 class _EmptyRetriever:
     """No RAG context (keeps the test off the embeddings/pgvector path)."""
-    def retrieve(self, identity, message, k=8):
+    def retrieve(self, identity, message, k=8, **_):
         return []
 
 

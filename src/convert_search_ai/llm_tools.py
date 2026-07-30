@@ -355,12 +355,54 @@ def _norm_path(path: str) -> str:
     return "/" + "/".join(segs)
 
 
+def _report_filename(filename: str) -> str:
+    """Normalize a report filename to end in ``.docx`` (chat reports are editable
+    Word drafts). A user-supplied ``.html``/``.htm`` is retargeted to ``.docx``."""
+    safe = _safe_name(filename or "")
+    if not safe:
+        return safe
+    low = safe.lower()
+    if low.endswith(".docx"):
+        return safe
+    if low.endswith((".html", ".htm")):
+        safe = safe.rsplit(".", 1)[0]
+    return safe + ".docx"
+
+
 def report_location(path: str, filename: str) -> str:
     """The canonical '/'-rooted location a report saves to (used for dedupe + UX)."""
-    safe = _safe_name(filename or "")
-    name = safe if safe.lower().endswith((".html", ".htm")) else safe + ".html"
+    name = _report_filename(filename)
     segs = [s for s in (path or "").replace("\\", "/").split("/") if s.strip()]
     return "/".join(["", *segs, name])
+
+
+def _html_to_docx(html: str, *, pandoc_bin: str = "pandoc", timeout: float = 30.0) -> bytes:
+    """Convert an HTML document to DOCX bytes via pandoc. Reports are authored as an
+    editable Word draft so the user can revise them in ONLYOFFICE. Raises on failure
+    (a missing pandoc binary is a deploy problem — surfaced as a save error upstream)."""
+    import os
+    import subprocess
+    import tempfile
+    fd, out_path = tempfile.mkstemp(suffix=".docx")
+    os.close(fd)
+    try:
+        proc = subprocess.run(
+            [pandoc_bin, "-f", "html", "-t", "docx", "-o", out_path],
+            input=html.encode("utf-8"), capture_output=True, timeout=timeout,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "pandoc html→docx failed: " + proc.stderr.decode("utf-8", "ignore")[:300])
+        with open(out_path, "rb") as fh:
+            data = fh.read()
+        if not data:
+            raise RuntimeError("pandoc produced an empty document")
+        return data
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
 
 
 class ReportSaveError(Exception):
@@ -402,7 +444,7 @@ def save_report_document(identity, config, *, path: str, filename: str, title: s
     if not body:
         raise ReportSaveError("empty", "no report content to save")
     html = body if _looks_like_html(body) else markdown_to_html(body)
-    name = safe if safe.lower().endswith((".html", ".htm")) else safe + ".html"
+    name = _report_filename(filename)
     tenant = getattr(identity, "tenant", "") or getattr(config, "tenant", "")
     base_url = getattr(config, "public_app_url", "") or ""
     mf = client_factory(identity, config)
@@ -410,9 +452,19 @@ def save_report_document(identity, config, *, path: str, filename: str, title: s
     try:
         # Rewrite the model's "(file <uid>)" references into named, absolute file
         # deep-links (resolved as the user) before wrapping + size-checking the
-        # document — absolute so they survive PDF export / external hosting.
+        # document — absolute so they survive the DOCX conversion / external hosting.
         html = _linkify_file_refs(html, mf, tenant, base_url, ref_cache)
-        document = wrap_html_document((title or safe).strip(), html).encode("utf-8")
+        # Author the report as an editable Word (.docx) draft (pandoc html→docx), so
+        # the user can revise it in ONLYOFFICE. The full HTML document (with its file
+        # deep-links as hyperlinks) is the pandoc input.
+        html_doc = wrap_html_document((title or safe).strip(), html)
+        try:
+            document = _html_to_docx(
+                html_doc,
+                pandoc_bin=getattr(config, "report_pandoc_bin", "pandoc"),
+                timeout=getattr(config, "report_pandoc_timeout_s", 30))
+        except Exception as e:
+            raise ReportSaveError("write", f"could not render the report as a Word document: {e}")
         if len(document) > max_bytes:
             raise ReportSaveError("too_large", "the report is too large to save")
         if folder_uid is not None:

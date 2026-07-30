@@ -42,14 +42,22 @@ class FakeConversationStore:
     def create(self, tenant, user, *, title=""):
         self._n += 1
         cid = f"c{self._n}"
-        self.data[cid] = {"user": user, "title": title, "messages": []}
+        self.data[cid] = {"user": user, "title": title, "messages": [], "scope": []}
         return cid
 
     def get(self, tenant, user, cid):
         c = self.data.get(cid)
         if not c or c["user"] != user:
             return None
-        return {"id": cid, "title": c["title"], "messages": c["messages"]}
+        return {"id": cid, "title": c["title"], "scope": c.get("scope", []),
+                "messages": c["messages"]}
+
+    def set_scope(self, tenant, user, cid, scope):
+        c = self.data.get(cid)
+        if not c or c["user"] != user:
+            return False
+        c["scope"] = scope or []
+        return True
 
     def owns(self, tenant, user, cid):
         c = self.data.get(cid)
@@ -84,6 +92,27 @@ def _hdr(app, user="alice"):
     tok = app.state.token_store.issue(
         Identity(user=user, roles=[], tenant="default", authenticated=True))
     return {"Authorization": f"Bearer {tok}"}
+
+
+def test_scope_from_payload_normalizes():
+    from convert_search_ai.api import _scope_from_payload
+    assert _scope_from_payload({}) is None                              # absent → leave stored
+    assert _scope_from_payload({"scope_folders": []}) == []             # present empty → clear
+    assert _scope_from_payload({"scope_folders": [
+        {"uid": "fa", "path": "/A"},
+        {"path": "/no-uid"},   # dropped (no uid)
+        {"uid": "  "},         # dropped (blank uid)
+    ]}) == [{"uid": "fa", "path": "/A"}]
+
+
+def test_get_conversation_returns_saved_scope():
+    convos = FakeConversationStore()
+    app, c = _app(convos)
+    cid = convos.create("default", "alice", title="t")
+    convos.set_scope("default", "alice", cid, [{"uid": "fa", "path": "/Projects/Acme"}])
+    r = c.get(f"/conversations/{cid}", headers=_hdr(app))
+    assert r.status_code == 200
+    assert r.json()["scope"] == [{"uid": "fa", "path": "/Projects/Acme"}]
 
 
 def test_create_list_get_delete():
