@@ -85,7 +85,7 @@ class RecordingRetriever:
     def __init__(self):
         self.k = None
 
-    def retrieve(self, identity, message, k=8):
+    def retrieve(self, identity, message, k=8, **_):
         self.k = k
         return []
 

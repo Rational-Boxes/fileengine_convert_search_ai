@@ -105,7 +105,10 @@ CREATE TABLE IF NOT EXISTS "{schema}".conversations (
     user_id     TEXT        NOT NULL,
     title       TEXT        NOT NULL DEFAULT '',
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- The conversation's RAG folder scope (a JSON array of uid/path pairs; NULL or
+    -- empty = all docs), so the "Limit to folders" tool restores on resume.
+    scope       JSONB
 );
 CREATE INDEX IF NOT EXISTS idx_conversations_user
     ON "{schema}".conversations (user_id, updated_at DESC);
@@ -159,6 +162,8 @@ CREATE INDEX IF NOT EXISTS idx_mcp_integration_enabled
     ON "{schema}".mcp_integration (enabled);
 -- Idempotent migration for tenants provisioned before OAuth support: add the
 -- columns and drop the old auth_type CHECK (which forbade 'oauth').
+-- Self-heal tenants provisioned before the conversation RAG folder scope landed.
+ALTER TABLE "{schema}".conversations ADD COLUMN IF NOT EXISTS scope JSONB;
 ALTER TABLE "{schema}".mcp_integration ADD COLUMN IF NOT EXISTS token_url TEXT NOT NULL DEFAULT '';
 ALTER TABLE "{schema}".mcp_integration ADD COLUMN IF NOT EXISTS oauth_client_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE "{schema}".mcp_integration ADD COLUMN IF NOT EXISTS oauth_scope TEXT NOT NULL DEFAULT '';

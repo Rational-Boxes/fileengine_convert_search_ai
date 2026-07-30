@@ -26,7 +26,7 @@ class FakeRetriever:
     def __init__(self, chunks):
         self.chunks = chunks
 
-    def retrieve(self, identity, message, k=8):
+    def retrieve(self, identity, message, k=8, **_):
         return list(self.chunks)
 
 

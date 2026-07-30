@@ -98,9 +98,10 @@ _INSTRUCTIONS_DOCUMENT = (
     "   [[SAVE_REPORT path=\"/Confirmed/Folder\" file=\"report-name\" title=\"Report Title\"]]\n"
     "   ...the full report as Markdown or HTML (headings, paragraphs, tables, lists)...\n"
     "   [[/SAVE_REPORT]]\n"
-    "Everything between the markers is saved automatically to that path as an HTML "
-    "document with a PDF preview — this is the ONLY way to save; there is no save "
-    "tool to call. Put the ENTIRE report between the markers: write the opening "
+    "Everything between the markers is saved automatically to that path as an "
+    "editable Word (.docx) document the user can revise in the office editor — this "
+    "is the ONLY way to save; there is no save tool to call. Put the ENTIRE report "
+    "between the markers: write the opening "
     "marker, then the complete report, then the closing [[/SAVE_REPORT]] marker — do "
     "not place report content after the closing marker, and do not emit the markers "
     "around just a preamble. Do not claim a report is saved unless you actually "
@@ -175,10 +176,13 @@ class ChatService:
                web_search: Optional[bool] = None,
                conversation_id: Optional[str] = None,
                report_target: Optional[dict] = None,
+               scope_folder_uids: Optional[List[str]] = None,
                consent=None) -> Iterator[dict]:
         msg = guards.check_query(message, self.config.max_query_chars)
         k = guards.cap_k(k, self.config.max_chat_k)
-        chunks = self.retriever.retrieve(identity, msg, k=k)
+        # scope_folder_uids (optional) confines RAG to the chosen folders + subfolders;
+        # None/empty searches all documents the user can read (the default).
+        chunks = self.retriever.retrieve(identity, msg, k=k, scope_folder_uids=scope_folder_uids)
         chunks, trimmed = guards.trim_context(chunks, self.config.max_context_chars)
 
         # Report mode is a focused "write the report now" task — offer NO tools so
@@ -325,8 +329,8 @@ class ChatService:
             note = "" if rep.complete else (" (note: the report may have been cut off before "
                                             "completion — regenerate if it looks incomplete)")
             yield {"type": "token", "text": (
-                f"\n\n✅ Saved the report to {loc} (file {uid}){note}. A PDF preview is "
-                f"being generated.\n")}
+                f"\n\n✅ Saved the report to {loc} (file {uid}){note} as an editable "
+                f"Word document — open it to review and edit.\n")}
             # Only the first marked block is the report; ignore any extras in report mode.
             break
 

@@ -14,9 +14,11 @@ FROM python:3.12-slim
 # 3D/CAD: occt-draw is OpenCASCADE's DRAW CLI (STEP/IGES/BREP/OBJ/VRML -> glTF);
 # nodejs/npm host convert2xkt (glTF/IFC/... -> XKT) for the xeokit viewer.
 # chromium is the full-fidelity HTML->PDF engine for .html documents (incl.
-# chat-generated reports); LibreOffice is the fallback.
+# chat-generated reports); LibreOffice is the fallback. pandoc renders chat
+# "Generate report" output as an editable Word (.docx) draft (CSAI_PANDOC_BIN).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress \
+        pandoc \
         imagemagick \
         ffmpeg \
         libmagic1 \

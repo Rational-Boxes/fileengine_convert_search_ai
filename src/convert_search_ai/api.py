@@ -224,10 +224,12 @@ async def chat(ws: WebSocket) -> None:
             if not message:
                 await ws.send_json({"type": "error", "error": "message is required"})
                 continue
-            # Resolve/create the conversation + store the user turn. Best-effort: a
-            # persistence outage must not break the chat (conv_id falls to None).
+            # Resolve/create the conversation + store the user turn (and persist the
+            # RAG folder scope so resuming restores it). Best-effort: a persistence
+            # outage must not break the chat (conv_id falls to None).
             conv_id = await run_in_threadpool(
-                _begin_turn, convos, identity, payload.get("conversation_id"), message)
+                _begin_turn, convos, identity, payload.get("conversation_id"), message,
+                _scope_from_payload(payload))
             if conv_id:
                 await ws.send_json({"type": "conversation", "id": conv_id})
             answer, citations = await _stream_answer(
@@ -240,14 +242,31 @@ async def chat(ws: WebSocket) -> None:
         return
 
 
-def _begin_turn(convos, identity: Identity, conv_id, message: str):
+def _scope_from_payload(payload: dict):
+    """Normalize the RAG folder scope from a chat frame: ``scope_folders`` is a list
+    of ``{uid, path}``. Returns the cleaned list when the key is present (even empty,
+    so a cleared scope persists), or ``None`` when absent (leave the stored scope)."""
+    if "scope_folders" not in payload:
+        return None
+    out = []
+    for f in payload.get("scope_folders") or []:
+        if isinstance(f, dict) and str(f.get("uid") or "").strip():
+            out.append({"uid": str(f["uid"]), "path": str(f.get("path") or "")})
+    return out
+
+
+def _begin_turn(convos, identity: Identity, conv_id, message: str, scope=None):
     """Resolve/create the conversation and store the user message. Returns the
-    conversation id, or None if persistence is unavailable (chat still proceeds)."""
+    conversation id, or None if persistence is unavailable (chat still proceeds).
+    When ``scope`` is not None it is persisted as the conversation's RAG folder scope
+    (so resuming restores the "Limit to folders" tool); ``None`` leaves it unchanged."""
     try:
         if not (conv_id and convos.owns(identity.tenant, identity.user, conv_id)):
             conv_id = convos.create(identity.tenant, identity.user, title=_title_from(message))
         convos.append(identity.tenant, identity.user, conv_id, "user", message)
         convos.set_title_if_empty(identity.tenant, identity.user, conv_id, _title_from(message))
+        if scope is not None:
+            convos.set_scope(identity.tenant, identity.user, conv_id, scope)
         return conv_id
     except Exception:
         logging.getLogger("convert_search_ai.chat").warning(
@@ -297,6 +316,12 @@ async def _stream_answer(ws: WebSocket, chat_service, identity, payload: dict, m
             "path": str(payload.get("report_target_path", "") or ""),
         }
 
+    # Optional RAG folder scope: confine retrieval to these folder UIDs + subfolders.
+    # The frame carries `scope_folders` as [{uid, path}] (path is for display/persist);
+    # here we take the UIDs. Absent/empty ⇒ all documents (default).
+    scope_folder_uids = [str(f["uid"]) for f in (payload.get("scope_folders") or [])
+                         if isinstance(f, dict) and str(f.get("uid") or "").strip()]
+
     def produce():
         try:
             for ev in chat_service.answer(
@@ -307,6 +332,7 @@ async def _stream_answer(ws: WebSocket, chat_service, identity, payload: dict, m
                 web_search=payload.get("web_search"),
                 conversation_id=conversation_id,
                 report_target=report_target,
+                scope_folder_uids=scope_folder_uids or None,
                 consent=broker.request,
             ):
                 anyio.from_thread.run(send.send, ev)

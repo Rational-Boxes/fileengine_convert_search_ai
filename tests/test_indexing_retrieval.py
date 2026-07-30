@@ -42,8 +42,9 @@ class FakeChunkStore:
     def delete(self, tenant, uid):
         self.deleted.append((tenant, uid))
 
-    def ann_search(self, tenant, qv, k):
-        return list(self.rows)[:k]
+    def ann_search(self, tenant, qv, k, *, file_uids=None):
+        rows = self.rows if file_uids is None else [r for r in self.rows if r.file_uid in set(file_uids)]
+        return list(rows)[:k]
 
 
 class FakeMF:
@@ -100,3 +101,59 @@ def test_retrieve_respects_k():
 
 def test_retrieve_empty_query():
     assert _retriever([_chunk("a")], allowed=["a"]).retrieve(_id(), "   ") == []
+
+
+# --- folder-scoped retrieval (Feature 2) ---
+class _ScopeEntry:
+    def __init__(self, uid, is_container=False):
+        self.uid, self.is_container, self.name = uid, is_container, uid
+
+
+class _ScopeMF:
+    """Fake client with a folder tree (for scope resolution) + a permission set."""
+    def __init__(self, tree, allowed):
+        self.tree = tree          # {folder_uid: [(child_uid, is_container), ...]}
+        self.allowed = set(allowed)
+
+    def dir(self, uid, tenant=None):
+        return [_ScopeEntry(u, c) for (u, c) in self.tree.get(uid, [])]
+
+    def check_permission(self, uid, perm, tenant=None):
+        return uid in self.allowed
+
+    def close(self):
+        pass
+
+
+def _scope_retriever(rows, tree, allowed):
+    return Retriever(Config(), embedder=FakeEmbedder(), chunk_store=FakeChunkStore(rows),
+                     gate=PermissionGate(300), client_factory=lambda i: _ScopeMF(tree, allowed))
+
+
+# /F1 has doc "a" + subfolder "S"; /S has doc "b"; /F2 has doc "c".
+_TREE = {"F1": [("a", False), ("S", True)], "S": [("b", False)], "F2": [("c", False)]}
+
+
+def test_scope_includes_selected_folder_and_its_subfolders():
+    out = _scope_retriever([_chunk("a"), _chunk("b"), _chunk("c")], _TREE, allowed=["a", "b", "c"]) \
+        .retrieve(_id(), "q", k=10, scope_folder_uids=["F1"])
+    assert sorted(c.file_uid for c in out) == ["a", "b"]  # direct + subfolder, NOT c
+
+
+def test_no_scope_searches_all_documents():
+    out = _scope_retriever([_chunk("a"), _chunk("b"), _chunk("c")], _TREE, allowed=["a", "b", "c"]) \
+        .retrieve(_id(), "q", k=10)
+    assert sorted(c.file_uid for c in out) == ["a", "b", "c"]
+
+
+def test_scope_with_no_documents_yields_no_context():
+    out = _scope_retriever([_chunk("a")], _TREE, allowed=["a"]) \
+        .retrieve(_id(), "q", k=10, scope_folder_uids=["EMPTY"])
+    assert out == []
+
+
+def test_scope_still_permission_filters():
+    # "b" is in scope (F1→S) but not readable → excluded even though scoped in.
+    out = _scope_retriever([_chunk("a"), _chunk("b")], _TREE, allowed=["a"]) \
+        .retrieve(_id(), "q", k=10, scope_folder_uids=["F1"])
+    assert [c.file_uid for c in out] == ["a"]

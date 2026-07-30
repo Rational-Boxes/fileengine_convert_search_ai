@@ -291,6 +291,11 @@ class Config:
         self.html_chromium = _env("CSAI_HTML_CHROMIUM", "chromium-browser")
         self.html_pdf_timeout_s = int(_env("CSAI_HTML_PDF_TIMEOUT_S", "60"))
 
+        # Chat reports are written as editable Word (.docx) drafts, converted from
+        # the model's Markdown/HTML by pandoc (must be on PATH in the deploy image).
+        self.report_pandoc_bin = _env("CSAI_PANDOC_BIN", "pandoc")
+        self.report_pandoc_timeout_s = int(_env("CSAI_PANDOC_TIMEOUT_S", "30"))
+
         # PDF/Office → Markdown extraction backends, fidelity-ordered (the first
         # one installed AND yielding content wins; see plugins/pdf_backends).
         # Structure + tables are critical — pdftotext is only the last resort.
