@@ -40,6 +40,7 @@ class ConvertOutcome:
     renditions_written: List[str]
     has_markdown: bool = False
     detail: str = ""
+    version: str = ""                 # the source version that resolved (for the terminal event)
 
 
 class ConversionPipeline:
@@ -92,7 +93,7 @@ class ConversionPipeline:
         if not result.supported:
             self.store.upsert(tenant, file_uid, source_version=version, mime=mime,
                               name=info.name, status="unsupported")
-            return ConvertOutcome(file_uid, "unsupported", [], detail=mime)
+            return ConvertOutcome(file_uid, "unsupported", [], detail=mime, version=version)
 
         written = self.writer.write(file_uid, version, result.renditions, tenant)
 
@@ -123,4 +124,5 @@ class ConversionPipeline:
         # reports the existing renditions); the worker only needs what's new.
         reported = self.writer.names_for_version(file_uid, version, tenant) if force else written
         return ConvertOutcome(file_uid, status, reported,
-                              has_markdown=bool(result.markdown), detail=mime)
+                              has_markdown=bool(result.markdown), detail=mime,
+                              version=version)
