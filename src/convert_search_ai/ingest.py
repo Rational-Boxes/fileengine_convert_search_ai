@@ -36,6 +36,7 @@ import time
 
 from .config import Config
 from ._client import WriteUnavailableError
+from .emit import EventEmitter
 
 log = logging.getLogger("convert_search_ai.ingest")
 
@@ -43,11 +44,16 @@ _CONVERT_TYPES = {"file.created", "file.updated", "file.restored"}
 
 
 class Ingestor:
-    def __init__(self, config: Config, pipeline, store, source):
+    def __init__(self, config: Config, pipeline, store, source, emitter=None):
         self.config = config
         self.pipeline = pipeline
         self.store = store
         self.source = source
+        # Publishes the terminal conversion.complete / conversion.failed event once
+        # a conversion resolves (best-effort; never fails ingestion). Lazily built
+        # from config when not injected — it opens no Redis connection until it
+        # actually publishes, so constructing it here is free.
+        self.emitter = emitter or EventEmitter(config)
         self._provisioned: set[str] = set()
         # Read-only (failover) sleep/poll state: while the core rejects writes we
         # retry un-acked events from the pending list after a back-off instead of
@@ -85,6 +91,11 @@ class Ingestor:
             self._ensure_tenant(tenant)
             outcome = self.pipeline.convert(uid, tenant)
             log.info("convert %s -> %s (%s)", uid, outcome.status, outcome.detail)
+            # Once the conversion has resolved (renditions/text durably written, or
+            # it cannot be converted), publish exactly one terminal event to the
+            # shared core stream. tenant/actor ride the triggering event's envelope.
+            # Guarded/best-effort inside emit_conversion — never fails ingestion.
+            self.emitter.emit_conversion(event, outcome)
         elif etype == "file.deleted":
             self._ensure_tenant(tenant)
             self.store.delete(tenant, uid)
