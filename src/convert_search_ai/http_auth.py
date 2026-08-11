@@ -47,15 +47,17 @@ def decode_basic(header_value: str) -> Optional[Tuple[str, str]]:
 
 
 def extract_tenant(headers: dict, host: str, default: str) -> str:
-    """Resolve the request tenant: explicit ``X-Tenant`` wins, else a subdomain
-    label of the Host header, else the configured default."""
+    """Resolve the request tenant: explicit ``X-Tenant`` wins, else the tenant from a
+    Host subdomain label, else the configured default. Tenant identifiers contain no
+    hyphen, so an ``<tenant>-<interface>`` label (e.g. ``acme-drive``) resolves to the
+    tenant — the first hyphen-delimited segment — matching the bridge/WebDAV/SPA rule."""
     explicit = headers.get("x-tenant")
     if explicit:
         return explicit.strip()
     host = (host or "").split(":", 1)[0]
     labels = host.split(".")
     if len(labels) >= 3:  # sub.domain.tld
-        first = labels[0].strip().lower()
+        first = labels[0].strip().lower().split("-", 1)[0]  # <tenant>-<interface> -> tenant
         if first and first not in ("www", "api", "localhost"):
             return first
     return default
