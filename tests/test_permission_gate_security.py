@@ -43,6 +43,19 @@ class FakeClient:
         self.raises = raises
         self.calls = 0
 
+    def entity_exists(self, uid, include_deleted=False):
+
+        # The permission gate pairs its ACL check with an existence
+
+        # check: the core grants READ by default when no rule matches,
+
+        # including for a uid that is gone. These stubs model files
+
+        # that exist, so this is True.
+
+        return True
+
+
     def check_permission(self, file_uid, perm, tenant=None):
         self.calls += 1
         assert perm == "r"  # the gate only ever asks for READ

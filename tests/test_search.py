@@ -38,6 +38,19 @@ class FakeMF:
     def __init__(self, allowed):
         self.allowed = set(allowed)
 
+    def entity_exists(self, uid, include_deleted=False):
+
+        # The permission gate pairs its ACL check with an existence
+
+        # check: the core grants READ by default when no rule matches,
+
+        # including for a uid that is gone. These stubs model files
+
+        # that exist, so this is True.
+
+        return True
+
+
     def check_permission(self, uid, perm, tenant=None):
         return uid in self.allowed
 
