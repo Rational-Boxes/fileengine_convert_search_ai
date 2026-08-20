@@ -89,13 +89,18 @@ class ConversionPipeline:
         self.store.upsert(tenant, file_uid, source_version=version, mime=mime,
                           name=info.name, status="converting")
 
-        result = self.registry.convert(data, mime, info.name)
-        if not result.supported:
-            self.store.upsert(tenant, file_uid, source_version=version, mime=mime,
-                              name=info.name, status="unsupported")
-            return ConvertOutcome(file_uid, "unsupported", [], detail=mime, version=version)
+        # `with`: a file-backed rendition owns a temp file that outlives the
+        # converter's workdir on purpose (see plugins.base.Rendition). Nothing
+        # else deletes it, so every exit from here -- including "unsupported"
+        # and any exception below -- has to release them or the disk fills up
+        # one conversion at a time.
+        with self.registry.convert(data, mime, info.name) as result:
+            if not result.supported:
+                self.store.upsert(tenant, file_uid, source_version=version, mime=mime,
+                                  name=info.name, status="unsupported")
+                return ConvertOutcome(file_uid, "unsupported", [], detail=mime, version=version)
 
-        written = self.writer.write(file_uid, version, result.renditions, tenant)
+            written = self.writer.write(file_uid, version, result.renditions, tenant)
 
         # Now that the current version's renditions exist, drop any left over from
         # superseded versions (all formats) so stale previews don't accumulate or

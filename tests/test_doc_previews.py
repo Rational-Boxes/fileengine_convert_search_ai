@@ -21,6 +21,9 @@ graceful-degradation and wiring paths run with no external tools.
 """
 import struct
 
+import os
+import shutil
+import tempfile
 import pytest
 
 from convert_search_ai.plugins import doc_preview
@@ -84,21 +87,39 @@ def test_office_render_composes_pdf_plus_previews(monkeypatch):
         pytest.skip("pdftoppm not available")
     pdf_bytes = _one_page_pdf()
     plugin = OfficePlugin()
-    monkeypatch.setattr(plugin, "_convert", lambda *a, **k: pdf_bytes)
+
+    # render() now keeps the converted PDF as a FILE, so the stub stands in for
+    # _convert_to_file and hands back (path, cleanup) the way tools.detach does.
+    holder = tempfile.mkdtemp()
+    pdf_path = os.path.join(holder, "in.pdf")
+    with open(pdf_path, "wb") as f:
+        f.write(pdf_bytes)
+    monkeypatch.setattr(plugin, "_convert_to_file",
+                        lambda *a, **k: (pdf_path, lambda: shutil.rmtree(holder, ignore_errors=True)))
+
     rends = plugin.render(
         b"docx-bytes",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "report.docx",
     )
-    fmts = [r.fmt for r in rends]
-    assert fmts == ["pdf", "thumbnail", "preview"]
-    assert rends[0].mime == "application/pdf" and rends[0].data == pdf_bytes
-    assert all(r.mime == "image/png" for r in rends[1:])
+    try:
+        fmts = [r.fmt for r in rends]
+        assert fmts == ["pdf", "thumbnail", "preview"]
+        # .read() is payload-location agnostic: file-backed here, bytes for the
+        # previews. Asserting on .data would only test where it happens to live.
+        assert rends[0].mime == "application/pdf" and rends[0].read() == pdf_bytes
+        assert rends[0].path is not None and rends[0].size == len(pdf_bytes)
+        assert all(r.mime == "image/png" for r in rends[1:])
+    finally:
+        for r in rends:
+            r.release()
+    # The owner released it, so the file is gone -- that is the contract.
+    assert not os.path.exists(pdf_path)
 
 
 def test_office_render_empty_when_conversion_fails(monkeypatch):
     plugin = OfficePlugin()
-    monkeypatch.setattr(plugin, "_convert", lambda *a, **k: None)
+    monkeypatch.setattr(plugin, "_convert_to_file", lambda *a, **k: None)
     assert plugin.render(b"x", "application/msword", "a.doc") == []
 
 

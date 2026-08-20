@@ -803,10 +803,14 @@ class Xeokit3DPlugin(ConversionPlugin):
             return []
         if not tools.have(self.convert2xkt):
             return []
-        xkt = self._to_xkt(data, mime)
-        if not xkt:
+        kept = self._to_xkt_file(data, mime)
+        if not kept:
             return []
-        rends = [Rendition("model", "xkt", xkt, "application/octet-stream")]
+        xkt_path, cleanup = kept
+        # The XKT stays a file: for a large model it is the biggest artifact
+        # this service produces, and the rendition writer streams it.
+        rends = [Rendition.from_path("model", "xkt", xkt_path,
+                                     "application/octet-stream", cleanup=cleanup)]
         # §5.2: ship a xeokit MetaModel sidecar so the viewer gets real objects
         # (tree/selection/property/anchoring), not just geometry. Best-effort — a
         # geometry-only model still ships if this yields nothing.
@@ -830,15 +834,27 @@ class Xeokit3DPlugin(ConversionPlugin):
         return None
 
     def _to_xkt(self, data: bytes, mime: str) -> Optional[bytes]:
+        kept = self._to_xkt_file(data, mime)
+        if not kept:
+            return None
+        path, cleanup = kept
+        try:
+            return tools.read_if_exists(path)
+        finally:
+            cleanup()
+
+    def _to_xkt_file(self, data: bytes, mime: str):
+        """``(path, cleanup)`` for the XKT. The form render() uses, so the model
+        is never materialised just to be handed to the writer."""
         if mime == "application/x-ifc":
-            for backend in self._ifc_backends():
-                xkt = backend(data)
-                if xkt:
-                    return xkt
+            for backend in self._ifc_backends_file():
+                kept = backend(data)
+                if kept:
+                    return kept
             return None
         if mime in _OCCT_SPECS:
-            return self._occt_to_xkt(data, mime)
-        return self._convert2xkt_direct(data, _EXT_BY_MIME.get(mime, "bin"))
+            return self._occt_to_xkt_file(data, mime)
+        return self._convert2xkt_direct_file(data, _EXT_BY_MIME.get(mime, "bin"))
 
     def _ifc_backend_order(self) -> List[str]:
         order = (self.ifc_backend or "auto").strip().lower()
@@ -860,50 +876,117 @@ class Xeokit3DPlugin(ConversionPlugin):
         }
         return [impls[n] for n in self._ifc_backend_order() if n in impls]
 
+    def _ifc_backends_file(self):
+        impls = {
+            "cxconverter": self._ifc_via_cxconverter_file,
+            "ifcopenshell": self._ifc_via_ifcconvert_file,
+            "webifc": self._ifc_via_webifc_file,
+        }
+        return [impls[n] for n in self._ifc_backend_order() if n in impls]
+
+    # Each backend has a `_file` twin returning (path, cleanup). They differ
+    # only in which chokepoint they call: every route ends at convert2xkt, so
+    # the bytes/file split lives there and nowhere else.
+
     def _ifc_via_webifc(self, data: bytes) -> Optional[bytes]:
         # convert2xkt ingests .ifc directly via its bundled web-ifc.
         return self._convert2xkt_direct(data, "ifc")
+
+    def _ifc_via_webifc_file(self, data: bytes):
+        return self._convert2xkt_direct_file(data, "ifc")
 
     def _ifc_via_ifcconvert(self, data: bytes) -> Optional[bytes]:
         if not tools.have(self.ifcconvert):
             return None
         return self._ifc_via_glb(data, self.ifcconvert)
 
+    def _ifc_via_ifcconvert_file(self, data: bytes):
+        if not tools.have(self.ifcconvert):
+            return None
+        return self._ifc_via_glb_file(data, self.ifcconvert)
+
     def _ifc_via_cxconverter(self, data: bytes) -> Optional[bytes]:
         if not (self.cxconverter and tools.have(self.cxconverter)):
             return None
         return self._ifc_via_glb(data, self.cxconverter)
 
+    def _ifc_via_cxconverter_file(self, data: bytes):
+        if not (self.cxconverter and tools.have(self.cxconverter)):
+            return None
+        return self._ifc_via_glb_file(data, self.cxconverter)
+
     def _ifc_via_glb(self, data: bytes, ifc_tool: str) -> Optional[bytes]:
+        kept = self._ifc_via_glb_file(data, ifc_tool)
+        if not kept:
+            return None
+        path, cleanup = kept
+        try:
+            return tools.read_if_exists(path)
+        finally:
+            cleanup()
+
+    def _ifc_via_glb_file(self, data: bytes, ifc_tool: str):
         with tools.workdir() as d:
             src = tools.write_temp(d, "in.ifc", data)
             glb = os.path.join(d, "out.glb")
             if not tools.run([ifc_tool, src, glb], timeout=self.timeout_s):
                 return None
-            return self._convert2xkt_at(d, glb)
+            return self._convert2xkt_file_at(d, glb)
 
     def _convert2xkt_direct(self, data: bytes, ext: str) -> Optional[bytes]:
         with tools.workdir() as d:
             src = tools.write_temp(d, f"in.{ext}", data)
             return self._convert2xkt_at(d, src)
 
+    def _convert2xkt_direct_file(self, data: bytes, ext: str):
+        """``(path, cleanup)`` for the XKT, or None."""
+        with tools.workdir() as d:
+            src = tools.write_temp(d, f"in.{ext}", data)
+            return self._convert2xkt_file_at(d, src)
+
     def _convert2xkt_at(self, d: str, src: str) -> Optional[bytes]:
+        kept = self._convert2xkt_file_at(d, src)
+        if not kept:
+            return None
+        path, cleanup = kept
+        try:
+            return tools.read_if_exists(path)
+        finally:
+            cleanup()
+
+    def _convert2xkt_file_at(self, d: str, src: str):
+        """As above, but hands back ``(path, cleanup)`` instead of bytes.
+
+        An XKT for a large model is the biggest artifact this service produces.
+        It is already a file when convert2xkt finishes, so keeping it as one — and
+        letting the rendition writer stream it — avoids holding hundreds of
+        megabytes purely to pass them along."""
         out = os.path.join(d, "out.xkt")
         if not tools.run([self.convert2xkt, "-s", src, "-o", out], timeout=self.timeout_s):
             return None
-        return tools.read_if_exists(out)
+        return tools.detach(out)
 
     # --- OpenCASCADE CAD/mesh backend (STEP/IGES/BREP/OBJ/VRML → glTF) ---- #
 
     def _occt_to_xkt(self, data: bytes, mime: str) -> Optional[bytes]:
         """Convert a CAD/mesh format convert2xkt can't read into XKT via a glTF
         produced by OpenCASCADE (DRAWEXE), then the standard convert2xkt hop."""
+        kept = self._occt_to_xkt_file(data, mime)
+        if not kept:
+            return None
+        path, cleanup = kept
+        try:
+            return tools.read_if_exists(path)
+        finally:
+            cleanup()
+
+    def _occt_to_xkt_file(self, data: bytes, mime: str):
         glb = self._occt_to_glb(data, mime)
         if not glb:
             return None
         with tools.workdir() as d:
             src = tools.write_temp(d, "occt.glb", glb)
-            return self._convert2xkt_at(d, src)
+            return self._convert2xkt_file_at(d, src)
 
     def _occt_to_glb(self, data: bytes, mime: str) -> Optional[bytes]:
         """Read ``data`` with DRAWEXE, tessellate exact geometry where needed, and

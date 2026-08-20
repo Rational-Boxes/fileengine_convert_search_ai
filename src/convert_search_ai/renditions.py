@@ -108,7 +108,10 @@ class RenditionWriter:
             # message, which the 64 MiB channel limit refuses outright. The
             # payload is already in memory here, so this bounds the wire rather
             # than the heap -- making the producers stream is separate work.
-            self.mf.put_stream(rend_uid, [r.data], tenant=tenant)
+            # r.chunks() streams from wherever the payload lives -- memory for
+            # a thumbnail, the converter's output file for a PDF or an XKT --
+            # so a large rendition is never held whole on the way out.
+            self.mf.put_stream(rend_uid, r.chunks(), tenant=tenant)
             written.append(name)
             existing.add(name)
         return written

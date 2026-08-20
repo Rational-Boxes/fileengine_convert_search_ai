@@ -24,6 +24,7 @@ from __future__ import annotations
 import functools
 import os
 import shutil
+from typing import Callable
 import subprocess
 import tempfile
 
@@ -97,6 +98,35 @@ def write_temp(directory: str, name: str, data: bytes) -> str:
     with open(path, "wb") as f:
         f.write(data)
     return path
+
+
+def detach(path: str) -> tuple[str, Callable[[], None]] | None:
+    """Move a converter's output out of its ``workdir`` and hand back
+    ``(path, cleanup)``.
+
+    Converters write a file; the caller then wants to hand that file onward
+    without reading it into memory. But ``workdir`` deletes everything on exit,
+    so the file has to leave the workdir first. A rename is used where possible
+    (same filesystem, so no copy), falling back to a move across devices.
+
+    Returns None if the file is not there — the same "degrade, do not raise"
+    contract as :func:`read_if_exists`, so a missing converter output stays a
+    skipped rendition rather than an exception.
+    """
+    if not os.path.exists(path):
+        return None
+    holder = tempfile.mkdtemp(prefix="csai_out_")
+    dest = os.path.join(holder, os.path.basename(path))
+    try:
+        shutil.move(path, dest)
+    except OSError:
+        shutil.rmtree(holder, ignore_errors=True)
+        return None
+
+    def _cleanup() -> None:
+        shutil.rmtree(holder, ignore_errors=True)
+
+    return dest, _cleanup
 
 
 def read_if_exists(path: str) -> bytes | None:

@@ -23,6 +23,9 @@ Real sample fixtures live in ``tests/fixtures/3d/`` (fetched from public sources
 """
 from pathlib import Path
 
+import os
+import shutil
+import tempfile
 import pytest
 
 from convert_search_ai import tools as _tools
@@ -187,6 +190,19 @@ def _stub_tools(monkeypatch, available, xkt=b"XKT\x00bytes"):
     monkeypatch.setattr(_tools, "run",
                         lambda cmd, timeout=120, input_bytes=None: (calls.append(cmd), True)[1])
     monkeypatch.setattr(_tools, "read_if_exists", lambda p: xkt if str(p).endswith(".xkt") else b"GLB")
+
+    # The XKT is taken as a FILE now, not read into bytes, so detach() is the
+    # seam a stubbed converter has to satisfy: run() never wrote anything, so
+    # the real detach would find no file. Hand back a genuine temp file with the
+    # fake payload, plus the cleanup the caller is expected to invoke.
+    def _fake_detach(path):
+        holder = tempfile.mkdtemp(prefix="csai_test_")
+        dest = os.path.join(holder, os.path.basename(path))
+        with open(dest, "wb") as f:
+            f.write(xkt if str(path).endswith(".xkt") else b"GLB")
+        return dest, lambda: shutil.rmtree(holder, ignore_errors=True)
+
+    monkeypatch.setattr(_tools, "detach", _fake_detach)
     return calls
 
 
@@ -196,7 +212,7 @@ def test_render_produces_model_xkt_rendition(monkeypatch):
     # The geometry "model" rendition (a glTF metamodel sidecar also ships, M2).
     r = next(x for x in rends if x.fmt == "model")
     assert (r.fmt, r.ext, r.mime) == ("model", "xkt", "application/octet-stream")
-    assert r.data == b"XKT\x00bytes"
+    assert r.read() == b"XKT\x00bytes"   # file-backed now; .read() is location-agnostic
     # convert2xkt was invoked
     assert any("convert2xkt" in c[0] for c in calls)
 
@@ -471,7 +487,7 @@ def test_ifc_render_via_ifcopenshell_backend(monkeypatch):
     # The geometry "model" rendition (a metamodel sidecar may accompany it, M1).
     r = next(x for x in rends if x.fmt == "model")
     assert (r.fmt, r.ext, r.mime) == ("model", "xkt", "application/octet-stream")
-    assert struct.unpack("<I", r.data[:4])[0] == 12   # xeokit XKT v12 header
+    assert struct.unpack("<I", r.read()[:4])[0] == 12   # xeokit XKT v12 header
     # geometry came through IfcOpenShell's IfcConvert (GLB), then convert2xkt —
     # NOT convert2xkt consuming the .ifc directly (that would be web-ifc/xeokit).
     assert any("IfcConvert" in c or c.endswith("ifcConvert") for c in calls)
