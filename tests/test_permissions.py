@@ -23,6 +23,19 @@ class FakeMF:
         self.allowed = set(allowed)
         self.calls = 0
 
+    def entity_exists(self, uid, include_deleted=False):
+
+        # The permission gate pairs its ACL check with an existence
+
+        # check: the core grants READ by default when no rule matches,
+
+        # including for a uid that is gone. These stubs model files
+
+        # that exist, so this is True.
+
+        return True
+
+
     def check_permission(self, uid, perm, tenant=None):
         self.calls += 1
         return uid in self.allowed
@@ -45,6 +58,13 @@ def test_allows_denies_and_caches():
 
 def test_fail_closed_on_error():
     class Boom:
+        def entity_exists(self, uid, include_deleted=False):
+            # The permission gate pairs its ACL check with an existence
+            # check: the core grants READ by default when no rule matches,
+            # including for a uid that is gone. These stubs model files
+            # that exist, so this is True.
+            return True
+
         def check_permission(self, *a, **k):
             raise RuntimeError("core down")
 

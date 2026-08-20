@@ -52,8 +52,27 @@ class PermissionGate:
         return allowed
 
     def _check(self, mf, identity, file_uid: str) -> bool:
+        """ACL permission AND existence.
+
+        The core's CheckPermission evaluates ACL rules only, and `AclManager`
+        ships `default_read_ = true` -- a principal with no *matching rule*
+        holds READ. A uid that does not exist, or has been soft-deleted, has no
+        matching rule either, so the bare check answers True for a file that is
+        gone. Verified against a live core, 2026-08-20.
+
+        That matters more here than elsewhere: this gate releases content from
+        **our own index**, not from the core, so the core's own NotFound guard
+        never fires on this path. The `file.deleted` purge (ingest.py) and the
+        cache invalidation below already close the common case; this is the
+        backstop for a dropped or unprocessed event.
+
+        Both halves are cached and invalidated together, so the extra RPC is
+        paid per cache miss rather than per search hit.
+        """
         try:
-            return bool(mf.check_permission(file_uid, "r", tenant=identity.tenant))
+            if not mf.check_permission(file_uid, "r", tenant=identity.tenant):
+                return False
+            return bool(mf.entity_exists(file_uid))
         except Exception:
             return False  # fail-closed
 

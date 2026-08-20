@@ -102,6 +102,11 @@ def editor_config(file_uid: str, request: Request) -> dict:
         if dt is None:
             raise HTTPException(status_code=415, detail=f"'{name}' is not an editable office document")
         try:
+            # Existence is already established: the stat() above 404s for a
+            # missing or soft-deleted uid. That matters because a bare
+            # check_permission would NOT -- the core evaluates ACL rules only,
+            # and read-by-default grants when nothing matches, including for a
+            # uid that is gone. Keep the stat ahead of this check.
             can_write = mf.check_permission(file_uid, "WRITE")
         except Exception:
             can_write = False
