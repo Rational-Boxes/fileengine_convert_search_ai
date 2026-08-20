@@ -30,6 +30,8 @@ Three endpoints, two trust seams (see ``onlyoffice`` module):
 from __future__ import annotations
 
 import logging
+import contextlib
+import tempfile
 import urllib.request
 
 from fastapi import APIRouter, Body, HTTPException, Request
@@ -185,43 +187,70 @@ def callback(request: Request, token: str = "", body: dict = Body(default={})) -
 
     if not cb["url"]:
         return JSONResponse({"error": 0})
-    try:
-        edited = _fetch(cb["url"], max_bytes=config.onlyoffice_max_bytes)
-    except Exception as e:
-        log.warning("onlyoffice: could not fetch edited document: %s", e)
-        return JSONResponse({"error": 1})
-
     identity = Identity(user=claims["user"], roles=list(claims.get("roles") or []),
                         tenant=claims.get("tenant", ""), authenticated=True)
-    mf = _client_for(identity, config)
     try:
-        # An edited office document is exactly the case put() cannot carry: a
-        # large spreadsheet or deck arrives here whole and would go out as one
-        # oversized message. (`edited` is still fetched into memory above --
-        # streaming that fetch is the remaining half.)
-        mf.put_stream(claims["file_uid"], [edited])   # new immutable version, as the user
+        # Fetched to a spool and streamed straight through: the document is
+        # never held whole, on either the download or the write-back side.
+        with _fetch_spooled(cb["url"], max_bytes=config.onlyoffice_max_bytes) as (spool, size):
+            mf = _client_for(identity, config)
+            try:
+                mf.put_stream(claims["file_uid"],   # new immutable version, as the user
+                              _iter_file(spool))
+            finally:
+                _close(mf)
     except Exception as e:
-        log.warning("onlyoffice: write-back failed for %s: %s", claims.get("file_uid"), e)
+        log.warning("onlyoffice: save failed for %s: %s", claims.get("file_uid"), e)
         audit.record(action="onlyoffice_save", user=identity.user, tenant=identity.tenant,
                      result="error", file_uid=claims["file_uid"])
         return JSONResponse({"error": 1})
-    finally:
-        _close(mf)
     audit.record(action="onlyoffice_save", user=identity.user, tenant=identity.tenant,
-                 result="ok", file_uid=claims["file_uid"], bytes=len(edited))
+                 result="ok", file_uid=claims["file_uid"], bytes=size)
     return JSONResponse({"error": 0})
 
 
 # --------------------------------- helpers ----------------------------------
-def _fetch(url: str, *, max_bytes: int, timeout: float = 30.0) -> bytes:
-    """Download the edited document the Document Server produced. The URL is the Doc
-    Server's own (trusted, from a JWT-verified callback), so this is a plain fetch."""
+FETCH_CHUNK = 1024 * 1024
+
+
+@contextlib.contextmanager
+def _fetch_spooled(url: str, *, max_bytes: int, timeout: float = 30.0):
+    """Download the edited document to a bounded spool, not into memory.
+
+    The URL is the Document Server's own (trusted, from a JWT-verified
+    callback), so this is a plain fetch — but the payload is a whole edited
+    spreadsheet or deck, which is exactly the thing not to hold. Chunks go to a
+    SpooledTemporaryFile: small documents stay in memory, large ones land on
+    disk, and either way peak usage is one chunk rather than the document.
+
+    The cap is enforced DURING the read, so an oversized document is refused at
+    the cap rather than after it has all arrived.
+
+    Yields ``(fileobj, size)`` with the file positioned at the start.
+    """
     req = urllib.request.Request(url, headers={"User-Agent": "convert-search-ai/onlyoffice"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = resp.read(max_bytes + 1)
-    if len(data) > max_bytes:
-        raise ValueError("edited document exceeds size cap")
-    return data
+    with tempfile.SpooledTemporaryFile(max_size=FETCH_CHUNK) as spool:
+        total = 0
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            while True:
+                chunk = resp.read(FETCH_CHUNK)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError("edited document exceeds size cap")
+                spool.write(chunk)
+        spool.seek(0)
+        yield spool, total
+
+
+def _iter_file(fileobj, chunk: int = FETCH_CHUNK):
+    """Yield a file's contents in bounded pieces."""
+    while True:
+        piece = fileobj.read(chunk)
+        if not piece:
+            return
+        yield piece
 
 
 def _close(mf) -> None:
