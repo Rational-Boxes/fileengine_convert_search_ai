@@ -487,7 +487,7 @@ def save_report_document(identity, config, *, path: str, filename: str, title: s
         except Exception:
             existing = None
         uid = existing or mf.touch(parent, name, tenant=tenant)
-        mf.put(uid, document, tenant=tenant)
+        mf.put_stream(uid, [document], tenant=tenant)
         if provenance is not None:
             from . import provenance as _prov
             _prov.attach_provenance(mf, uid, tenant, {

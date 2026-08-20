@@ -195,7 +195,11 @@ def callback(request: Request, token: str = "", body: dict = Body(default={})) -
                         tenant=claims.get("tenant", ""), authenticated=True)
     mf = _client_for(identity, config)
     try:
-        mf.put(claims["file_uid"], edited)     # new immutable version, as the user
+        # An edited office document is exactly the case put() cannot carry: a
+        # large spreadsheet or deck arrives here whole and would go out as one
+        # oversized message. (`edited` is still fetched into memory above --
+        # streaming that fetch is the remaining half.)
+        mf.put_stream(claims["file_uid"], [edited])   # new immutable version, as the user
     except Exception as e:
         log.warning("onlyoffice: write-back failed for %s: %s", claims.get("file_uid"), e)
         audit.record(action="onlyoffice_save", user=identity.user, tenant=identity.tenant,

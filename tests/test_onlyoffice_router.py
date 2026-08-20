@@ -49,6 +49,13 @@ class FakeMF:
     def get(self, uid, **kw):
         return io.BytesIO(self._content)
 
+    def put_stream(self, uid, chunks, **kw):
+        # The real client re-splits chunks so no gRPC message is
+        # oversized; a stub only has to reassemble them.
+        joined = b"".join(
+            c.encode() if isinstance(c, str) else bytes(c) for c in chunks)
+        return self.put(uid, joined, **kw)
+
     def put(self, uid, payload, **kw):
         self.puts.append((uid, payload))
         return 1.0
