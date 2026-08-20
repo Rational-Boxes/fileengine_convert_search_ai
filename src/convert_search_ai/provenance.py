@@ -189,7 +189,7 @@ def attach_provenance(mf, report_uid: str, tenant: str, prov: dict,
         from .llm_tools import _linkify_file_refs  # lazy: avoids an import cycle
         cache = ref_cache if ref_cache is not None else {}
         linkify = lambda s: _linkify_file_refs(s, mf, tenant, base_url, cache)  # noqa: E731
-        mf.put(child, render_html(record, linkify=linkify), tenant=tenant)
+        mf.put_stream(child, [render_html(record, linkify=linkify)], tenant=tenant)
         return name
     except Exception as e:  # noqa: BLE001 — provenance is best-effort
         log.warning("chat provenance log not attached to report %s: %s", report_uid, e)

@@ -36,6 +36,20 @@ DEFAULT_THUMBNAIL_PX = 256
 DEFAULT_PREVIEW_PX = 1280
 
 
+def page1_previews_from_path(pdf_path: str,
+                             thumbnail_px: int = DEFAULT_THUMBNAIL_PX,
+                             preview_px: int = DEFAULT_PREVIEW_PX) -> List[Rendition]:
+    """As :func:`page1_previews`, for a PDF that is already a file.
+
+    The previews themselves are small and stay in memory; what this avoids is
+    writing a large PDF to disk a second time just to run ``pdftoppm`` over it,
+    which is what the bytes form has to do.
+    """
+    if not pdf_path or not os.path.exists(pdf_path) or not tools.have("pdftoppm"):
+        return []
+    return _previews(pdf_path, thumbnail_px, preview_px)
+
+
 def page1_previews(pdf: bytes,
                    thumbnail_px: int = DEFAULT_THUMBNAIL_PX,
                    preview_px: int = DEFAULT_PREVIEW_PX) -> List[Rendition]:
@@ -45,9 +59,13 @@ def page1_previews(pdf: bytes,
     fails. A non-positive size skips that rendition."""
     if not pdf or not tools.have("pdftoppm"):
         return []
+    with tools.workdir() as d:
+        return _previews(tools.write_temp(d, "in.pdf", pdf), thumbnail_px, preview_px)
+
+
+def _previews(src: str, thumbnail_px: int, preview_px: int) -> List[Rendition]:
     out: List[Rendition] = []
     with tools.workdir() as d:
-        src = tools.write_temp(d, "in.pdf", pdf)
         for fmt, box in (("thumbnail", thumbnail_px), ("preview", preview_px)):
             if box <= 0:
                 continue

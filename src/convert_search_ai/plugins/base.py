@@ -17,17 +17,79 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import os
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Callable, Iterator, List, Optional
+
+
+#: Bytes read from a file-backed rendition at a time.
+RENDITION_CHUNK = 4 * 1024 * 1024
 
 
 @dataclass
 class Rendition:
-    """One alternate-format copy of a source file, to be stored as a hidden child."""
+    """One alternate-format copy of a source file, to be stored as a hidden child.
+
+    A rendition carries its payload **either** in memory (``data``) or on disk
+    (``path``). Small outputs — a thumbnail, a poster frame — are fine in
+    memory. Large ones — a converted PDF, an XKT for a big model, a video
+    preview — should stay on disk: the converter already wrote a file, and
+    reading it back into bytes only to hand it to a streaming writer means
+    holding the whole thing for no reason.
+
+    **Ownership.** A file-backed rendition owns its file. The converter's own
+    temp dir is gone by the time anyone reads it (``tools.workdir`` cleans up on
+    exit), so :func:`tools.detach` moves the output somewhere the rendition
+    controls and gives it a ``cleanup``. Whoever consumes a
+    :class:`ConversionResult` must ``close()`` it — the pipeline does this in a
+    ``finally`` — or the files leak. That is the cost of not copying them.
+    """
     fmt: str    # logical kind: "pdf" | "preview" | "thumbnail" | "poster"
     ext: str    # file extension: "pdf" | "png" | "webp" | "mp4"
-    data: bytes
-    mime: str
+    data: Optional[bytes] = None
+    mime: str = ""
+    path: Optional[str] = None
+    cleanup: Optional[Callable[[], None]] = None
+
+    @classmethod
+    def from_path(cls, fmt: str, ext: str, path: str, mime: str,
+                  cleanup: Optional[Callable[[], None]] = None) -> "Rendition":
+        return cls(fmt=fmt, ext=ext, data=None, mime=mime, path=path, cleanup=cleanup)
+
+    @property
+    def size(self) -> int:
+        if self.path is not None:
+            try:
+                return os.path.getsize(self.path)
+            except OSError:
+                return 0
+        return len(self.data or b"")
+
+    def chunks(self, size: int = RENDITION_CHUNK) -> Iterator[bytes]:
+        """Yield the payload in bounded pieces, from wherever it lives."""
+        if self.path is not None:
+            with open(self.path, "rb") as f:
+                while True:
+                    piece = f.read(size)
+                    if not piece:
+                        return
+                    yield piece
+        elif self.data:
+            for start in range(0, len(self.data), size):
+                yield self.data[start:start + size]
+
+    def read(self) -> bytes:
+        """The whole payload. For callers that genuinely need one buffer —
+        which, now that the writer streams, should be tests and little else."""
+        return b"".join(self.chunks())
+
+    def release(self) -> None:
+        if self.cleanup is not None:
+            try:
+                self.cleanup()
+            finally:
+                self.cleanup = None
+                self.path = None
 
 
 @dataclass
@@ -35,6 +97,17 @@ class ConversionResult:
     renditions: List[Rendition] = field(default_factory=list)
     markdown: Optional[str] = None   # extracted text content, or None
     supported: bool = True           # False when no plugin handled the MIME type
+
+    def close(self) -> None:
+        """Release every file-backed rendition. Safe to call twice."""
+        for r in self.renditions:
+            r.release()
+
+    def __enter__(self) -> "ConversionResult":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
 
 
 class ConversionPlugin(ABC):

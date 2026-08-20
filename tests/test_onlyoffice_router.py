@@ -1,3 +1,4 @@
+import contextlib
 # Copyright (C) 2026 James Hickman
 #
 # This program is free software: you can redistribute it and/or modify
@@ -62,12 +63,26 @@ class FakeMF:
     def get(self, uid, **kw):
         return io.BytesIO(self._content)
 
+    def put_stream(self, uid, chunks, **kw):
+        # The real client re-splits chunks so no gRPC message is
+        # oversized; a stub only has to reassemble them.
+        joined = b"".join(
+            c.encode() if isinstance(c, str) else bytes(c) for c in chunks)
+        return self.put(uid, joined, **kw)
+
     def put(self, uid, payload, **kw):
         self.puts.append((uid, payload))
         return 1.0
 
     def close(self):
         pass
+
+
+@contextlib.contextmanager
+def _spooled(payload: bytes):
+    """Stand in for _fetch_spooled: the document is streamed from a spool now,
+    not returned whole, so the stub has to yield a file and a size."""
+    yield io.BytesIO(payload), len(payload)
 
 
 def _app(monkeypatch, *, mf=None, enabled=True, jwt_secret="", **cfgover):
@@ -160,7 +175,7 @@ def test_callback_editing_status_does_not_write(monkeypatch):
 
 def test_callback_save_writes_new_version_as_user(monkeypatch):
     app, c, mf = _app(monkeypatch)
-    monkeypatch.setattr(oor, "_fetch", lambda url, **kw: b"EDITED-DOCX")
+    monkeypatch.setattr(oor, "_fetch_spooled", lambda url, **kw: _spooled(b"EDITED-DOCX"))
     tok = sign_scoped_token("sign-secret", purpose="oo-callback", ttl=600,
                             file_uid="f1", user="alice", tenant="default", roles=["users"])
     r = c.post(f"/v1/onlyoffice/callback?token={tok}",
@@ -171,7 +186,7 @@ def test_callback_save_writes_new_version_as_user(monkeypatch):
 
 def test_callback_verifies_onlyoffice_jwt_when_enabled(monkeypatch):
     app, c, mf = _app(monkeypatch, jwt_secret="docserver-secret")
-    monkeypatch.setattr(oor, "_fetch", lambda url, **kw: b"EDITED")
+    monkeypatch.setattr(oor, "_fetch_spooled", lambda url, **kw: _spooled(b"EDITED"))
     tok = sign_scoped_token("sign-secret", purpose="oo-callback", ttl=600,
                             file_uid="f1", user="alice", tenant="default", roles=["users"])
     # unsigned body → rejected

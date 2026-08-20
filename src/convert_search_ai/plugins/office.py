@@ -21,7 +21,8 @@ import os
 from typing import List, Optional
 
 from .base import ConversionPlugin, Rendition
-from .doc_preview import DEFAULT_PREVIEW_PX, DEFAULT_THUMBNAIL_PX, page1_previews
+from .doc_preview import (DEFAULT_PREVIEW_PX, DEFAULT_THUMBNAIL_PX,
+                          page1_previews, page1_previews_from_path)
 from .. import tools
 
 # MIME -> a source extension LibreOffice recognizes (helps the import filter).
@@ -62,7 +63,15 @@ class OfficePlugin(ConversionPlugin):
                 return b
         return None
 
-    def _convert(self, data: bytes, src_ext: str, target: str, out_ext: str) -> Optional[bytes]:
+    def _convert_to_file(self, data: bytes, src_ext: str, target: str, out_ext: str):
+        """Run LibreOffice and hand back ``(path, cleanup)`` for its output.
+
+        The converted PDF is the largest thing this plugin produces and it is
+        already a file on disk — reading it back into bytes only to hand it to a
+        streaming writer would hold the whole document for no reason. `detach`
+        moves it out of the workdir so it survives, and the caller owns it from
+        then on (plugins.base.Rendition).
+        """
         binary = self._binary()
         if not binary or not data:
             return None
@@ -74,16 +83,38 @@ class OfficePlugin(ConversionPlugin):
                  "--convert-to", target, "--outdir", d, src],
                 timeout=180,
             )
-            return tools.read_if_exists(os.path.join(d, f"in.{out_ext}")) if ok else None
+            if not ok:
+                return None
+            return tools.detach(os.path.join(d, f"in.{out_ext}"))
+
+    def _convert(self, data: bytes, src_ext: str, target: str, out_ext: str) -> Optional[bytes]:
+        """Bytes form, kept for callers (and tests) that want one buffer."""
+        kept = self._convert_to_file(data, src_ext, target, out_ext)
+        if not kept:
+            return None
+        path, cleanup = kept
+        try:
+            return tools.read_if_exists(path)
+        finally:
+            cleanup()
 
     def render(self, data: bytes, mime: str, name: str) -> List[Rendition]:
         # One LibreOffice conversion to PDF serves both the inline document
         # preview and (via poppler) the page-1 thumbnail + larger preview images.
-        pdf = self._convert(data, _EXT.get(mime, "bin"), "pdf", "pdf")
-        if not pdf:
+        #
+        # The PDF stays a FILE throughout: it is the largest thing produced
+        # here, it is handed on as a file-backed rendition (streamed by the
+        # writer), and pdftoppm reads it in place rather than from a second copy.
+        kept = self._convert_to_file(data, _EXT.get(mime, "bin"), "pdf", "pdf")
+        if not kept:
             return []
-        out = [Rendition("pdf", "pdf", pdf, "application/pdf")]
-        out.extend(page1_previews(pdf, self.thumbnail_px, self.preview_px))
+        pdf_path, cleanup = kept
+        # The PDF rendition takes ownership of the file; the previews are small
+        # and materialise as bytes.
+        out = [Rendition.from_path("pdf", "pdf", pdf_path, "application/pdf",
+                                   cleanup=cleanup)]
+        out.extend(page1_previews_from_path(pdf_path, self.thumbnail_px,
+                                            self.preview_px))
         return out
 
     def extract(self, data: bytes, mime: str, name: str) -> Optional[str]:

@@ -103,7 +103,15 @@ class RenditionWriter:
             # core is read-only during a failover) — propagated so the caller can
             # retry/reconcile rather than silently dropping the rendition.
             rend_uid = self.mf.touch(file_uid, name, tenant=tenant)
-            self.mf.put(rend_uid, r.data, tenant=tenant)
+            # put_stream, not put: a rendition can be large (an XKT for a big
+            # IFC model, a rasterised PDF) and put() sends it in ONE gRPC
+            # message, which the 64 MiB channel limit refuses outright. The
+            # payload is already in memory here, so this bounds the wire rather
+            # than the heap -- making the producers stream is separate work.
+            # r.chunks() streams from wherever the payload lives -- memory for
+            # a thumbnail, the converter's output file for a PDF or an XKT --
+            # so a large rendition is never held whole on the way out.
+            self.mf.put_stream(rend_uid, r.chunks(), tenant=tenant)
             written.append(name)
             existing.add(name)
         return written
