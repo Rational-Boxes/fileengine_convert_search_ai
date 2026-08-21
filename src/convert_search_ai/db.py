@@ -24,6 +24,8 @@ is the tenant boundary.
 runtime dependency; M0 only defines the layer)."""
 from __future__ import annotations
 
+import threading
+
 from typing import Optional
 
 from .config import Config
@@ -96,24 +98,37 @@ def provision_tenant(config: Config, tenant: str) -> str:
 # Tenants whose schema has been ensured in this process. Lets read paths bootstrap
 # a never-ingested tenant (no UndefinedTable / 500) without re-running the
 # idempotent DDL on every single connection.
+#
+# That second half was not actually true until the lock below arrived: the test
+# was `provision or tenant not in _provisioned`, so any caller passing
+# provision=True re-ran the DDL regardless of the memo. And because the check is
+# check-then-act, concurrent requests passed it together and ran the same
+# CREATE/ALTER statements in separate transactions — which Postgres resolves by
+# killing one with DeadlockDetected, seen as an intermittent 500 on a read that
+# changes no schema. Diagnosed in discussion_threaded_communication, which
+# carries this file nearly verbatim.
 _provisioned: set[str] = set()
+_provision_lock = threading.Lock()
 
 
 def connect_for_tenant(config: Config, tenant: str, provision: bool = False, readonly: bool = False):
     """A connection whose ``search_path`` is the tenant's schema (then ``public``
-    for the extensions). The schema is ensured on the first connection to a tenant
-    in this process (and whenever ``provision=True``), so reads never hit a missing
-    table on a tenant that hasn't been ingested yet.
+    for the extensions). The schema is ensured once per tenant per process, so
+    reads never hit a missing table on a tenant that hasn't been ingested yet.
+
+    ``provision=True`` marks a caller that *requires* the tables rather than
+    merely reading them; it no longer forces the DDL to re-run (see above).
 
     ``readonly=True`` routes reads to the replica during a master outage and **skips
     schema DDL** — a read-only standby can't run it, and replication keeps the schema
     in sync."""
     conn = connect(config, readonly=readonly)
-    if not readonly and (provision or tenant not in _provisioned):
-        name = ensure_tenant_schema(conn, tenant, config.embedding_dimension)
-        _provisioned.add(tenant)
-    else:
-        name = schema_name(tenant)
+    name = schema_name(tenant)
+    if not readonly and tenant not in _provisioned:
+        with _provision_lock:
+            if tenant not in _provisioned:   # another thread may have just done it
+                ensure_tenant_schema(conn, tenant, config.embedding_dimension)
+                _provisioned.add(tenant)
     with conn.cursor() as cur:
         cur.execute(f'SET search_path TO "{name}", public')
         timeout = int(getattr(config, "db_statement_timeout_ms", 0) or 0)
