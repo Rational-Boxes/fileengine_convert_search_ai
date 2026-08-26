@@ -154,3 +154,82 @@ def test_read_only_failover_pauses_polls_and_recovers():
     assert ing.degraded is False
     # The event was processed exactly once successfully (idempotent retries before).
     assert ing.pipeline.calls == 3
+
+
+# --- PEL recovery on startup ------------------------------------------------
+#
+# XREADGROUP ">" returns only entries never delivered to the group, so anything
+# in flight when the worker stopped is invisible to run_once and stays pending
+# forever. read_pending existed but only the read-only sleep/poll mode used it,
+# so an ordinary restart mid-conversion stranded events permanently.
+
+class _PendingSource:
+    """A source with entries sitting in this consumer's PEL."""
+
+    def __init__(self, pending, new=None, fail_pending=False):
+        self._pending = list(pending)
+        self._new = list(new or [])
+        self.fail_pending = fail_pending
+        self.acked = []
+        self.grouped = False
+
+    def ensure_group(self):
+        self.grouped = True
+
+    def read_pending(self, count=32):
+        if self.fail_pending:
+            raise RuntimeError("redis unavailable")
+        batch, self._pending = self._pending[:count], self._pending[count:]
+        return batch
+
+    def read(self, count=32, block_ms=5000):
+        batch, self._new = self._new[:count], []
+        return batch
+
+    def ack(self, ids):
+        self.acked.extend(ids)
+
+
+def _ingestor_with(source):
+    from convert_search_ai.ingest import Ingestor
+    ing = Ingestor.__new__(Ingestor)
+    ing.source = source
+    ing.handled = []
+    ing.handle = lambda ev: ing.handled.append(ev)
+    return ing
+
+
+def test_startup_recovers_events_stranded_by_a_restart():
+    src = _PendingSource(pending=[("1-0", {"file_uid": "a"}), ("2-0", {"file_uid": "b"})])
+    ing = _ingestor_with(src)
+
+    assert ing.drain_pending() == 2
+    assert [e["file_uid"] for e in ing.handled] == ["a", "b"]
+    assert src.acked == ["1-0", "2-0"]          # and they leave the PEL
+
+
+def test_a_poison_pending_entry_is_acked_rather_than_replayed_forever():
+    src = _PendingSource(pending=[("1-0", {"file_uid": "bad"})])
+    ing = _ingestor_with(src)
+
+    def boom(_ev):
+        raise RuntimeError("cannot parse")
+
+    ing.handle = boom
+    assert ing.drain_pending() == 1
+    assert src.acked == ["1-0"]
+
+
+def test_recovery_failure_never_stops_the_worker_starting():
+    """New events matter more than old ones: a Redis hiccup during recovery must
+    not keep the worker down."""
+    src = _PendingSource(pending=[], fail_pending=True)
+    ing = _ingestor_with(src)
+    ing.run_once = lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt)
+    ing.config = type("C", (), {"events_stream": "s", "events_group": "g"})()
+
+    try:
+        ing.run_forever()
+    except KeyboardInterrupt:
+        pass
+    assert src.grouped is True                  # got past recovery to the loop

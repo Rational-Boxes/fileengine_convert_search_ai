@@ -165,3 +165,69 @@ def test_directory_is_skipped():
 def test_missing_file():
     p = ConversionPipeline(mf=FakeMF(), store=FakeStore())
     assert p.convert("nope", "default").status == "missing"
+
+
+# --- indexing failures must be retryable ------------------------------------
+#
+# A document that HAS text but could not be embedded used to be recorded as
+# "converted" — the same status as a document with no text at all. Because the
+# idempotency guard counts "converted" as already-done, nothing ever retried it:
+# not redelivery, not a reconcile sweep. Twenty-two documents sat unsearchable
+# behind a swallowed exception.
+
+class _BoomIndexer:
+    """Fails on demand, like an embedding API rejecting an oversized chunk."""
+
+    def __init__(self):
+        self.fail = True
+        self.calls = 0
+
+    def index(self, tenant, file_uid, markdown, version=None):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("400 - input exceeds the model's context length")
+        return 1
+
+
+def test_a_failed_index_is_recorded_as_index_failed_not_converted():
+    mf = FakeMF()
+    mf.add_file("f1", "notes.txt", content=b"hello world", version="v1")
+    store = FakeStore()
+    p = ConversionPipeline(mf=mf, store=store, indexer=_BoomIndexer())
+
+    out = p.convert("f1", "default")
+
+    assert out.status == "index_failed"
+    assert store.docs[("default", "f1")].status == "index_failed"
+
+
+def test_a_failed_index_is_retried_and_can_succeed():
+    """The whole point: the next attempt must actually run."""
+    mf = FakeMF()
+    mf.add_file("f1", "notes.txt", content=b"hello world", version="v1")
+    store = FakeStore()
+    idx = _BoomIndexer()
+    p = ConversionPipeline(mf=mf, store=store, indexer=idx)
+
+    assert p.convert("f1", "default").status == "index_failed"
+    idx.fail = False
+    again = p.convert("f1", "default")          # NOT skipped as up-to-date
+    assert again.status == "indexed"
+    assert idx.calls == 2
+    assert store.docs[("default", "f1")].status == "indexed"
+
+
+def test_a_document_with_no_text_stays_converted_and_is_not_retried():
+    """"converted" is still the right terminal state for an image: there is
+    nothing to embed, and re-converting it on every sweep would be waste."""
+    mf = FakeMF()
+    mf.add_file("f1", "photo.bin", content=b"\x00\x01\x02", version="v1")
+    store = FakeStore()
+    idx = _BoomIndexer()
+    p = ConversionPipeline(mf=mf, store=store, indexer=idx)
+
+    first = p.convert("f1", "default")
+    assert first.status in ("converted", "unsupported")
+    if first.status == "converted":
+        assert idx.calls == 0                   # never attempted: no markdown
+        assert p.convert("f1", "default").status == "skipped"

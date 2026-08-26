@@ -37,7 +37,42 @@ def test_splits_large_doc_with_contiguous_ordinals():
     assert all(len(c.text) < 800 for c in cs)  # roughly bounded by target + a block
 
 
-def test_oversized_block_kept_whole():
-    big = "x" * 5000  # a single block with no blank lines
+def test_an_oversized_block_is_split_not_kept_whole():
+    """This test used to assert the opposite — one 5000-char chunk from a
+    1000-char target — and that expectation is what reached production.
+
+    Keeping a block whole protects a table from being cut mid-structure, which is
+    a real benefit, but it left chunk size unbounded. Embedding models have a hard
+    input limit (bge-base-en-v1.5: 512 tokens) and exceeding it fails the request
+    for the ENTIRE document. Cutting a table costs one seam; refusing to cut cost
+    22 documents their searchability, silently."""
+    # Distinctive lines, so "nothing was dropped" is checkable. A plain run of
+    # 5000 x's cannot distinguish loss from the deliberate overlap duplication.
+    lines = ["line-%04d" % i for i in range(500)]
+    big = "\n".join(lines)
     cs = chunk_markdown(big, target_chars=1000)
-    assert len(cs) == 1 and len(cs[0].text) == 5000
+    assert len(cs) > 1
+    assert max(len(c.text) for c in cs) <= 1000
+    joined = "\n".join(c.text for c in cs)
+    assert all(ln in joined for ln in lines), "a line was lost in the split"
+
+
+def test_no_chunk_can_exceed_the_target_however_blocks_combine():
+    """The cap has to survive the overlap: a chunk carries the previous one's
+    tail as a prefix, so splitting blocks at the full target would let
+    tail + block land at target + overlap."""
+    md = "\n\n".join(["y" * 900, "z" * 4000, "short", "w" * 1500])
+    cs = chunk_markdown(md, target_chars=1000, overlap_chars=150)
+    assert max(len(c.text) for c in cs) <= 1000
+
+
+def test_a_table_is_split_on_row_boundaries():
+    """Splitting is unavoidable; tearing a row in half is not."""
+    rows = ["| a%d | b%d |" % (i, i) for i in range(300)]
+    cs = chunk_markdown("\n".join(rows), target_chars=400)
+    assert max(len(c.text) for c in cs) <= 400
+    for c in cs:
+        for line in c.text.splitlines():
+            if not line.strip():
+                continue                       # blank separator between packed blocks
+            assert line in rows, "a table row was cut mid-line: %r" % line
