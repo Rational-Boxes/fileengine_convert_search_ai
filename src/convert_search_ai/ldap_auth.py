@@ -99,7 +99,18 @@ def _authenticate_against(uri: str, cfg, username: str, password: str) -> Identi
         raise _ServerUnreachable(uri) from e
 
     try:
-        svc.search(cfg.ldap_user_base, f"(uid={username})", search_scope=SUBTREE, attributes=["cn"])
+        # Match uid OR mail. The platform hands services an EMAIL as their
+        # identity — FILEENGINE_CSAI_USER, FILEENGINE_DISC_USER and
+        # FILEENGINE_FA_USER all come from fileengine_ldap_admin_email — so a
+        # uid-only filter never matches, the search returns nothing, and the
+        # caller gets a flat 401 that looks like a wrong password.
+        #
+        # It cost a real outage: folder_actions' sorter fetches document text
+        # from csai, got 401 on every attempt, and left its events un-acked, so
+        # folder actions silently stopped firing while every container looked
+        # healthy. ldap_manager already filters this way; csai did not.
+        svc.search(cfg.ldap_user_base, f"(|(uid={username})(mail={username}))",
+                   search_scope=SUBTREE, attributes=["cn"])
         if not svc.entries:
             return ident
         user_dn = svc.entries[0].entry_dn
