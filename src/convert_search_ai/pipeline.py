@@ -74,6 +74,10 @@ class ConversionPipeline:
         # Idempotency: same version already converted/indexed -> nothing to do
         # (unless forced — an explicit user (re)generate must run the plugins).
         prior = self.store.get_status(tenant, file_uid)
+        # "index_failed" is deliberately absent: it is the one status that MUST be
+        # retried. "converted" stays here because it is the correct terminal state
+        # for a file with no text to embed (an image, say) — re-converting those
+        # on every sweep would be waste, not recovery.
         already_done = bool(prior and prior.source_version == version
                             and prior.status in ("converted", "indexed"))
         if already_done and not force:
@@ -121,7 +125,17 @@ class ConversionPipeline:
                 self.indexer.index(tenant, file_uid, result.markdown, version)
                 status = "indexed"
             except Exception:
-                log.exception("indexing failed for %s (left 'converted')", file_uid)
+                # "index_failed", not "converted". A document that HAS text but
+                # could not be embedded is not in the same state as one that
+                # simply has no text to embed, and recording both as "converted"
+                # made the failure invisible and permanent: the idempotency guard
+                # counts "converted" as already-done, so neither redelivery nor a
+                # reconcile sweep ever tried again. Twenty-two documents sat that
+                # way, unsearchable, with nothing to show for it but a log line
+                # in a container that had since been replaced.
+                status = "index_failed"
+                log.exception("indexing failed for %s (left '%s'; will be retried)",
+                              file_uid, status)
 
         self.store.upsert(tenant, file_uid, source_version=version, mime=mime,
                           name=info.name, content_md=result.markdown, status=status)
