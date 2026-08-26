@@ -20,10 +20,29 @@ Runs after conversion (the pipeline calls it when an Indexer is wired). Idempote
 ``EmbeddingProvider`` (default: the offline ``hash`` provider)."""
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from .chunking import chunk_markdown
 from .config import Config
+
+
+
+#: A chunk the embedding model rejects for length. Matched on the message rather
+#: than a status code because the providers differ; all of them say this.
+log = logging.getLogger("convert_search_ai.indexing")
+
+_MAX_SPLIT_DEPTH = 6
+#: Last resort if a chunk is still rejected after repeated halving.
+_TRUNCATE_CHARS = 400
+
+_TOO_LONG = ("context length", "input tokens", "maximum context", "too long",
+             "max_tokens", "reduce the length")
+
+
+def _is_length_error(exc: Exception) -> bool:
+    m = str(exc).lower()
+    return any(p in m for p in _TOO_LONG)
 
 
 class Indexer:
@@ -53,10 +72,52 @@ class Indexer:
         if not chunks:
             self.chunks.delete(tenant, file_uid)
             return 0
-        vectors = self.embedder.embed([c.text for c in chunks])
-        items = [(c.ordinal, c.text, v) for c, v in zip(chunks, vectors)]
+        # Ordinals are assigned AFTER fitting: a chunk the model rejects gets
+        # split, so the final count can exceed len(chunks) and the original
+        # ordinals would collide.
+        texts = self._fit_to_model([c.text for c in chunks])
+        vectors = self.embedder.embed(texts)
+        items = [(i, text, v) for i, (text, v) in enumerate(zip(texts, vectors))]
         self.chunks.replace(tenant, file_uid, items)
         return len(items)
+
+
+    def _fit_to_model(self, texts):
+        """Return chunk texts the embedder will actually accept.
+
+        The chunker bounds chunks by CHARACTERS, which is a proxy for tokens and
+        not a reliable one: prose runs ~4 chars/token, but an IFC model's GUIDs
+        and long identifiers run closer to 2.3, so a 1200-char chunk arrived as
+        513 tokens against a 512-token model — and one rejected chunk fails the
+        request for the whole document.
+
+        Rather than guess a smaller character budget (the same mistake with a
+        different constant, and it would over-split ordinary prose), a batch the
+        model rejects for length is halved until it fits. Self-correcting and
+        model-agnostic: no tokenizer, no per-model table, and it keeps working if
+        the embedding model is swapped for one with a different limit."""
+        return self._fit(list(texts), 0)
+
+    def _fit(self, texts, depth):
+        if not texts:
+            return []
+        try:
+            self.embedder.embed(texts)
+            return texts
+        except Exception as e:
+            if not _is_length_error(e):
+                raise
+        if len(texts) > 1:                      # narrow to the offending chunk
+            mid = len(texts) // 2
+            return self._fit(texts[:mid], depth) + self._fit(texts[mid:], depth)
+        text = texts[0]
+        if depth >= _MAX_SPLIT_DEPTH or len(text) < 2:
+            log.warning("chunk still rejected after %d split(s); truncating to %d chars",
+                        depth, _TRUNCATE_CHARS)
+            return [text[:_TRUNCATE_CHARS]]
+        mid = len(text) // 2
+        log.info("embedder rejected a %d-char chunk; halving and retrying", len(text))
+        return self._fit([text[:mid]], depth + 1) + self._fit([text[mid:]], depth + 1)
 
     def remove(self, tenant: str, file_uid: str) -> None:
         self.chunks.delete(tenant, file_uid)
