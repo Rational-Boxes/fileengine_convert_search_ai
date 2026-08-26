@@ -140,10 +140,44 @@ class Ingestor:
             processed += 1
         return processed
 
+    def drain_pending(self, count: int = 32) -> int:
+        """Re-handle this consumer's delivered-but-un-acked entries. Returns how
+        many were recovered.
+
+        XREADGROUP with ">" returns only entries NEVER delivered to the group, so
+        anything in flight when the worker last stopped is invisible to run_once
+        and stays pending forever. read_pending existed but only the read-only
+        sleep/poll mode used it, so an ordinary restart mid-conversion stranded
+        those events permanently: 21 sat in the PEL on the production deployment,
+        untouched for five hours, because nothing re-reads a consumer's own PEL
+        and the reconcile sweep skips anything already marked converted.
+
+        The consumer name is stable, so reading id "0" hands them back to us."""
+        recovered = 0
+        while True:
+            batch = self.source.read_pending(count=count)
+            if not batch:
+                return recovered
+            for msg_id, event in batch:
+                try:
+                    self.handle(event)
+                except Exception:
+                    log.exception("unhandled error replaying pending entry %s", msg_id)
+                self.source.ack([msg_id])
+                recovered += 1
+
     def run_forever(self) -> None:
         self.source.ensure_group()
         log.info("ingest worker started; stream=%s group=%s",
                  self.config.events_stream, self.config.events_group)
+        # Drain our own PEL FIRST, wrapped so a recovery failure can never stop
+        # the worker starting: new events matter more than old ones.
+        try:
+            recovered = self.drain_pending()
+            if recovered:
+                log.info("recovered %d event(s) stranded by a previous stop", recovered)
+        except Exception:
+            log.exception("failed to drain pending entries; continuing")
         while True:
             self.run_once()
 
