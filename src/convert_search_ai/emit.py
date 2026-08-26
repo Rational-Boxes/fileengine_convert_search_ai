@@ -57,7 +57,13 @@ FAILED = "conversion.failed"
 # (stat/content not found) are NOT fresh resolutions — the former was already
 # emitted when the version first resolved, the latter is a transient/not-found
 # the reconcile sweep backstops — so neither emits.
-_TERMINAL_STATUSES = frozenset({"converted", "indexed", "unsupported"})
+#: Statuses that represent a RESOLVED conversion and therefore warrant a terminal
+#: event. "index_failed" belongs here: the renditions and the extracted text are
+#: present and usable — only the embedding failed — so every consumer except
+#: search should proceed exactly as for "indexed". Leaving it out meant a document
+#: whose embedding failed announced nothing at all, and anything waiting on the
+#: announcement (the sorter defers on it) waited forever.
+_TERMINAL_STATUSES = frozenset({"converted", "indexed", "index_failed", "unsupported"})
 
 
 def _now_ts() -> str:

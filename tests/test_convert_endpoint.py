@@ -35,9 +35,23 @@ class FakePipeline:
         return self.outcome
 
 
+class FakeEmitter:
+    """Records the terminal events the endpoint announces.
+
+    The endpoint used to convert in silence, which is what left folder_actions'
+    sorter deferring on a conversion.complete that never came."""
+
+    def __init__(self):
+        self.emitted = []
+
+    def emit_conversion(self, event, outcome):
+        self.emitted.append((event, outcome))
+
+
 class FakeIngestor:
     def __init__(self, pipeline):
         self.pipeline = pipeline
+        self.emitter = FakeEmitter()
 
 
 class FakeGate:
@@ -91,3 +105,20 @@ def test_convert_requires_auth(monkeypatch):
     client, _tok, _pipe, _prov = _setup(monkeypatch, allow=True)
     r = client.post("/documents/f1/convert")
     assert r.status_code == 401
+
+
+def test_the_endpoint_announces_its_outcome(monkeypatch):
+    """A conversion that resolves must emit a terminal event whichever path ran
+    it. folder_actions' sorter defers on file.moved by calling this endpoint and
+    waiting for the ensuing conversion.complete; without the emit that deferral
+    is a dead end and the file is never sorted."""
+    client, tok, _pipe, _prov = _setup(monkeypatch, allow=True)
+    r = client.post("/documents/f1/convert", headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 200, r.text
+
+    emitter = client.app.state.ingestor.emitter
+    assert len(emitter.emitted) == 1, "endpoint converted without announcing it"
+    event, outcome = emitter.emitted[0]
+    assert event["file_uid"] == "f1"
+    assert event["tenant"] == "default"
+    assert outcome.status == r.json()["status"]

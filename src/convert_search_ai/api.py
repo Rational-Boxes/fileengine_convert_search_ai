@@ -414,8 +414,25 @@ async def convert_document(file_uid: str, request: Request,
     # force=True: this is an explicit user (re)generate, so run the plugins even
     # if the version was already converted/indexed (e.g. a text file indexed
     # before the preview plugin existed has no renditions yet).
+    ing = _ingestor(request.app)
     out = await run_in_threadpool(
-        partial(_ingestor(request.app).pipeline.convert, force=True), file_uid, identity.tenant)
+        partial(ing.pipeline.convert, force=True), file_uid, identity.tenant)
+
+    # Announce the outcome, exactly as the worker path does.
+    #
+    # This endpoint used to convert and return in silence, and folder_actions'
+    # sorter depends on the announcement: on file.moved with no text yet it calls
+    # this endpoint and defers, expecting the ensuing conversion.complete to
+    # re-fire the sort. The event never came, so a deferral was a dead end — the
+    # file was converted and indexed while the sort that asked for it waited
+    # forever. Five files sat in an inbox that way.
+    #
+    # A conversion that resolves must say so, whichever path ran it.
+    await run_in_threadpool(
+        ing.emitter.emit_conversion,
+        {"tenant": identity.tenant, "actor": identity.user, "file_uid": file_uid},
+        out)
+
     return JSONResponse(status_code=200, content={
         "file_uid": file_uid,
         "status": out.status,
