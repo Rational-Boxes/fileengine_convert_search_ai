@@ -94,6 +94,7 @@ Notes on the as-built envelope:
 | `acl.changed` | permission grant/revoke on a resource | **governance** — adds `principal` + `permissions`; invalidate cached permission decisions for `file_uid` |
 | `role.assigned` / `role.member_removed` | user added to / removed from a role | **governance** — adds `role` + `member`; invalidate cached decisions for the member |
 | `role.deleted` | a role was deleted | **governance** — adds `role` (empty `member`); invalidate for all members of the role |
+| `accountability.committed` | the core committed a security record to its accountability chain | **a hint, not data** — adds `accountability_seq`. Only `audit_service` consumes it; every other consumer must ignore it |
 
 **Governance events** (`acl.changed`, `role.*`) are first-class: they change
 *effective* access. `acl.changed` is resource-scoped (`file_uid`); the `role.*`
@@ -101,6 +102,30 @@ events are not resource-scoped — a role change fans out to every resource the
 member(s) could reach, so a permission-cache consumer invalidates by member (or
 by role on `role.deleted`). These events add fields beyond the base envelope:
 `principal`/`permissions` (ACL) and `role`/`member` (role).
+
+**`accountability.committed` is a freshness hint, and nothing more.** The core
+writes a guaranteed, hash-chained accountability record in the same transaction
+as the operation it describes, and `audit_service` reads that record forward by
+cursor over gRPC. This event carries only `{tenant, accountability_seq}`, and its
+consumer does **not** process the payload — it reads the core's table
+immediately, out of schedule. That buys latency without making anything depend on
+the hint arriving.
+
+Which is exactly why it rides *this* stream rather than the durable audit one.
+Every property this contract gives — fail-open, trimmed, drop-oldest (§6.4) — is
+correct for a notification and unacceptable for a system of record. A lost hint
+costs latency only; the scheduled poll collects the record regardless. **Nothing
+is ever only on the queue.**
+
+The seq also gives the consumer a staleness check it could not otherwise have:
+the hint asserts "at least seq N exists", so a read that does not show N is
+reading state that has not caught up (a replica behind the primary, say) and must
+retry rather than advance its cursor. Without that assertion the condition is
+invisible, because it looks identical to "no new records".
+
+Consumers other than `audit_service` should ignore this type, as they should
+ignore any type they do not recognise. See
+`file_engine_core/design_documents/PROPOSAL_accountability_record.md` §4.3.
 
 **Rendition writes (as built):** the publisher **emits** rendition-child writes
 **flagged `is_rendition: true`** (it does not suppress them). A conversion
