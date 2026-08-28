@@ -22,7 +22,7 @@ unqualified. ``psycopg`` is imported lazily via ``db``."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional, Sequence
 
 from .config import Config
 
@@ -31,6 +31,18 @@ from .config import Config
 class DocStatus:
     source_version: str
     status: str
+
+
+@dataclass
+class DocRow:
+    """One document as the reconcile sweep sees it — enough to decide whether it
+    needs re-converting without fetching its content."""
+    file_uid: str
+    status: str
+    mime: str
+    name: str
+    source_version: str
+    chunks: int
 
 
 class DocumentStore:
@@ -49,6 +61,37 @@ class DocumentStore:
             )
             row = cur.fetchone()
             return DocStatus(row[0], row[1]) if row else None
+
+    def list_documents(self, tenant: str, *, statuses: Optional[Sequence[str]] = None,
+                       limit: Optional[int] = None) -> List[DocRow]:
+        """Documents in this tenant, with their chunk counts.
+
+        The chunk count is the point: status alone cannot distinguish a document
+        that holds no text from one whose text never reached the index, and the
+        sweep has to tell those apart. Counted with a LEFT JOIN aggregate rather
+        than a per-row query so a sweep over a large corpus is one round trip.
+
+        ``statuses`` filters server-side; ``None`` returns every row, which is what
+        the sweep wants — it re-judges 'unsupported' and 'converted' against the
+        current plugin registry, so it cannot pre-filter on status without
+        deciding the answer first."""
+        sql = ["SELECT d.file_uid, d.status, d.mime, d.name, d.source_version,",
+               "       count(c.id) AS chunks",
+               "  FROM documents d LEFT JOIN chunks c ON c.file_uid = d.file_uid"]
+        params: list = []
+        if statuses:
+            sql.append(" WHERE d.status = ANY(%s)")
+            params.append(list(statuses))
+        sql.append(" GROUP BY d.file_uid, d.status, d.mime, d.name, d.source_version")
+        sql.append(" ORDER BY d.updated_at")
+        if limit:
+            sql.append(" LIMIT %s")
+            params.append(int(limit))
+        with self._conn(tenant, readonly=True) as conn, conn.cursor() as cur:
+            cur.execute("\n".join(sql), params)
+            return [DocRow(file_uid=r[0], status=r[1], mime=r[2] or "", name=r[3] or "",
+                           source_version=r[4] or "", chunks=int(r[5]))
+                    for r in cur.fetchall()]
 
     def upsert(self, tenant: str, file_uid: str, *, source_version: str, mime: str = "",
                name: str = "", path: str = "", content_md: Optional[str] = None,

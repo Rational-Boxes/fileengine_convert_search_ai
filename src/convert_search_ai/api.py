@@ -37,7 +37,7 @@ from fastapi import (APIRouter, Body, Depends, HTTPException, Query, Request,
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
-from . import __version__
+from . import __version__, audit
 from .config import Config
 from .guards import GuardError
 from .http_auth import extract_tenant, resolve_identity
@@ -376,15 +376,52 @@ async def _stream_answer(ws: WebSocket, chat_service, identity, payload: dict, m
 
 
 # ----------------------------- ingestion -----------------------------------
+#: Tenant-administrator roles, matching routers/mcp_admin.
+_RECONCILE_ADMIN_ROLES = {"administrators", "tenant_admin", "system_admin"}
+
+
+def _require_admin(request: Request) -> Identity:
+    """Tenant administrator, or 403."""
+    ident = _identity(request)
+    if not (set(ident.roles) & _RECONCILE_ADMIN_ROLES):
+        raise HTTPException(status_code=403, detail="tenant administrator required")
+    return ident
+
+
 @router.post("/ingest/reconcile")
 def ingest_reconcile(request: Request, tenant: str | None = Query(default=None),
-                     max_files: int | None = Query(default=None)) -> JSONResponse:
+                     mode: str = Query(default="sweep", pattern="^(sweep|full)$"),
+                     max_files: int | None = Query(default=None),
+                     ident: Identity = Depends(_require_admin)) -> JSONResponse:
+    """Trigger a reconcile pass. Tenant administrators only.
+
+    This route previously took no identity at all, while every other route on the
+    service takes one. The edge proxies /csai/ as a prefix, so it was reachable
+    unauthenticated from the public internet — and with max_files omitted it walks
+    the entire corpus synchronously as the indexing agent, which makes an open
+    endpoint both a denial-of-service lever and a disclosure of how many documents
+    a tenant holds and what state they are in.
+
+    ``mode=sweep`` (default) re-judges the recorded documents against the current
+    plugin registry and retries what needs it — bounded by the number of broken
+    documents. ``mode=full`` additionally walks the tree to find files that were
+    never recorded at all; it is O(corpus) and should carry ``max_files``.
+
+    The tenant is taken from the caller's identity. It was previously a free query
+    parameter on an unauthenticated route, so anyone could name any tenant; a
+    tenant admin now reconciles their own tenant and no one else's."""
     config = request.app.state.config
     if not _check_core(config):
         return JSONResponse(status_code=503, content={"error": "core not reachable"})
-    from .reconcile import reconcile
-    counts = reconcile(config, tenant, max_files=max_files)
-    return JSONResponse(status_code=200, content={"tenant": tenant or config.tenant, "counts": counts})
+    if tenant and tenant != ident.tenant:
+        raise HTTPException(status_code=403, detail="cannot reconcile another tenant")
+    from .reconcile import reconcile, sweep
+    target = ident.tenant
+    counts = (reconcile if mode == "full" else sweep)(config, target, max_files=max_files)
+    audit.record(action="reconcile", user=ident.user, tenant=target, result="ok",
+                 mode=mode, counts=counts)
+    return JSONResponse(status_code=200,
+                        content={"tenant": target, "mode": mode, "counts": counts})
 
 
 @router.post("/documents/{file_uid}/convert")

@@ -130,3 +130,19 @@ class ConversionPlugin(ABC):
     def extract(self, data: bytes, mime: str, name: str) -> Optional[str]:
         """Extracted Markdown/text content for the source (default: none)."""
         return None
+
+    def extracts_text(self) -> bool:
+        """Whether this plugin yields indexable text for the types it supports.
+
+        Derived from whether the subclass overrides :meth:`extract`, not declared
+        per plugin: a flag would be one more thing a new converter could forget to
+        set, and the failure would be silent in the direction that hurts — a
+        document quietly absent from the index.
+
+        The reconcile sweep needs this to tell "no text by nature" (an image, a
+        video) from "text we failed to get". Both look like a document with no
+        chunks; only the second is a fault, and without this the sweep would
+        either re-convert every JPEG forever or keep skipping the PDF that
+        actually failed.
+        """
+        return type(self).extract is not ConversionPlugin.extract

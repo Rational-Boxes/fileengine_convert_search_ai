@@ -197,12 +197,51 @@ def build_ingestor(config: Config) -> Ingestor:
     return Ingestor(config, pipeline, store, source)
 
 
+def startup_sweep(config: Config) -> None:
+    """Run the reconcile sweep once, in the background, at worker startup.
+
+    In a thread, and never fatally: the sweep is recovery, so it must not delay
+    the worker's real job or take it down. An exception here would otherwise stop
+    a service that was working fine before the sweep was added — trading a
+    backlog of unindexed documents for no ingestion at all, which is worse than
+    the fault it fixes.
+
+    Deliberately NOT a periodic loop. A reconcile that exits after one pass under
+    a restart-always policy reads as a healthy service while it restarts forever,
+    and the logs look identical either way; the only tell is the restart count.
+    This runs inside the long-lived worker instead, so there is no process whose
+    whole life is one sweep."""
+    import threading
+
+    def _run() -> None:
+        from .reconcile import reconcile, sweep
+
+        cap = getattr(config, "reconcile_max_files", 0) or None
+        try:
+            log.info("startup sweep: retrying documents that still need conversion")
+            log.info("startup sweep: %s", sweep(config, max_files=cap))
+        except Exception:
+            log.exception("startup sweep failed; the worker continues")
+        if getattr(config, "reconcile_full_on_startup", False):
+            try:
+                log.info("startup sweep: full tree walk")
+                log.info("startup walk: %s", reconcile(config, max_files=cap))
+            except Exception:
+                log.exception("startup tree walk failed; the worker continues")
+
+    threading.Thread(target=_run, name="csai-startup-sweep", daemon=True).start()
+
+
 def main() -> None:
     from .config import load_dotenv
 
     logging.basicConfig(level=logging.INFO)
     load_dotenv()
-    build_ingestor(Config()).run_forever()
+    config = Config()
+    ingestor = build_ingestor(config)
+    if getattr(config, "reconcile_on_startup", True):
+        startup_sweep(config)
+    ingestor.run_forever()
 
 
 if __name__ == "__main__":

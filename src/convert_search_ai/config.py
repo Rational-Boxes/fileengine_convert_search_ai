@@ -176,6 +176,25 @@ class Config:
         self.max_context_chars = int(_env("CSAI_MAX_CONTEXT_CHARS", "12000"))
         self.max_text_bytes = int(_env("CSAI_MAX_TEXT_BYTES", str(5 * 1024 * 1024)))
         self.db_statement_timeout_ms = int(_env("CSAI_DB_STATEMENT_TIMEOUT_MS", "5000"))
+
+        # --- Reconcile sweep (worker) ---------------------------------------
+        # The sweep re-judges every recorded document against the CURRENT plugin
+        # registry and retries whatever still needs converting. Running it at
+        # startup is what makes installing a converter a two-step operation —
+        # drop the plugin in, restart — instead of something that only affects
+        # files uploaded from then on.
+        #
+        # On by default because it is cheap: one query plus work proportional to
+        # the number of BROKEN documents, not to corpus size. A healthy corpus
+        # sweeps to zero retries.
+        self.reconcile_on_startup = _bool("CSAI_RECONCILE_ON_STARTUP", True)
+        # Optional full tree walk at startup as well. OFF by default — it lists
+        # the entire corpus recursively and is the only way to find files whose
+        # events were missed outright, but that is a rare fault and an expensive
+        # thing to do on every restart.
+        self.reconcile_full_on_startup = _bool("CSAI_RECONCILE_FULL_ON_STARTUP", False)
+        # Cap on documents retried per sweep; 0 = no cap.
+        self.reconcile_max_files = int(_env("CSAI_RECONCILE_MAX_FILES", "0"))
         self.audit_log_file = _env("CSAI_AUDIT_LOG_FILE", "")            # empty -> stderr
 
         # --- Pluggable AI providers (DEVELOPMENT_PLAN §7; chosen at deploy time) ---
