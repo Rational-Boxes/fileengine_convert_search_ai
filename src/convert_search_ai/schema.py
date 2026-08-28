@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS "{schema}".documents (
     path            TEXT        NOT NULL DEFAULT '',
     content_md      TEXT,                               -- extracted Markdown (NULL until extracted)
     status          TEXT        NOT NULL DEFAULT 'pending'
-                    CHECK (status IN ('pending','converting','converted','indexed','unsupported','error')),
+                    CHECK (status IN ('pending','converting','converted','indexed','index_failed','unsupported','error')),
     error           TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -169,6 +169,20 @@ ALTER TABLE "{schema}".mcp_integration ADD COLUMN IF NOT EXISTS oauth_client_id 
 ALTER TABLE "{schema}".mcp_integration ADD COLUMN IF NOT EXISTS oauth_scope TEXT NOT NULL DEFAULT '';
 ALTER TABLE "{schema}".mcp_integration ADD COLUMN IF NOT EXISTS allowed_roles JSONB;
 ALTER TABLE "{schema}".mcp_integration DROP CONSTRAINT IF EXISTS mcp_integration_auth_type_check;
+-- Self-heal tenants provisioned before 'index_failed' existed. The status was
+-- added to the pipeline WITHOUT widening this constraint, so the write that was
+-- supposed to record an embedding failure raised CheckViolation instead, the
+-- exception escaped convert(), and the row kept the 'converting' value written
+-- moments earlier. Permanently: 'converting' is not a terminal state, so nothing
+-- reported it, and the document simply never appeared in the index.
+--
+-- DROP-then-ADD rather than a new constraint name, so the constraint keeps the
+-- name Postgres generated for it and re-running this is a no-op. CREATE TABLE
+-- IF NOT EXISTS above cannot fix an existing tenant, which is the whole reason
+-- this block exists.
+ALTER TABLE "{schema}".documents DROP CONSTRAINT IF EXISTS documents_status_check;
+ALTER TABLE "{schema}".documents ADD CONSTRAINT documents_status_check
+    CHECK (status IN ('pending','converting','converted','indexed','index_failed','unsupported','error'));
 '''
 
 

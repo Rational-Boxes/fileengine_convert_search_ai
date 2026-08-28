@@ -39,6 +39,31 @@ class PluginRegistry:
                 continue
         return None
 
+    def supports(self, mime: str) -> bool:
+        """True when ANY registered plugin claims ``mime`` — text or renditions.
+
+        Kept separate from :meth:`extracts_text` because a converter that only
+        renders is still new support: adding an image or video format produces
+        thumbnails and previews and no text at all, so a text-only test would
+        skip exactly the files a new image plugin was installed to handle."""
+        return self.for_mime(mime) is not None
+
+    def extracts_text(self, mime: str) -> bool:
+        """True when a registered plugin claims ``mime`` *and* extracts text from it.
+
+        This is the sweep's definition of "this file belongs in the index", and it
+        is deliberately evaluated against the CURRENT registry: plugin coverage
+        grows, so a file recorded ``unsupported`` before its converter existed is
+        indistinguishable from one that will never be supported — except by asking
+        the registry as it stands today."""
+        plugin = self.for_mime(mime)
+        if plugin is None:
+            return False
+        try:
+            return bool(plugin.extracts_text())
+        except Exception:
+            return False
+
     def convert(self, data: bytes, mime: str, name: str = "") -> ConversionResult:
         """Run the matching plugin. Unknown MIME → ``supported=False`` (not an error).
         A plugin that raises is treated as producing nothing (fail-soft)."""
