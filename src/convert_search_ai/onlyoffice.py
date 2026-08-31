@@ -57,6 +57,17 @@ def _ext(name: str) -> str:
     return (name or "").rsplit(".", 1)[-1].lower() if "." in (name or "") else ""
 
 
+def editable_extensions() -> tuple:
+    """Every extension the Document Server will open, as one list.
+
+    Exported so the capabilities endpoint can hand it to clients instead of each
+    of them keeping a copy — the SPA's own list carries a comment saying it
+    "mirrors the backend's editable set", which is a duplication waiting to
+    drift the next time a format is added here.
+    """
+    return tuple(_TYPE_MAP.keys())
+
+
 def document_type_for(name: str) -> Optional[Tuple[str, str]]:
     """``(documentType, fileType)`` for an editable office file, or ``None``.
 

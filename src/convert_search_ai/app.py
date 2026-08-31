@@ -168,6 +168,11 @@ def build_app(config: Config | None = None, *, search: SearchService | None = No
     app.include_router(mcp_admin_router)
     from .routers.onlyoffice import router as onlyoffice_router
     app.include_router(onlyoffice_router)
+
+    # What this deployment offers, so the SPA can hide controls for features it
+    # does not have rather than surfacing whichever endpoint is missing.
+    from .routers.capabilities import router as capabilities_router
+    app.include_router(capabilities_router)
     # Prometheus scrape endpoint, guarded by the same allowlist as the other
     # monitoring routes. Reports process and per-thread state so a stuck or
     # leaking service is visible to the same scraper that watches the core.
