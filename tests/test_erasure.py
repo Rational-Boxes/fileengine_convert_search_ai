@@ -33,9 +33,17 @@ class FakeCore:
         self.acks = []
         self.fail_ack = fail_ack
 
-    def list_pending_erasures(self, participant, limit=0, tenant=None):
+    def list_pending_erasures(self, participant, limit=0, tenant=None, all_tenants=True):
         assert participant == ERASURE_PARTICIPANT
-        return list(self._pending.get(tenant, []))
+        # The real sweep asks for EVERY tenant in one call and reads the tenant
+        # off each row. A fake that only answered per-tenant would keep passing
+        # a sweep that had gone back to guessing.
+        assert all_tenants, "the sweep must ask for all tenants, not a guessed list"
+        rows = []
+        for t, items in self._pending.items():
+            for it in items:
+                rows.append({**it, "tenant": t})
+        return rows
 
     def acknowledge_erasure(self, erasure_id, participant, complied=True, detail="",
                             tenant=None):
@@ -145,13 +153,17 @@ def test_the_sweep_picks_up_what_the_event_did_not():
     assert core.acks[0]["erasure_id"] == "e9"
 
 
-def test_the_sweep_only_visits_tenants_we_hold_data_for():
-    # A tenant we have never provisioned holds no derived data of ours, so there
-    # is nothing to erase and nothing to acknowledge. The core keeps offering an
-    # erasure until acknowledged, so a tenant that becomes active later picks up
-    # its backlog then.
-    core = FakeCore(pending={"other": [{"erasure_id": "e1", "uid": "u1",
-                                        "tenant": "other", "initiated_at": 1}]})
+def test_the_sweep_reaches_a_tenant_this_worker_has_never_served():
+    """The failure this replaced: sweeping only tenants we had seen traffic for.
+
+    A worker that has not served a tenant since starting still owes it any
+    erasure recorded there. Guessing the tenant set from local activity was wrong
+    in the quiet direction — the erasure sat unacknowledged for ever, and nothing
+    said so. Verified in production: an erasure in `filenginetest` was picked up
+    by csai and ignored by the two services that guessed `default`.
+    """
+    core = FakeCore(pending={"never-seen": [{"erasure_id": "e1", "uid": "u1",
+                                             "initiated_at": 1}]})
     ing = _ingestor(FakeStore(), core)
-    assert ing.sweep_erasures() == 0
-    assert core.acks == []
+    assert ing.sweep_erasures() == 1
+    assert core.acks[0]["tenant"] == "never-seen", "acknowledged in the row's own tenant"

@@ -190,21 +190,30 @@ class Ingestor:
         service that was down, or was restored from a backup taken before the
         erasure, converges without the instruction being redelivered.
         """
+        # ONE call, across every tenant. Sweeping only the tenants this worker
+        # has seen traffic for was wrong in the quiet direction: a tenant it had
+        # not served since starting was invisible to it, so an erasure there sat
+        # unacknowledged for ever with nothing saying so. The core is the
+        # authority on which tenants exist, so the core iterates.
+        try:
+            pending = self.core.list_pending_erasures(ERASURE_PARTICIPANT, limit=limit,
+                                                      all_tenants=True)
+        except Exception as e:            # noqa: BLE001
+            log.warning("erasure sweep: could not list pending erasures: %s", e)
+            return 0
+
         done = 0
-        for tenant in self._known_tenants():
+        for item in pending:
+            # The tenant the ROW carries, never a fixed one: acknowledging into
+            # the wrong schema would leave the real erasure outstanding while
+            # looking like it had been answered.
+            tenant = item.get("tenant") or "default"
             try:
-                pending = self.core.list_pending_erasures(
-                    ERASURE_PARTICIPANT, limit=limit, tenant=tenant)
-            except Exception as e:        # noqa: BLE001
-                log.warning("erasure sweep: could not list pending for %s: %s", tenant, e)
+                self._ensure_tenant(tenant)
+                self._honour_erasure(tenant, item["uid"], item["erasure_id"])
+                done += 1
+            except Exception:             # noqa: BLE001 — already logged; keep sweeping
                 continue
-            for item in pending:
-                try:
-                    self._ensure_tenant(tenant)
-                    self._honour_erasure(tenant, item["uid"], item["erasure_id"])
-                    done += 1
-                except Exception:         # noqa: BLE001 — already logged; keep sweeping
-                    continue
         return done
 
     def run_once(self, count: int = 32, block_ms: int = 5000) -> int:
