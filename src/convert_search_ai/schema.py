@@ -100,6 +100,23 @@ CREATE INDEX IF NOT EXISTS idx_chunks_embedding
 
 -- Persisted chat conversations, scoped per user within the tenant schema so a
 -- user can resume past chats. Ids are app-generated (uuid hex).
+-- Erasure tombstones (PROPOSAL_accountability_record.md §5.4.5).
+--
+-- An erasure can arrive while a conversion is mid-flight on the same uid — text
+-- being extracted, embeddings being written. Purging and then letting that job
+-- finish puts the derived data straight back, AFTER the erasure was recorded
+-- complete. That is how purges silently fail, so honouring one has two parts:
+-- destroy what exists, and refuse to write derived data for the uid thereafter.
+-- Cancelling in-flight work is best-effort; this refusal is what closes the race.
+--
+-- Rows are permanent. They are tiny, and the alternative — expiring them — is a
+-- window in which a late job can resurrect erased content.
+CREATE TABLE IF NOT EXISTS "{schema}".erased_documents (
+    file_uid    TEXT        PRIMARY KEY,
+    erasure_id  TEXT        NOT NULL DEFAULT '',
+    erased_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS "{schema}".conversations (
     id          TEXT        PRIMARY KEY,
     user_id     TEXT        NOT NULL,

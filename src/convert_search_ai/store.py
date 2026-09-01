@@ -122,3 +122,50 @@ class DocumentStore:
         with self._conn(tenant) as conn, conn.cursor() as cur:
             cur.execute("DELETE FROM documents WHERE file_uid = %s", (file_uid,))
             conn.commit()
+
+    def erase(self, tenant: str, file_uid: str, erasure_id: str = "") -> dict:
+        """Destroy everything derived from this file, permanently, and tombstone it.
+
+        Distinct from ``delete``, which honours a SOFT delete: that one is
+        recoverable (the core has undelete), so dropping the row is the whole
+        job. Erasure is not recoverable and must leave nothing behind — the
+        extracted Markdown in ``documents.content_md``, the verbatim chunk text
+        and the embedding vectors are all real derivatives of the content, and an
+        erasure that left the search index intact would not meet any purge
+        obligation worth signing.
+
+        Returns counts, which become the acknowledgement detail: "acknowledged"
+        with no statement of what was destroyed is not evidence of anything.
+        """
+        with self._conn(tenant) as conn, conn.cursor() as cur:
+            # Counted before deleting: afterwards there is nothing left to count,
+            # and the acknowledgement would have to claim success without being
+            # able to say what it destroyed.
+            cur.execute("SELECT count(*) FROM chunks WHERE file_uid = %s", (file_uid,))
+            chunks = cur.fetchone()[0]
+            cur.execute(
+                "SELECT count(*) FROM documents "
+                "WHERE file_uid = %s AND content_md IS NOT NULL AND content_md <> ''",
+                (file_uid,))
+            had_text = cur.fetchone()[0]
+
+            # chunks cascades from documents (ON DELETE CASCADE), so this takes
+            # the text, the vectors and the generated FTS columns with it.
+            cur.execute("DELETE FROM documents WHERE file_uid = %s", (file_uid,))
+
+            # The tombstone goes in the SAME transaction as the destruction. Split
+            # across two, a crash between them leaves the data gone and the uid
+            # un-tombstoned, so the next conversion re-indexes the content the
+            # platform has just certified destroyed.
+            cur.execute(
+                "INSERT INTO erased_documents (file_uid, erasure_id) VALUES (%s, %s) "
+                "ON CONFLICT (file_uid) DO NOTHING",
+                (file_uid, erasure_id))
+            conn.commit()
+        return {"chunks": chunks, "extracted_text": bool(had_text)}
+
+    def is_erased(self, tenant: str, file_uid: str) -> bool:
+        """Has this uid been erased? Checked before writing any derived data."""
+        with self._conn(tenant) as conn, conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM erased_documents WHERE file_uid = %s", (file_uid,))
+            return cur.fetchone() is not None

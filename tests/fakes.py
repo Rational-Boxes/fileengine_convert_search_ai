@@ -108,6 +108,9 @@ class FakeStore:
         self.docs = {}        # (tenant, uid) -> DocStatus
         self.deleted = []
         self.upserts = []
+        # Erasure tombstones. The pipeline refuses to convert an erased uid, so
+        # a fake without this reports every file as live.
+        self.erased = set()
 
     def get_status(self, tenant, uid):
         return self.docs.get((tenant, uid))
@@ -119,3 +122,11 @@ class FakeStore:
     def delete(self, tenant, uid):
         self.deleted.append((tenant, uid))
         self.docs.pop((tenant, uid), None)
+
+    def erase(self, tenant, uid, erasure_id=""):
+        self.erased.add((tenant, uid))
+        self.docs.pop((tenant, uid), None)
+        return {"chunks": 0, "extracted_text": False}
+
+    def is_erased(self, tenant, uid):
+        return (tenant, uid) in self.erased
