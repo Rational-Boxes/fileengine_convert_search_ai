@@ -283,8 +283,42 @@ class Ingestor:
                 log.info("recovered %d event(s) stranded by a previous stop", recovered)
         except Exception:
             log.exception("failed to drain pending entries; continuing")
+        # The erasure guarantee path (§5.4.5). Runs alongside the event loop, on
+        # a timer, because the event that triggers a purge is fail-open and
+        # drop-oldest by design: a dropped one would leave this service holding
+        # data the platform has certified destroyed, silently. The sweep is what
+        # makes the attestation mean anything, so it is not optional and not
+        # startup-only — a service that was down, or restored from a backup taken
+        # before an erasure, converges through it.
+        self._start_erasure_sweeper()
         while True:
             self.run_once()
+
+    def _start_erasure_sweeper(self) -> None:
+        """Poll for erasures we owe, forever, in a daemon thread.
+
+        In a thread rather than folded into run_once: the event read blocks for
+        seconds at a time, so an erasure arriving while the stream is quiet would
+        otherwise wait on unrelated traffic. Never fatal — a sweep that throws
+        must not take down ingestion, and the next tick retries.
+        """
+        import threading
+
+        interval = getattr(self.config, "erasure_sweep_interval_s", 60)
+
+        def loop() -> None:
+            while True:
+                try:
+                    done = self.sweep_erasures()
+                    if done:
+                        log.info("erasure sweep honoured %d outstanding erasure(s)", done)
+                except Exception:
+                    log.exception("erasure sweep failed; retrying next tick")
+                time.sleep(interval)
+
+        threading.Thread(target=loop, name="erasure-sweep", daemon=True).start()
+        log.info("erasure sweeper started (every %ss, participant=%s)",
+                 interval, ERASURE_PARTICIPANT)
 
 
 def build_ingestor(config: Config) -> Ingestor:

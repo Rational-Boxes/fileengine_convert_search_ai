@@ -376,6 +376,12 @@ class Config:
         # so one login (LDAP or OAuth, at the bridge) authenticates across both
         # services. Empty disables coordination (only this service's own
         # /auth/token bearer tokens + Basic auth are accepted).
+        # How often to poll the core for erasures we have not acknowledged
+        # (§5.4.5). Short enough that an unmet obligation is not left sitting,
+        # long enough that it costs nothing: the event handles the common case
+        # and this is the guarantee behind it.
+        self.erasure_sweep_interval_s = int(_env("CSAI_ERASURE_SWEEP_INTERVAL_S", "60"))
+
         self.bridge_url = _env("CSAI_BRIDGE_URL", "").rstrip("/")
         self.bridge_introspect_ttl = int(_env("CSAI_BRIDGE_INTROSPECT_TTL", "60"))
         # Shared HS256 secret to verify the bridge's bearer JWTs locally (no
