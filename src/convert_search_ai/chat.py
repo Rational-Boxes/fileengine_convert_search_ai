@@ -177,6 +177,7 @@ class ChatService:
                conversation_id: Optional[str] = None,
                report_target: Optional[dict] = None,
                scope_folder_uids: Optional[List[str]] = None,
+               app_url: str = "",
                consent=None) -> Iterator[dict]:
         msg = guards.check_query(message, self.config.max_query_chars)
         k = guards.cap_k(k, self.config.max_chat_k)
@@ -202,7 +203,7 @@ class ChatService:
             if report_target is not None:
                 prov = self._prov(identity, system_prompt, conversation_id, history, msg, doc_citations)
                 yield from self._save_marked_reports(identity, "".join(answer_parts), [], prov,
-                                                     report_target=report_target)
+                                                     report_target=report_target, app_url=app_url)
             self._audit(identity, chunks, doc_citations, trimmed, web_searches=0)
             yield {"type": "citations", "citations": doc_citations}
             return
@@ -264,7 +265,7 @@ class ChatService:
         if report_target is not None:
             prov = self._prov(identity, system_prompt, conversation_id, history, msg, citations)
             yield from self._save_marked_reports(identity, ctx.answer_text, ctx.saved, prov,
-                                                 report_target=report_target)
+                                                 report_target=report_target, app_url=app_url)
 
         self._audit(identity, chunks, citations, trimmed, web_searches=counters["searches"])
         yield {"type": "citations", "citations": citations}
@@ -287,13 +288,16 @@ class ChatService:
 
     def _save_marked_reports(self, identity, answer_text: str, saved: List[str],
                              provenance: Optional[dict] = None,
-                             report_target: Optional[dict] = None):
+                             report_target: Optional[dict] = None,
+                             app_url: str = ""):
         """Write the ``[[SAVE_REPORT …]] … [[/SAVE_REPORT]]`` block the model streamed
         to the file the **user pinned** in the UI (``report_target`` — folder UID +
         filename; the marker is content‑only). The closing marker OR a stream cutoff
         triggers the save; no tool call required. Emits a ``report_saved`` event (for
         the "Open report" preview link) plus a confirmation token. ``saved`` dedupes
-        locations already written this turn."""
+        locations already written this turn. ``app_url`` is the application URL the
+        user is chatting from, so the document's file references become complete
+        deep-links rather than app-relative paths."""
         from .llm_tools import (ReportSaveError, parse_report_markers,
                                 report_location, save_report_document)
         pinned = report_target or {}
@@ -309,7 +313,7 @@ class ChatService:
                 uid, loc, nbytes = save_report_document(
                     identity, self.config, path=path, filename=filename,
                     title=rep.title, body=rep.body, create_folders=False,
-                    folder_uid=folder_uid,
+                    folder_uid=folder_uid, app_url=app_url,
                     max_bytes=getattr(self.config, "chat_document_max_bytes", 5_000_000),
                     provenance=({**provenance, "answer_text": answer_text}
                                 if provenance is not None else None))

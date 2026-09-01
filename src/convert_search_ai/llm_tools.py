@@ -30,6 +30,7 @@ from typing import List, NamedTuple, Optional
 from urllib.parse import urlparse
 
 from . import audit, guards
+from .app_links import configured_app_url
 from .config import Config
 
 log = logging.getLogger("convert_search_ai.llm_tools")
@@ -423,7 +424,7 @@ def _is_permission_error(e) -> bool:
 def save_report_document(identity, config, *, path: str, filename: str, title: str,
                          body: str, create_folders: bool, client_factory=None,
                          max_bytes: int = 5_000_000, provenance: dict = None,
-                         folder_uid: str = None):
+                         folder_uid: str = None, app_url: str = ""):
     """Persist a report (Markdown or HTML ``body``) as an HTML file in the user's
     storage, written *as the user*. Returns ``(uid, location, byte_len)``; raises
     :class:`ReportSaveError`. Used by the marker-driven save path (chat.py).
@@ -435,7 +436,13 @@ def save_report_document(identity, config, *, path: str, filename: str, title: s
     of that exact file is written; otherwise the file is created.
 
     When ``provenance`` (the chat context) is given, a chat-provenance log is
-    attached as a hidden child of the report (best-effort — see provenance.py)."""
+    attached as a hidden child of the report (best-effort — see provenance.py).
+
+    ``app_url`` is the application URL this chat is running on — the door THIS
+    tenant uses, already resolved for the request (app_links.resolve_app_url, which
+    folds in any CSAI_PUBLIC_APP_URL configuration). It makes the report's file
+    references complete URLs, which is what lets them work outside the SPA; without
+    it they were relative and dead in the .docx/PDF the report becomes."""
     client_factory = client_factory or _default_client
     safe = _safe_name(filename or "")
     if not safe:
@@ -446,7 +453,10 @@ def save_report_document(identity, config, *, path: str, filename: str, title: s
     html = body if _looks_like_html(body) else markdown_to_html(body)
     name = _report_filename(filename)
     tenant = getattr(identity, "tenant", "") or getattr(config, "tenant", "")
-    base_url = getattr(config, "public_app_url", "") or ""
+    # The caller's per-request value already accounts for configuration AND for
+    # which door this tenant came through; the config-only lookup is the fallback
+    # for callers outside the chat path.
+    base_url = (app_url or "") or configured_app_url(config, tenant)
     mf = client_factory(identity, config)
     ref_cache: dict = {}
     try:

@@ -152,15 +152,22 @@ class Config:
             o.strip() for o in _env("CSAI_CORS_ORIGINS", "").split(",") if o.strip()
         ]
 
-        # Public base URL of the SPA, used to build ABSOLUTE file deep-links baked
-        # into generated report HTML (and the chat provenance log) so they still
-        # resolve when the report is rendered to PDF or copied to an externally hosted
-        # site — a relative "/files?…" would not. MULTI-TENANT: put a {tenant}
-        # placeholder in the value (e.g. https://{tenant}.example.com) and each
-        # report links to its OWN tenant's host, since tenants get unique URLs; a
-        # plain origin instead carries the tenant only in the ?tenant= query. Empty ⇒
-        # relative links (dev). NB: no CORS-origin fallback — that is a single global
-        # origin, which would mislink every tenant to one host.
+        # OVERRIDE for the public base URL of the SPA, used to build ABSOLUTE file
+        # deep-links baked into generated report HTML (and the chat provenance log)
+        # so they still resolve when the report is rendered to PDF or copied to an
+        # externally hosted site — a relative "/files?…" would not.
+        #
+        # Normally leave it EMPTY: the links go on the same FQDN the chat was served
+        # on, and csai is proxied on that same door, so app_links.resolve_app_url
+        # derives it from the request (X-Forwarded-Proto + Host). That is already
+        # per-tenant — subdomain, vanity domain or shared host alike — with nothing
+        # to configure and no host taken from the client.
+        #
+        # Set it only where the request's Host is NOT the public FQDN (csai reached
+        # directly, or a proxy that rewrites Host). A single value then pins ONE host
+        # for every tenant, which mislinks a multi-domain deployment — use a {tenant}
+        # placeholder (e.g. https://{tenant}.example.com) so each tenant still links
+        # to its own host.
         self.public_app_url = _env("CSAI_PUBLIC_APP_URL", "").rstrip("/")
 
         # --- Permission cache (DEVELOPMENT_PLAN §8): cap decisions to this many seconds ---

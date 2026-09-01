@@ -129,6 +129,31 @@ Add three optional fields; their presence puts the turn in **report mode**:
 | `report_target_folder_uid` | string | **Authoritative** destination folder UID (a core/bridge UID; `""`/root‑UUID = filesystem root). Presence ⇒ report mode. |
 | `report_target_filename` | string | User‑supplied name; sanitized server‑side (`_safe_name`, `.docx` ensured). |
 | `report_target_path` | string | Human‑readable path (e.g. `/Projects/Q3`) for logging + the confirmation message only. **Not** used to resolve the write. |
+| `app_url` | string | The URL the SPA is running on (origin + its base path). Sent with report turns; the server uses only its **path** — see “Document references” below. |
+
+**Document references (absolute, not relative).** The model cites files as
+`(file <uid>)`; `llm_tools._linkify_file_refs` rewrites those into named links
+(`<app-url>/files?file=<uid>&tenant=<t>`) in both the report and its provenance log.
+A report is a *document* — converted to `.docx`, opened in ONLYOFFICE, printed to
+PDF, mailed on — so a relative `/files?…` resolves against nothing and the reference
+is dead outside the SPA.
+
+`app_links.resolve_app_url` resolves the base **per request**: the deep‑links go on
+the **same FQDN the chat was served on**, taken from `X‑Forwarded‑Proto` + `Host`
+(nginx proxies `/csai/` on each tenant vhost and forwards both). That is inherently
+per‑tenant — a subdomain (`acme.example.com`, or `<tenant>-<interface>`), a vanity
+domain (`docs.acme.com`) or a shared host that carries the tenant in
+`X‑Tenant`/`?tenant=` all resolve to the door **that** tenant came through, with
+nothing to configure. The client's `app_url` contributes only the SPA's base path
+(the one part of the URL the server cannot see) and only when it is on that same
+origin; a host, port or scheme is never taken from the client, so neither a
+stranger's nor a sibling tenant's host can be baked into a document stored in this
+tenant's storage.
+
+`CSAI_PUBLIC_APP_URL` overrides all of it, for the deployment where the request's
+`Host` is not the public FQDN. A single value pins one host for **every** tenant, so
+a multi‑domain deployment that needs the override should set the per‑tenant form
+`https://{tenant}.example.com` instead.
 
 Absent ⇒ ordinary chat with **no** report save (the old "model chooses a path and
 saves" behavior is removed — see §3a).

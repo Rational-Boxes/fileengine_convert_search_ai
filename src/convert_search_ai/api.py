@@ -38,6 +38,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from . import __version__, audit
+from .app_links import resolve_app_url
 from .config import Config
 from .guards import GuardError
 from .http_auth import extract_tenant, resolve_identity
@@ -192,8 +193,9 @@ def _title_from(message: str) -> str:
 async def chat(ws: WebSocket) -> None:
     """Permission-scoped RAG chat. Authenticate with a bearer token (Authorization
     header or ``?token=``). Each message carries ``message`` (+ optional
-    ``system_prompt``/``history``/``k``/``web_search``/``conversation_id``). The
-    server persists the turn, emits ``{type: conversation, id}`` (so the client can
+    ``system_prompt``/``history``/``k``/``web_search``/``conversation_id``/``app_url``
+    — the URL the SPA is running on, used for absolute deep-links in saved reports).
+    The server persists the turn, emits ``{type: conversation, id}`` (so the client can
     resume later), then streams ``{type: token}`` deltas, tool events, and
     ``{type: citations}``, finishing with ``{type: done}``."""
     config = ws.app.state.config
@@ -316,6 +318,18 @@ async def _stream_answer(ws: WebSocket, chat_service, identity, payload: dict, m
             "path": str(payload.get("report_target_path", "") or ""),
         }
 
+    # The application URL this chat is running on — resolved per turn and per
+    # TENANT, since each tenant reaches the app on its own subdomain or domain (the
+    # SPA sends the door it is on; the request's own origin is the fallback).
+    # Reports are saved as documents that leave the browser — .docx, PDF, mail — so
+    # their file references must be complete deep-links, not app-relative paths.
+    # See app_links.resolve_app_url.
+    app_url = resolve_app_url(
+        config, {k.lower(): v for k, v in ws.headers.items()},
+        tenant=getattr(identity, "tenant", "") or "",
+        client_url=str(payload.get("app_url", "") or ""),
+        default_scheme="https" if ws.url.scheme == "wss" else "http")
+
     # Optional RAG folder scope: confine retrieval to these folder UIDs + subfolders.
     # The frame carries `scope_folders` as [{uid, path}] (path is for display/persist);
     # here we take the UIDs. Absent/empty ⇒ all documents (default).
@@ -333,6 +347,7 @@ async def _stream_answer(ws: WebSocket, chat_service, identity, payload: dict, m
                 conversation_id=conversation_id,
                 report_target=report_target,
                 scope_folder_uids=scope_folder_uids or None,
+                app_url=app_url,
                 consent=broker.request,
             ):
                 anyio.from_thread.run(send.send, ev)
