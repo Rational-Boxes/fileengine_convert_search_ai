@@ -20,6 +20,7 @@ import json
 from types import SimpleNamespace
 
 from convert_search_ai import llm_tools, provenance
+from convert_search_ai.app_links import resolve_app_url
 from convert_search_ai.chat import ChatService
 from convert_search_ai.config import Config
 from convert_search_ai.llm_tools import save_report_document
@@ -223,6 +224,74 @@ def test_save_report_document_has_no_provenance_by_default():
     assert not any(cn.endswith("-chatlog.html") for cn in mf.children.get(uid, {}))
 
 
+# ------------------------------------- integration: the ACTIVE app URL in links
+REF = "5a23e207-1c2d-4e5f-8a9b-0c1d2e3f4a5b"
+
+
+def _save_with_app_url(mf, app_url, monkeypatch, config=None, provenance=None):
+    """Save a report whose body cites a file, with the docx step stubbed out so the
+    linkified HTML is what lands in storage and can be asserted on."""
+    monkeypatch.setattr(llm_tools, "_html_to_docx", lambda html, **kw: html.encode())
+    mf.files[REF] = ("Q3 budget.xlsx", "v1")
+    return save_report_document(
+        _Ident(), config or Config(), path="/Reports", filename="r", title="R",
+        body=f"<p>See (file {REF}).</p>", create_folders=True,
+        client_factory=lambda i, c: mf, app_url=app_url, provenance=provenance)
+
+
+def test_report_refs_are_complete_urls_from_the_active_app_url(monkeypatch):
+    # A report leaves the browser (docx / PDF / mail), so a relative "/files?…" is a
+    # dead link; the app URL the chat ran on makes every reference complete.
+    mf = FakeMF()
+    uid, _loc, _n = _save_with_app_url(mf, "https://files.example.com/app", monkeypatch)
+    assert f'href="https://files.example.com/app/files?file={REF}&amp;tenant=acme"' \
+        in mf.puts[uid].decode()
+
+
+def test_configured_public_app_url_is_the_fallback_for_non_chat_callers(monkeypatch):
+    # The chat path resolves the app URL per request (app_links.resolve_app_url, which
+    # already folds the operator override in); a caller with no request context still
+    # gets complete links from the configured value, per tenant.
+    mf = FakeMF()
+    cfg = Config()
+    cfg.public_app_url = "https://{tenant}.example.com"
+    uid, _loc, _n = _save_with_app_url(mf, "", monkeypatch, config=cfg)
+    assert 'href="https://acme.example.com/files?' in mf.puts[uid].decode()
+
+
+def test_two_tenants_on_different_domains_each_get_their_own_link_host(monkeypatch):
+    # End-to-end for a multi-domain deployment: resolve the app URL from the door the
+    # request arrived on, then save. Each tenant's report links to the FQDN that
+    # tenant's chat was served on — a subdomain for one, a vanity domain for the other.
+    monkeypatch.setattr(llm_tools, "_html_to_docx", lambda html, **kw: html.encode())
+    docs = {}
+    for tenant, host in (("acme", "acme.example.com"), ("globex", "files.globex.io")):
+        mf = FakeMF()
+        mf.files[REF] = ("Q3 budget.xlsx", "v1")
+        app_url = resolve_app_url(Config(), {"host": host, "x-forwarded-proto": "https"},
+                                  tenant=tenant)
+        uid, _loc, _n = save_report_document(
+            SimpleNamespace(user="u", tenant=tenant), Config(), path="/Reports",
+            filename="r", title="R", body=f"<p>See (file {REF}).</p>", create_folders=True,
+            client_factory=lambda i, c, mf=mf: mf, app_url=app_url)
+        docs[tenant] = mf.puts[uid].decode()
+    assert f'href="https://acme.example.com/files?file={REF}&amp;tenant=acme"' in docs["acme"]
+    assert f'href="https://files.globex.io/files?file={REF}&amp;tenant=globex"' in docs["globex"]
+
+
+def test_provenance_log_links_use_the_same_active_app_url(monkeypatch):
+    # The chat log is stored alongside the report and read the same way, so its
+    # references must be complete too.
+    mf = FakeMF()
+    prov = {"user": "alice@example.com", "tenant": "acme", "model": "m", "provider": "p",
+            "history": [], "message": f"summarise (file {REF})", "answer_text": "done",
+            "citations": [{"marker": 1, "kind": "doc", "file_uid": REF}]}
+    uid, _loc, _n = _save_with_app_url(mf, "https://files.example.com", monkeypatch,
+                                       provenance=prov)
+    child = next(u for n, u in mf.children[uid].items() if n.endswith("-chatlog.html"))
+    assert 'href="https://files.example.com/files?' in mf.puts[child].decode()
+
+
 # --------------------------------------------- chat-side context + threading
 def test_prov_builds_context_from_chat_state():
     svc = ChatService(Config(), retriever=SimpleNamespace(retrieve=lambda *a, **k: []),
@@ -251,3 +320,23 @@ def test_save_marked_reports_threads_provenance(monkeypatch):
     assert captured.get("provenance") is not None
     assert captured["provenance"]["user"] == "u"
     assert captured["provenance"]["answer_text"] == answer  # the full assistant answer
+
+
+def test_answer_threads_the_active_app_url_to_the_saved_report(monkeypatch):
+    # End of the chain: api.py resolves the app URL per turn and it must reach the
+    # save, or the document's references fall back to relative paths again.
+    captured = {}
+
+    def fake_save(identity, config, **kw):
+        captured.update(kw)
+        return ("uid1", "/Reports/r.html", 5)
+
+    monkeypatch.setattr(llm_tools, "save_report_document", fake_save)
+    answer = '[[SAVE_REPORT path="/Reports" file="r" title="R"]]body[[/SAVE_REPORT]]'
+    streamer = SimpleNamespace(stream=lambda messages, system=None: iter([answer]))
+    svc = ChatService(Config(), retriever=SimpleNamespace(retrieve=lambda *a, **k: []),
+                      chat=streamer)
+    list(svc.answer(_id(), message="write it",
+                    report_target={"folder_uid": "f1", "filename": "r", "path": "/Reports"},
+                    app_url="https://files.example.com/app"))
+    assert captured.get("app_url") == "https://files.example.com/app"
