@@ -167,6 +167,46 @@ def test_missing_file():
     assert p.convert("nope", "default").status == "missing"
 
 
+def test_an_erased_file_is_never_re_indexed():
+    """The late-write race (PROPOSAL_accountability_record.md §5.4.5).
+
+    An erasure can land while a conversion is already in flight for the same
+    uid. If that job then completes, the extracted text and the embeddings go
+    straight back — after the platform recorded the erasure complete. That is how
+    purges silently fail. Cancelling in-flight work is best-effort, so refusing
+    the write is what actually closes it.
+    """
+    mf = FakeMF()
+    mf.add_file("f1", "notes.txt", content=b"secret contract text", version="v1")
+    store = FakeStore()
+    store.erased.add(("default", "f1"))
+
+    out = ConversionPipeline(mf=mf, store=store).convert("f1", "default")
+
+    assert out.status == "skipped"
+    assert out.detail == "erased"
+    # Nothing written back, under any status: an "index_failed" row for an erased
+    # file would still be a row naming a file that must not exist.
+    assert store.upserts == []
+    assert ("default", "f1") not in store.docs
+
+
+def test_the_refusal_happens_before_the_content_is_even_read():
+    # Not merely "do not write": do not fetch, extract, or embed either. Reading
+    # the bytes of a file the platform has certified destroyed is the wrong shape
+    # even when nothing is persisted, and it is a needless round trip.
+    mf = FakeMF()
+    mf.add_file("f1", "notes.txt", content=b"secret", version="v1")
+    store = FakeStore()
+    store.erased.add(("default", "f1"))
+
+    def explode(*a, **kw):
+        raise AssertionError("stat() must not be called for an erased uid")
+    mf.stat = explode
+
+    assert ConversionPipeline(mf=mf, store=store).convert("f1", "default").status == "skipped"
+
+
 # --- indexing failures must be retryable ------------------------------------
 #
 # A document that HAS text but could not be embedded used to be recorded as

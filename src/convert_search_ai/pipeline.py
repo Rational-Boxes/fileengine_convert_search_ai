@@ -62,6 +62,17 @@ class ConversionPipeline:
         the version was already processed — needed for files indexed before a new
         rendition-producing plugin existed (e.g. text → preview), which the
         event-driven worker would otherwise skip as up-to-date."""
+        # Erased uids are refused before anything is read, let alone written
+        # (PROPOSAL_accountability_record.md §5.4.5). An erasure can land while a
+        # conversion is already in flight for the same uid; if that job then
+        # completes, the extracted text and embeddings go straight back — AFTER
+        # the platform recorded the erasure complete. Cancelling in-flight work
+        # is best-effort, so this refusal is what actually closes the race, and
+        # it is checked here rather than at the write so nothing is fetched or
+        # extracted for a file that must not exist.
+        if self.store.is_erased(tenant, file_uid):
+            return ConvertOutcome(file_uid, "skipped", [], detail="erased")
+
         try:
             info = self.mf.stat(file_uid, tenant=tenant)
         except NotFoundError:

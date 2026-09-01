@@ -43,6 +43,13 @@ log = logging.getLogger("convert_search_ai.ingest")
 _CONVERT_TYPES = {"file.created", "file.updated", "file.restored"}
 
 
+# The name this service acknowledges erasures under. It must match what the
+# core lists in FILEENGINE_ERASURE_PARTICIPANTS: a mismatch means the core waits
+# forever for an acknowledgement that is being filed under another name, and the
+# erasure never completes.
+ERASURE_PARTICIPANT = "csai"
+
+
 class Ingestor:
     def __init__(self, config: Config, pipeline, store, source, emitter=None):
         self.config = config
@@ -59,6 +66,29 @@ class Ingestor:
         # retry un-acked events from the pending list after a back-off instead of
         # dropping them. Cleared once a normal (new-message) read succeeds.
         self._degraded = False
+        # Lazily built: only the erasure paths need it, and constructing a gRPC
+        # client in __init__ would make every existing test grow a dependency it
+        # does not use.
+        self._core = None
+
+    @property
+    def core(self):
+        """A core client acting as this service's own agent identity."""
+        if self._core is None:
+            from .core_client import agent_client
+            self._core = agent_client(self.config)
+        return self._core
+
+    def _known_tenants(self) -> list:
+        """Tenants whose CSAI schema this worker has provisioned.
+
+        Deliberately what we have SEEN rather than every tenant in the
+        deployment: a tenant we have never provisioned holds no derived data of
+        ours, so there is nothing for us to erase and nothing to acknowledge. The
+        core keeps offering an erasure until it is acknowledged, so a tenant that
+        becomes active later picks up its backlog on the next sweep.
+        """
+        return sorted(self._provisioned)
 
     def _sleep(self, seconds: float) -> None:
         """Back-off hook — overridable in tests so they need not really sleep."""
@@ -100,7 +130,82 @@ class Ingestor:
             self._ensure_tenant(tenant)
             self.store.delete(tenant, uid)
             log.info("deleted document rows for %s", uid)
+        elif etype == "file.erased":
+            # DELIBERATELY not folded into file.deleted. That one is a SOFT
+            # delete the core can reverse, so keeping derived data is reasonable;
+            # this one is a compliance erasure and the derived data is the point.
+            # Sharing a branch would leave the extracted text and the embeddings
+            # exactly where they were.
+            self._ensure_tenant(tenant)
+            self._honour_erasure(tenant, uid, event.get("erasure_id", ""))
         # other types are intentionally not conversion concerns
+
+    def _honour_erasure(self, tenant: str, uid: str, erasure_id: str = "") -> None:
+        """Destroy our derived copy and acknowledge, or say plainly that we could not.
+
+        Acknowledgement is not optimism: it is the evidence an auditor is shown,
+        so it is sent only after the destruction has actually committed, and a
+        failure is reported as a failure rather than retried into silence. An
+        erasure stuck incomplete is an operational alarm — an unmet contractual
+        obligation, not a transient error — and that is the correct outcome when
+        we genuinely could not comply.
+        """
+        try:
+            counts = self.store.erase(tenant, uid, erasure_id)
+        except Exception as e:            # noqa: BLE001 — the reason must reach the record
+            log.error("erasure %s: could not destroy derived data for %s: %s",
+                      erasure_id or "(event)", uid, e)
+            if erasure_id:
+                self._acknowledge(tenant, erasure_id, False, f"destroy failed: {e}")
+            raise
+        log.info("erased derived data for %s (chunks=%s, extracted_text=%s)",
+                 uid, counts["chunks"], counts["extracted_text"])
+        if erasure_id:
+            self._acknowledge(
+                tenant, erasure_id, True,
+                f"destroyed {counts['chunks']} chunk(s), embeddings, "
+                f"extracted text={'yes' if counts['extracted_text'] else 'none'}")
+
+    def _acknowledge(self, tenant: str, erasure_id: str, complied: bool, detail: str) -> None:
+        try:
+            state = self.core.acknowledge_erasure(
+                erasure_id, ERASURE_PARTICIPANT, complied=complied, detail=detail,
+                tenant=tenant)
+            log.info("acknowledged erasure %s (complied=%s) -> %s",
+                     erasure_id, complied, state)
+        except Exception as e:            # noqa: BLE001
+            # Not fatal: the destruction already happened, and the pull path will
+            # re-offer this erasure until an acknowledgement lands. Losing the
+            # ack delays completion, which is the safe direction — the unsafe one
+            # would be recording compliance we cannot demonstrate.
+            log.warning("erasure %s destroyed locally but ack failed: %s", erasure_id, e)
+
+    def sweep_erasures(self, limit: int = 100) -> int:
+        """The guarantee path (§5.4.5): work through erasures we have not acknowledged.
+
+        The event above is only the fast path. `fileengine:events` is fail-open
+        and drop-oldest by design, so a dropped erasure event would leave this
+        service holding data the platform has certified destroyed, silently. This
+        poll is what makes the attestation mean anything, and it is also how a
+        service that was down, or was restored from a backup taken before the
+        erasure, converges without the instruction being redelivered.
+        """
+        done = 0
+        for tenant in self._known_tenants():
+            try:
+                pending = self.core.list_pending_erasures(
+                    ERASURE_PARTICIPANT, limit=limit, tenant=tenant)
+            except Exception as e:        # noqa: BLE001
+                log.warning("erasure sweep: could not list pending for %s: %s", tenant, e)
+                continue
+            for item in pending:
+                try:
+                    self._ensure_tenant(tenant)
+                    self._honour_erasure(tenant, item["uid"], item["erasure_id"])
+                    done += 1
+                except Exception:         # noqa: BLE001 — already logged; keep sweeping
+                    continue
+        return done
 
     def run_once(self, count: int = 32, block_ms: int = 5000) -> int:
         """Read one batch, handle each, ack. Returns the number processed.
