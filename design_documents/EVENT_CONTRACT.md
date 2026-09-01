@@ -90,11 +90,55 @@ Notes on the as-built envelope:
 | `file.renamed`  | name changes | metadata only |
 | `file.deleted`  | soft/hard delete | **cascade**: remove the file's derived rows/renditions |
 | `file.restored` | undelete | re-instate / re-index |
+| `file.erased`   | a file is **erased** — true delete | **destroy, tombstone, acknowledge**. NOT a delete. See §3.1 |
 | `dir.created` / `dir.deleted` | folder lifecycle | optional for most consumers |
 | `acl.changed` | permission grant/revoke on a resource | **governance** — adds `principal` + `permissions`; invalidate cached permission decisions for `file_uid` |
 | `role.assigned` / `role.member_removed` | user added to / removed from a role | **governance** — adds `role` + `member`; invalidate cached decisions for the member |
 | `role.deleted` | a role was deleted | **governance** — adds `role` (empty `member`); invalidate for all members of the role |
 | `accountability.committed` | the core committed a security record to its accountability chain | **a hint, not data** — adds `accountability_seq`. Only `audit_service` consumes it; every other consumer must ignore it |
+
+### 3.1 `file.erased` — obligations, not suggestions
+
+Erasure (`PROPOSAL_accountability_record.md` §5.4) is a compliance capability. A
+consumer that mishandles it leaves the platform certifying a destruction that did
+not happen, so this event carries requirements rather than guidance.
+
+**It is not `file.deleted`, and must not share a code path with it.** A soft
+delete is recoverable — the core has undelete — so keeping an index entry marked
+deleted is a reasonable response to it. Erasure is irreversible, and the derived
+data is precisely what has to go. Reusing the delete branch would leave the
+extracted text and the embeddings exactly where they were, which is the failure
+this event exists to prevent.
+
+A consumer receiving `file.erased` must:
+
+1. **Destroy** everything it derived from that uid — extracted text, chunk
+   contents, embeddings, index entries, rendered pages, converted copies,
+   comparison manifests, comment bodies quoting the document. Not mark deleted:
+   destroy.
+2. **Tombstone** the uid and refuse to write derived data for it thereafter. An
+   erasure can arrive while a job is mid-flight on the same uid; letting that job
+   finish puts the data straight back, *after* the erasure was recorded complete.
+   Cancelling in-flight work is best-effort — the refusal is what closes the race.
+   A consumer holding no derived data of its own has nothing to tombstone and
+   should say so in its acknowledgement.
+3. **Acknowledge** to the core, stating what was destroyed. "Acknowledged" with
+   no such statement is not evidence, and the completion record is what an
+   auditor is shown. A consumer that could not comply acknowledges
+   `complied=false` with the reason — never silence, and never an optimistic ack.
+
+**The event triggers; it does not guarantee.** This stream is fail-open,
+trimmed and drop-oldest (§4) — right for a notification, unacceptable for a
+contractual obligation, because a dropped erasure would leave a service holding
+data the platform has certified destroyed and would do it silently. So every
+participant must **also poll** `ListPendingErasures` for erasures it has not
+acknowledged. That poll is the guarantee path and is what the attestation counts;
+the event only makes it fast. It is also how a consumer that was down, or was
+restored from a backup taken before the erasure, converges — with no instruction
+needing to be redelivered.
+
+The reconcile-sweep obligation in §7 is advisory. **For erasure it is
+mandatory.**
 
 **Governance events** (`acl.changed`, `role.*`) are first-class: they change
 *effective* access. `acl.changed` is resource-scoped (`file_uid`); the `role.*`
@@ -216,6 +260,9 @@ Prometheus event metrics, RFC3339 `ts`, a `mime` field, and `metadata.changed`.
    corpus), retention gaps, and missed events.
 4. Maintain a consumer-group cursor; ack only after durable side-effects; retry with
    dead-letter.
+5. **Honour erasures** (§3.1): destroy, tombstone, acknowledge — and poll
+   `ListPendingErasures` on a timer rather than relying on the event. This one is
+   not optional for any consumer that holds derived content.
 
 ## 8. Versioning
 
