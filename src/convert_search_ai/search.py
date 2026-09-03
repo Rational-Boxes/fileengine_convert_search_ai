@@ -32,21 +32,49 @@ from .permissions import PermissionGate
 
 _HEADLINE_OPTS = "MaxFragments=2, MinWords=5, MaxWords=18, ShortWord=2, StartSel=**, StopSel=**"
 
+# Two stages on purpose: rank and cut FIRST, snippet the survivors SECOND.
+#
+# ts_headline re-parses the whole document it is given, so having it in the
+# target list of the ranking query meant snippetting EVERY candidate and then
+# throwing most away. Measured on the DO deployment at 976 documents / 18 MB of
+# extracted text: the match alone ran in 22 ms and the same query with the
+# headline in 4.0 s. As a CTE the headline is paid for `fetch` rows instead of
+# all of them.
+#
+# The other half of the cost was worse and is now gone. Scoring did
+# `word_similarity(query, content_md)` and matching did `query <%% content_md`,
+# both of which are O(size of every document) and neither of which the trigram
+# index was chosen for — a plain sequential scan over all 18 MB, on EVERY query.
+# 6.0 s by itself, and paid even when the query matched nothing at all: a search
+# for a nonsense word timed out exactly like a search for "LEED". Together the
+# two put every query over the 5 s statement timeout, which took search out
+# completely, in the SPA as well as the API.
+#
+# So fuzzy matching now means the FILENAME, where trigram similarity is cheap
+# because names are short. Full-text search still stems and normalises the
+# content ("carbons" finds "carbon"); what is gone is typo-tolerance INSIDE
+# document text, which cost a full scan of the corpus per keystroke-worth of
+# query. If it is wanted back it needs an index that supports it, not a scan.
 _SEARCH_SQL = """
-WITH q AS (SELECT websearch_to_tsquery('english', %(q)s) AS tsq)
-SELECT d.file_uid,
-       d.name,
-       ts_headline('english', coalesce(d.content_md, ''), q.tsq, %(hl)s) AS snippet,
-       ts_rank(d.fts, q.tsq)
-         + GREATEST(similarity(d.name, %(q)s), word_similarity(%(q)s, coalesce(d.content_md, ''))) AS score
-FROM documents d, q
-WHERE d.status IN ('converted', 'indexed')
-  AND (
-        d.fts @@ q.tsq
-        OR (%(fuzzy)s AND (d.name %% %(q)s OR %(q)s <%% coalesce(d.content_md, '')))
-      )
+WITH q AS (SELECT websearch_to_tsquery('english', %(q)s) AS tsq),
+ranked AS (
+  SELECT d.file_uid,
+         d.name,
+         d.content_md,
+         q.tsq,
+         ts_rank(d.fts, q.tsq) + similarity(d.name, %(q)s) AS score
+  FROM documents d, q
+  WHERE d.status IN ('converted', 'indexed')
+    AND (d.fts @@ q.tsq OR (%(fuzzy)s AND d.name %% %(q)s))
+  ORDER BY score DESC
+  LIMIT %(fetch)s
+)
+SELECT file_uid,
+       name,
+       ts_headline('english', coalesce(content_md, ''), tsq, %(hl)s) AS snippet,
+       score
+FROM ranked
 ORDER BY score DESC
-LIMIT %(fetch)s
 """
 
 
