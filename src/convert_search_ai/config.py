@@ -225,6 +225,13 @@ class Config:
         # the backstop if a provider's cap is lower still.
         self.embedding_batch_size = max(1, int(_env("CSAI_EMBEDDING_BATCH_SIZE", "512")))
 
+        # Shared secret for the in-cluster internal API (see api.py). Falls back
+        # to the service-credential secret so ops manage one value, the same way
+        # ldap_manager's internal API does. EMPTY DISABLES THE API: an unset
+        # secret must not mean "no check", because /csai/ is proxied publicly.
+        self.internal_secret = _first("CSAI_INTERNAL_SECRET",
+                                      "SERVICE_CRED_INTERNAL_SECRET", "")
+
         # Chat: anthropic (default) | openai | ollama | openai-compatible | echo.
         self.chat_provider = _env("CSAI_CHAT_PROVIDER", "anthropic")
         self.chat_model = _env("CSAI_CHAT_MODEL", "claude-sonnet-4-6")

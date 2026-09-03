@@ -21,6 +21,8 @@
   GET  /whoami                     resolved identity (user, roles, tenant)
   POST /search                     permission-gated full-text + fuzzy search
   GET  /documents/{uid}/text       extracted Markdown (READ-gated)
+  POST /internal/documents/{uid}/text   the same, for an in-cluster service
+                                   asserting whose behalf it acts (shared secret)
   WS   /chat                       permission-scoped RAG chat (streamed)
   POST /ingest/reconcile           trigger a reconcile sweep
 
@@ -29,10 +31,11 @@ Handlers read those services from request/websocket ``app.state``."""
 from __future__ import annotations
 
 import logging
+import secrets
 from functools import partial
 
 import anyio
-from fastapi import (APIRouter, Body, Depends, HTTPException, Query, Request,
+from fastapi import (APIRouter, Body, Depends, Header, HTTPException, Query, Request,
                      WebSocket, WebSocketDisconnect)
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
@@ -148,6 +151,67 @@ def document_text(file_uid: str, request: Request, identity: Identity = Depends(
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="no extracted text for this file")
     return {"file_uid": file_uid, "tenant": identity.tenant, "text": text, "truncated": truncated}
+
+
+# ------------------------------ internal API ---------------------------------
+#
+# For a service that has already authenticated a user of its own and needs this
+# service to act for them. The MCP door is the caller this exists for: it holds
+# an identity and an ACL-enforced core client, but no credential CSAI accepts —
+# `resolve_identity` takes this service's tokens, http_bridge's tokens, or an
+# LDAP password, and MCP has none of the three for its caller. Minting a bridge
+# token instead would mean handing MCP the bridge's signing key, i.e. the ability
+# to impersonate anyone, which is a far larger grant than reading one document.
+#
+# What is trusted here is narrow: the CALLER'S NAME. Everything downstream is
+# unchanged — the same `get_text`, the same READ check against the core for that
+# principal, the same audit record and the same 403. So the assertion can name a
+# user, but it cannot give that user access they do not have; the worst a stolen
+# secret buys is reading what some OTHER named user is already allowed to read,
+# and only for documents this service has extracted.
+#
+# The secret is required, and an unset secret disables the route rather than
+# opening it. That is not paranoia about defaults: the edge proxies /csai/ as a
+# whole prefix, so anything mounted here is reachable from the public internet
+# unless something stops it — which is exactly how /ingest/reconcile came to be
+# an open denial-of-service lever. The ingress also 404s /csai/internal/ at the
+# edge, so this route is in-cluster only even if the secret leaks.
+def _require_internal(config: Config, presented: str | None) -> None:
+    secret = config.internal_secret
+    if not secret:
+        raise HTTPException(status_code=404, detail="internal API not enabled")
+    if not presented or not secrets.compare_digest(presented, secret):
+        raise HTTPException(status_code=403, detail="forbidden")
+
+
+@router.post("/internal/documents/{file_uid}/text")
+def internal_document_text(file_uid: str, request: Request, body: dict = Body(default={}),
+                           x_internal_auth: str | None = Header(default=None)) -> dict:
+    """Extracted Markdown for ``file_uid`` as the principal the caller names.
+
+    Body: ``{"user": "<uid>", "roles": [...], "tenant": "<tenant>"}``. The tenant
+    is taken from the body rather than the Host header — an in-cluster caller
+    reaches this service by container name, so there is no tenant in the URL to
+    infer one from."""
+    config: Config = request.app.state.config
+    _require_internal(config, x_internal_auth)
+
+    user = (body or {}).get("user") or ""
+    tenant = (body or {}).get("tenant") or ""
+    roles = list((body or {}).get("roles") or [])
+    if not user or not tenant:
+        raise HTTPException(status_code=400, detail="user and tenant are required")
+    # authenticated=True states that the CALLER authenticated them, which is the
+    # whole content of the assertion. It buys no access by itself: get_text runs
+    # the READ check against the core as this principal before returning a byte.
+    identity = Identity(user=user, roles=roles, tenant=tenant, authenticated=True)
+    try:
+        text, truncated = request.app.state.search.get_text(identity, file_uid)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="not permitted")
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="no extracted text for this file")
+    return {"file_uid": file_uid, "tenant": tenant, "text": text, "truncated": truncated}
 
 
 # ---------------------------- conversations --------------------------------
