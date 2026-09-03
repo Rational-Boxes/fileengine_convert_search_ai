@@ -23,6 +23,7 @@
   GET  /documents/{uid}/text       extracted Markdown (READ-gated)
   POST /internal/documents/{uid}/text   the same, for an in-cluster service
                                    asserting whose behalf it acts (shared secret)
+  POST /internal/search            likewise for search
   WS   /chat                       permission-scoped RAG chat (streamed)
   POST /ingest/reconcile           trigger a reconcile sweep
 
@@ -212,6 +213,38 @@ def internal_document_text(file_uid: str, request: Request, body: dict = Body(de
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="no extracted text for this file")
     return {"file_uid": file_uid, "tenant": tenant, "text": text, "truncated": truncated}
+
+
+@router.post("/internal/search")
+def internal_search(request: Request, body: dict = Body(default={}),
+                    x_internal_auth: str | None = Header(default=None)) -> dict:
+    """Permission-gated search as the principal the caller names.
+
+    Same shape and same trust as ``/internal/documents/{uid}/text`` above: the
+    caller says who it is acting for, and the filtering is done here, against the
+    core, for that principal. Search is the case where that matters most — a hit
+    list is a disclosure in itself, so it is the SearchService's own per-hit
+    permission filter that decides what comes back, not the caller's good
+    intentions."""
+    config: Config = request.app.state.config
+    _require_internal(config, x_internal_auth)
+
+    user = (body or {}).get("user") or ""
+    tenant = (body or {}).get("tenant") or ""
+    roles = list((body or {}).get("roles") or [])
+    if not user or not tenant:
+        raise HTTPException(status_code=400, detail="user and tenant are required")
+    identity = Identity(user=user, roles=roles, tenant=tenant, authenticated=True)
+    try:
+        hits = request.app.state.search.search(
+            identity, (body or {}).get("query", ""),
+            limit=int((body or {}).get("limit", 20)),
+            fuzzy=bool((body or {}).get("fuzzy", True)))
+    except GuardError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"query": ((body or {}).get("query") or "").strip(), "tenant": tenant,
+            "hits": [{"file_uid": h.file_uid, "name": h.name, "snippet": h.snippet,
+                      "score": h.score} for h in hits]}
 
 
 # ---------------------------- conversations --------------------------------
