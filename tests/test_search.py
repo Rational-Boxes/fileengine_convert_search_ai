@@ -105,3 +105,37 @@ def test_get_text_permission_denied():
 def test_get_text_not_found():
     with pytest.raises(FileNotFoundError):
         _svc(text=None, allowed=["x"]).get_text(_id(), "x")
+
+
+# --- the query shape, not just its results ----------------------------------
+#
+# Search went down completely on the DO deployment as the corpus grew: every
+# query, including one matching nothing, exceeded the 5 s statement timeout. Two
+# causes, both in the SQL, both invisible to a test that only checks hits.
+
+def test_the_snippet_is_computed_after_the_limit_not_before():
+    """ts_headline re-parses each document it is given. In the ranking query's
+    target list it ran for every candidate; measured at 976 documents that was
+    22 ms of matching and 4.0 s of snippetting. It belongs outside the CTE that
+    does ORDER BY ... LIMIT."""
+    from convert_search_ai.search import _SEARCH_SQL
+    sql = " ".join(_SEARCH_SQL.split())
+    ranked = sql[sql.index("ranked AS ("):sql.index("SELECT file_uid,")]
+    assert "ts_headline" not in ranked, "snippet is being computed before the LIMIT"
+    assert "LIMIT %(fetch)s" in ranked
+    assert sql.count("ts_headline") == 1
+    assert sql.index("LIMIT %(fetch)s") < sql.index("ts_headline")
+
+
+def test_no_full_document_trigram_scan():
+    """`query <% content_md` and `word_similarity(query, content_md)` are both
+    O(size of every document) and neither used the trigram index — a sequential
+    scan over 18 MB on every query, paid even when nothing matched. Fuzzy now
+    means the filename; the content is covered by full-text search, which stems."""
+    from convert_search_ai.search import _SEARCH_SQL
+    sql = " ".join(_SEARCH_SQL.split())
+    assert "word_similarity" not in sql
+    assert "<%" not in sql
+    # Filename fuzz stays: names are short, and the index on them is used.
+    assert "d.name %% %(q)s" in sql
+    assert "similarity(d.name, %(q)s)" in sql
