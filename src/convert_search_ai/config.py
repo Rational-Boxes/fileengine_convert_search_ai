@@ -216,6 +216,14 @@ class Config:
         # Only OpenAI-native models accept the `dimensions` param; off by default for
         # compatibility (Ollama etc. produce their model's native dimension).
         self.embedding_send_dimensions = _bool("CSAI_EMBEDDING_SEND_DIMENSIONS", False)
+        # How many chunks may go in ONE embeddings request. Providers cap the input
+        # ARRAY as well as each item — DeepInfra at 1024, OpenAI at 2048 — and the
+        # cap is on the count, not the size, so it bites exactly the documents that
+        # most need indexing: a 6 MB reference PDF chunked to 1445 was refused
+        # whole, over and over, with `422 ... at most 1024 items after validation`.
+        # 512 sits under every provider we support; the halving in indexing.py is
+        # the backstop if a provider's cap is lower still.
+        self.embedding_batch_size = max(1, int(_env("CSAI_EMBEDDING_BATCH_SIZE", "512")))
 
         # Chat: anthropic (default) | openai | ollama | openai-compatible | echo.
         self.chat_provider = _env("CSAI_CHAT_PROVIDER", "anthropic")
