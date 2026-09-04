@@ -80,7 +80,8 @@ def needs_conversion(row, registry) -> Optional[str]:
 
 
 def sweep_tenant(store, registry, pipeline, tenant: str, *,
-                 max_files: Optional[int] = None) -> Dict[str, int]:
+                 max_files: Optional[int] = None,
+                 max_bytes: Optional[int] = None) -> Dict[str, int]:
     """Retry every document this tenant has recorded that still needs conversion.
 
     Driven from the documents table, not from a tree walk: the rows already name
@@ -90,7 +91,14 @@ def sweep_tenant(store, registry, pipeline, tenant: str, *,
 
     It is therefore NOT a replacement for :func:`reconcile_tenant` — it can only
     see files that reached the table at least once. A file whose creation event
-    was missed entirely has no row and needs the walk to find it."""
+    was missed entirely has no row and needs the walk to find it.
+
+    ``max_bytes`` bounds what this unattended pass will attempt. Without it one
+    document too large to convert stops the sweep permanently rather than
+    failing: the process dies mid-conversion, the row is left at 'converting',
+    and 'converting' is the first thing this sweep retries on the next start —
+    so it dies in the same place every time and nothing behind it is ever
+    reached."""
     counts: Dict[str, int] = {"examined": 0, "retried": 0, "skipped": 0}
     reasons: Dict[str, int] = {}
     for row in store.list_documents(tenant):
@@ -104,8 +112,15 @@ def sweep_tenant(store, registry, pipeline, tenant: str, *,
             # force=True: a row sitting at 'converted' is inside the pipeline's
             # idempotency guard, and that guard is exactly what has been hiding
             # these. Reason 2 only ever selects rows the guard would skip.
-            outcome = pipeline.convert(row.file_uid, tenant, force=True)
+            outcome = pipeline.convert(row.file_uid, tenant, force=True,
+                                       max_bytes=max_bytes)
             counts[outcome.status] = counts.get(outcome.status, 0) + 1
+            # Counted apart from the ordinary 'skipped' (up-to-date, erased, a
+            # directory). Those mean "nothing to do"; this one means "there is
+            # work here and this pass refused it", which is the number an
+            # operator needs to decide whether the limit is set right.
+            if outcome.detail.startswith("too-large"):
+                counts["too_large"] = counts.get("too_large", 0) + 1
             counts["retried"] += 1
             log.info("sweep: %s (%s, %s) -> %s", row.file_uid, row.name, reason, outcome.status)
         except Exception:
@@ -120,30 +135,44 @@ def sweep_tenant(store, registry, pipeline, tenant: str, *,
 
 
 def sweep(config, tenant: Optional[str] = None, *,
-          max_files: Optional[int] = None) -> Dict[str, int]:
-    """Build the agent client + pipeline and sweep one tenant (default: config's)."""
+          max_files: Optional[int] = None,
+          max_bytes: Optional[int] = None) -> Dict[str, int]:
+    """Build the agent client + pipeline and sweep one tenant (default: config's).
+
+    ``max_bytes`` defaults to the configured ``reconcile_max_bytes`` — every
+    caller of this function is an unattended pass, so the limit has to be the
+    default rather than something each one remembers to ask for."""
     from .core_client import agent_client
     from .indexing import Indexer
     from .pipeline import ConversionPipeline
     from .store import DocumentStore
 
     tenant = tenant or config.tenant
+    if max_bytes is None:
+        max_bytes = getattr(config, "reconcile_max_bytes", 0) or None
     store = DocumentStore(config)
     pipeline = ConversionPipeline(mf=agent_client(config), store=store, config=config,
                                   indexer=Indexer(config))
-    result = sweep_tenant(store, pipeline.registry, pipeline, tenant, max_files=max_files)
-    log.info("sweep(%s): %s", tenant, result)
+    result = sweep_tenant(store, pipeline.registry, pipeline, tenant,
+                          max_files=max_files, max_bytes=max_bytes)
+    log.info("sweep(%s, max_bytes=%s): %s", tenant, max_bytes, result)
     return result
 
 
-def reconcile_tenant(mf, pipeline, tenant: str, *, max_files: Optional[int] = None) -> Dict[str, int]:
-    """Depth-first walk of the tenant's tree, converting each file. Returns counts."""
+def reconcile_tenant(mf, pipeline, tenant: str, *, max_files: Optional[int] = None,
+                     max_bytes: Optional[int] = None) -> Dict[str, int]:
+    """Depth-first walk of the tenant's tree, converting each file. Returns counts.
+
+    ``max_bytes`` is the same guard as in :func:`sweep_tenant`, and matters more
+    here: the walk visits the whole corpus, so it meets every oversized file
+    there is rather than only the ones already recorded."""
     from fileengine import ROOT_UID
 
+    from . import mime as mimelib
     from ._client import FileEngineError
 
     counts = {"files": 0, "converted": 0, "skipped": 0, "unsupported": 0,
-              "missing": 0, "error": 0}
+              "missing": 0, "error": 0, "too_large": 0}
     stack = [ROOT_UID]
     seen = set()
 
@@ -167,8 +196,18 @@ def reconcile_tenant(mf, pipeline, tenant: str, *, max_files: Optional[int] = No
                 stack.append(e.uid)
                 continue
             counts["files"] += 1
+            # The listing already carries the size, so an oversized file costs
+            # nothing here — not even the stat the pipeline would do to find out.
+            # Same rule as the pipeline's: only types parsed in-process are
+            # limited, judged from the name because the bytes are the risk.
+            if max_bytes and getattr(e, "size", 0) > max_bytes \
+                    and not pipeline.registry.bounds_own_memory(mimelib.detect(b"", e.name)):
+                counts["too_large"] += 1
+                log.warning("reconcile: skipping %s (%s): %d bytes exceeds the limit of %d",
+                            e.uid, e.name, e.size, max_bytes)
+                continue
             try:
-                outcome = pipeline.convert(e.uid, tenant)
+                outcome = pipeline.convert(e.uid, tenant, max_bytes=max_bytes)
                 counts[outcome.status] = counts.get(outcome.status, 0) + 1
             except Exception:
                 counts["error"] += 1
@@ -179,17 +218,24 @@ def reconcile_tenant(mf, pipeline, tenant: str, *, max_files: Optional[int] = No
     return counts
 
 
-def reconcile(config, tenant: Optional[str] = None, *, max_files: Optional[int] = None) -> Dict[str, int]:
-    """Build the agent client + pipeline and reconcile one tenant (default: config's)."""
+def reconcile(config, tenant: Optional[str] = None, *, max_files: Optional[int] = None,
+              max_bytes: Optional[int] = None) -> Dict[str, int]:
+    """Build the agent client + pipeline and reconcile one tenant (default: config's).
+
+    As with :func:`sweep`, ``max_bytes`` defaults to the configured
+    ``reconcile_max_bytes``."""
     from .core_client import agent_client
     from .indexing import Indexer
     from .pipeline import ConversionPipeline
     from .store import DocumentStore
 
     tenant = tenant or config.tenant
+    if max_bytes is None:
+        max_bytes = getattr(config, "reconcile_max_bytes", 0) or None
     mf = agent_client(config)
     pipeline = ConversionPipeline(mf=mf, store=DocumentStore(config), config=config,
                                   indexer=Indexer(config))
-    result = reconcile_tenant(mf, pipeline, tenant, max_files=max_files)
-    log.info("reconcile(%s): %s", tenant, result)
+    result = reconcile_tenant(mf, pipeline, tenant, max_files=max_files,
+                              max_bytes=max_bytes)
+    log.info("reconcile(%s, max_bytes=%s): %s", tenant, max_bytes, result)
     return result

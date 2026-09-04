@@ -741,6 +741,11 @@ _OCCT_SPECS = {
 
 class Xeokit3DPlugin(ConversionPlugin):
     name = "model3d"
+    # Governed by its own ceiling — threed_max_input_mb, 512 MB by default,
+    # chosen for what BIM and CAD models actually weigh. The sweeps' blanket
+    # limit is not meant for these: a 40 MB IFC is an ordinary model and the
+    # file that most needs a preview.
+    bounds_own_memory = True
 
     _MIMES = (
         frozenset(_EXT_BY_MIME)

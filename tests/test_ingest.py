@@ -24,7 +24,7 @@ class RecordingPipeline:
     def __init__(self):
         self.converted = []
 
-    def convert(self, uid, tenant):
+    def convert(self, uid, tenant, max_bytes=None):
         self.converted.append((uid, tenant))
         from convert_search_ai.pipeline import ConvertOutcome
         return ConvertOutcome(uid, "converted", [])
@@ -100,7 +100,7 @@ def test_run_once_acks_every_message():
 def test_bad_event_is_acked_and_does_not_stall():
     # An event that makes handle raise must still be acked (idempotent + reconcile backstop).
     class Boom(RecordingPipeline):
-        def convert(self, uid, tenant):
+        def convert(self, uid, tenant, max_bytes=None):
             raise RuntimeError("boom")
 
     src = FakeSource([("9-0", {"type": "file.created", "file_uid": "a", "tenant": "default"})])
@@ -121,7 +121,7 @@ def test_read_only_failover_pauses_polls_and_recovers():
         def __init__(self):
             self.calls = 0
 
-        def convert(self, uid, tenant):
+        def convert(self, uid, tenant, max_bytes=None):
             self.calls += 1
             if self.calls <= 2:          # core read-only for the first two tries
                 raise WriteUnavailableError("read-only mode", operation="put", uid=uid)
@@ -190,12 +190,20 @@ class _PendingSource:
         self.acked.extend(ids)
 
 
-def _ingestor_with(source):
+def _ingestor_with(source, max_bytes=0):
     from convert_search_ai.ingest import Ingestor
     ing = Ingestor.__new__(Ingestor)
     ing.source = source
+    # drain_pending reads the size limit off the config and passes it to handle:
+    # the replay is a startup path, and an un-acked entry is often un-acked
+    # BECAUSE a large document killed the worker mid-conversion.
+    ing.config = type("C", (), {"reconcile_max_bytes": max_bytes})()
     ing.handled = []
-    ing.handle = lambda ev: ing.handled.append(ev)
+    ing.limits = []
+    def _handle(ev, max_bytes=None):
+        ing.handled.append(ev)
+        ing.limits.append(max_bytes)
+    ing.handle = _handle
     return ing
 
 
@@ -206,6 +214,18 @@ def test_startup_recovers_events_stranded_by_a_restart():
     assert ing.drain_pending() == 2
     assert [e["file_uid"] for e in ing.handled] == ["a", "b"]
     assert src.acked == ["1-0", "2-0"]          # and they leave the PEL
+
+
+def test_the_replay_carries_the_size_limit():
+    """An entry is pending because the worker stopped mid-conversion — which is
+    what a large document killing it looks like. Replaying it unguarded on every
+    start is a loop that runs before the sweep and never reaches it."""
+    src = _PendingSource(pending=[("1-0", {"file_uid": "a"})])
+    ing = _ingestor_with(src, max_bytes=12 * 1024 * 1024)
+
+    ing.drain_pending()
+
+    assert ing.limits == [12 * 1024 * 1024]
 
 
 def test_a_poison_pending_entry_is_acked_rather_than_replayed_forever():

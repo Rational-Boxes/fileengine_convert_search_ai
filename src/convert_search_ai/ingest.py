@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Optional
 
 from .config import Config
 from ._client import WriteUnavailableError
@@ -109,7 +110,10 @@ class Ingestor:
         provision_tenant(self.config, tenant)
         self._provisioned.add(tenant)
 
-    def handle(self, event: dict) -> None:
+    def handle(self, event: dict, max_bytes: Optional[int] = None) -> None:
+        """Process one event. ``max_bytes`` is passed only by the startup replay
+        below — live events are not size-limited, so an upload still gets its
+        preview however big it is."""
         if event.get("is_rendition"):
             return  # our own rendition write — never recurse on it
         etype = event.get("type", "")
@@ -119,7 +123,7 @@ class Ingestor:
             return
         if etype in _CONVERT_TYPES:
             self._ensure_tenant(tenant)
-            outcome = self.pipeline.convert(uid, tenant)
+            outcome = self.pipeline.convert(uid, tenant, max_bytes=max_bytes)
             log.info("convert %s -> %s (%s)", uid, outcome.status, outcome.detail)
             # Once the conversion has resolved (renditions/text durably written, or
             # it cannot be converted), publish exactly one terminal event to the
@@ -266,15 +270,25 @@ class Ingestor:
         untouched for five hours, because nothing re-reads a consumer's own PEL
         and the reconcile sweep skips anything already marked converted.
 
-        The consumer name is stable, so reading id "0" hands them back to us."""
+        The consumer name is stable, so reading id "0" hands them back to us.
+
+        **Size-limited, like the startup sweep, and for the same reason.** An
+        entry is un-acked precisely because the worker stopped mid-conversion —
+        which is what being KILLED by a large document looks like. Replaying it
+        unconditionally on every start is therefore a loop that no ``except``
+        catches and no sweep limit reaches: the process dies here, before the
+        event loop and before the sweep, and the entry is still pending for the
+        next start. The limit is what lets the worker get past it and ack it.
+        """
         recovered = 0
+        max_bytes = getattr(self.config, "reconcile_max_bytes", 0) or None
         while True:
             batch = self.source.read_pending(count=count)
             if not batch:
                 return recovered
             for msg_id, event in batch:
                 try:
-                    self.handle(event)
+                    self.handle(event, max_bytes=max_bytes)
                 except Exception:
                     log.exception("unhandled error replaying pending entry %s", msg_id)
                 self.source.ack([msg_id])
@@ -365,15 +379,22 @@ def startup_sweep(config: Config) -> None:
         from .reconcile import reconcile, sweep
 
         cap = getattr(config, "reconcile_max_files", 0) or None
+        # Logged, not merely applied. A sweep that quietly leaves documents alone
+        # is indistinguishable from one with nothing to do, and the number that
+        # explains both is this one.
+        size_cap = getattr(config, "reconcile_max_bytes", 0) or None
         try:
-            log.info("startup sweep: retrying documents that still need conversion")
-            log.info("startup sweep: %s", sweep(config, max_files=cap))
+            log.info("startup sweep: retrying documents that still need conversion "
+                     "(size limit: %s)",
+                     f"{size_cap} bytes" if size_cap else "none")
+            log.info("startup sweep: %s", sweep(config, max_files=cap, max_bytes=size_cap))
         except Exception:
             log.exception("startup sweep failed; the worker continues")
         if getattr(config, "reconcile_full_on_startup", False):
             try:
                 log.info("startup sweep: full tree walk")
-                log.info("startup walk: %s", reconcile(config, max_files=cap))
+                log.info("startup walk: %s",
+                         reconcile(config, max_files=cap, max_bytes=size_cap))
             except Exception:
                 log.exception("startup tree walk failed; the worker continues")
 

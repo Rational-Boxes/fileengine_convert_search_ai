@@ -57,11 +57,20 @@ class ConversionPipeline:
         self.writer = writer or RenditionWriter(mf)
         self.indexer = indexer  # optional: chunk+embed+store into pgvector (M3)
 
-    def convert(self, file_uid: str, tenant: str, force: bool = False) -> ConvertOutcome:
+    def convert(self, file_uid: str, tenant: str, force: bool = False,
+                max_bytes: Optional[int] = None) -> ConvertOutcome:
         """Convert + index a file. ``force`` (the on-demand path) re-runs even when
         the version was already processed — needed for files indexed before a new
         rendition-producing plugin existed (e.g. text → preview), which the
-        event-driven worker would otherwise skip as up-to-date."""
+        event-driven worker would otherwise skip as up-to-date.
+
+        ``max_bytes`` refuses a file larger than that, before a byte of it is
+        read. It exists because the failure mode of a very large document is not
+        a failed conversion but a dead worker: the content is read whole into
+        memory and the converter may hold several derived copies of it, so the
+        process is killed outright and no ``except`` here ever runs. Passed by
+        the unattended sweeps; left unset on the on-demand path, where somebody
+        is waiting on one specific file."""
         # Erased uids are refused before anything is read, let alone written
         # (PROPOSAL_accountability_record.md §5.4.5). An erasure can land while a
         # conversion is already in flight for the same uid; if that job then
@@ -79,6 +88,34 @@ class ConversionPipeline:
             return ConvertOutcome(file_uid, "missing", [], detail="stat failed / not found")
         if info.is_dir:                          # FileInfo.is_dir is a property
             return ConvertOutcome(file_uid, "skipped", [], detail="directory")
+
+        # Before the content is fetched: the read is what kills the process, so a
+        # check after it would not be a check at all.
+        #
+        # Which means the type has to be judged from the NAME. Content sniffing
+        # needs the bytes, and needing the bytes is the whole problem — so an
+        # extension it is, and a file with no usable extension is treated as
+        # unclaimed and therefore limited. That is the safe direction: an unknown
+        # type is exactly the case where reading it whole is the risk.
+        #
+        # Only converters that parse in this process are limited. A video or a
+        # BIM model is handled by a child process, or under the converter's own
+        # ceiling, and refusing those would strip previews from the files that
+        # most need one while buying nothing.
+        if max_bytes and info.size > max_bytes:
+            by_name = mimelib.detect(b"", info.name)
+            if not self.registry.bounds_own_memory(by_name):
+                # The row is deliberately left as it stands — no 'unsupported',
+                # no 'error'. Neither is true, and both would be a claim about
+                # the FILE when this is a statement about the limit in force
+                # today. Left alone, it is picked up by the first sweep that runs
+                # with a bigger limit, which is what an operator raising it would
+                # expect. The cost is one stat per sweep.
+                log.warning("skipping %s (%s, %s): %d bytes exceeds the sweep "
+                            "limit of %d and this type is converted in-process",
+                            file_uid, info.name, by_name, info.size, max_bytes)
+                return ConvertOutcome(file_uid, "skipped", [],
+                                      detail=f"too-large: {info.size} > {max_bytes}")
 
         version = info.version or ""
 

@@ -36,6 +36,8 @@ _PREVIEW_TARGETS = [
 
 class VideoPlugin(ConversionPlugin):
     name = "video"
+    # ffmpeg reads the temp file and streams; nothing is parsed in-process.
+    bounds_own_memory = True
 
     def supports(self, mime: str) -> bool:
         return mime.startswith("video/")
