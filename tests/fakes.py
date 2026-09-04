@@ -23,9 +23,12 @@ from convert_search_ai.store import DocStatus
 
 
 class FakeEntry:
-    """Mirrors DirectoryEntry: is_container is a property (not is_dir())."""
-    def __init__(self, uid, name, is_dir=False):
+    """Mirrors DirectoryEntry: is_container is a property (not is_dir()), and
+    the listing carries the size — which is what lets the tree walk refuse an
+    oversized file without a stat."""
+    def __init__(self, uid, name, is_dir=False, size=0):
         self.uid, self.name, self._dir = uid, name, is_dir
+        self.size = size
 
     @property
     def is_container(self):
@@ -33,9 +36,10 @@ class FakeEntry:
 
 
 class FakeInfo:
-    """Mirrors FileInfo: is_dir is a property (not a method)."""
-    def __init__(self, uid, name, version="v1", is_dir=False):
+    """Mirrors FileInfo: is_dir is a property (not a method), and carries size."""
+    def __init__(self, uid, name, version="v1", is_dir=False, size=0):
         self.uid, self.name, self.version, self._dir = uid, name, version, is_dir
+        self.size = size
 
     @property
     def is_dir(self):
@@ -50,19 +54,25 @@ class FakeMF:
         self.renditions = {}   # parent_uid -> {name: rend_uid}
         self.children = {}     # parent_uid -> [FakeEntry] (for dir()/reconcile)
         self.puts = []         # (uid, bytes)
+        self.gets = []         # uids whose CONTENT was read — the expensive part
         self._n = 1000
 
-    def add_file(self, uid, name, content=b"", version="v1", is_dir=False):
-        self.files[uid] = {"name": name, "content": content, "version": version, "dir": is_dir}
+    def add_file(self, uid, name, content=b"", version="v1", is_dir=False, size=None):
+        # size defaults to the content's own length, so a test only names it when
+        # it wants a file that CLAIMS to be huge without carrying the bytes.
+        self.files[uid] = {"name": name, "content": content, "version": version,
+                           "dir": is_dir,
+                           "size": len(content) if size is None else size}
         return uid
 
     def stat(self, uid, tenant=None, **kw):
         f = self.files.get(uid)
         if f is None:
             raise NotFoundError("file does not exist", operation="stat", uid=uid)
-        return FakeInfo(uid, f["name"], f["version"], f["dir"])
+        return FakeInfo(uid, f["name"], f["version"], f["dir"], f.get("size", 0))
 
     def get(self, uid, tenant=None, **kw):
+        self.gets.append(uid)
         f = self.files.get(uid)
         if f is None:
             raise NotFoundError("file does not exist", operation="get", uid=uid)

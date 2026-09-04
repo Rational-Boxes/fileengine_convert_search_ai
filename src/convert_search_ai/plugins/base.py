@@ -119,6 +119,30 @@ class ConversionPlugin(ABC):
 
     name: str = "plugin"
 
+    #: Does this converter keep its own memory use bounded, whatever the input?
+    #:
+    #: Two ways to be able to say yes. It STREAMS — writes the bytes to a temp
+    #: file and hands the path to ffmpeg or ImageMagick, so the expansion happens
+    #: in a child process with its own limits and a failure takes only that
+    #: process down. Or it enforces its OWN input limit, deliberately chosen for
+    #: what it converts (the 3D plugin's ``threed_max_input_mb``).
+    #:
+    #: The converters that cannot say yes build a full object model of the
+    #: document in THIS interpreter — docling, pypdf — several times the size of
+    #: the file, and when that fails it kills the worker. Only those are subject
+    #: to the unattended sweeps' blanket size limit.
+    #:
+    #: That is why this is not simply "is it big": a two-hour video and a 40 MB
+    #: BIM model are the files that most need a preview, and neither is a threat
+    #: to the process. A 40 MB PDF is.
+    #:
+    #: Declared rather than derived, unlike :meth:`extracts_text`: nothing in a
+    #: plugin's shape says where its memory goes. It defaults to False so a new
+    #: converter is limited until somebody says otherwise — forgetting it costs a
+    #: skipped preview on a large file, while the opposite default costs the
+    #: worker.
+    bounds_own_memory: bool = False
+
     @abstractmethod
     def supports(self, mime: str) -> bool:
         ...

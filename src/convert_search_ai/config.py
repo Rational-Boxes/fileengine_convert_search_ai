@@ -202,6 +202,34 @@ class Config:
         self.reconcile_full_on_startup = _bool("CSAI_RECONCILE_FULL_ON_STARTUP", False)
         # Cap on documents retried per sweep; 0 = no cap.
         self.reconcile_max_files = int(_env("CSAI_RECONCILE_MAX_FILES", "0"))
+        # Largest file the UNATTENDED sweeps will convert; 0 = no limit.
+        #
+        # Conversion reads the whole file into memory and hands it to a converter
+        # that may hold several derived copies of it at once, so a big enough
+        # document does not fail — it takes the worker's process down with it.
+        # Under `restart: always` that is a loop rather than an incident: the
+        # sweep retries the same file first on every start (a crashed run leaves
+        # the row at 'converting', which is the first thing RETRY_STATUSES
+        # selects), so the sweep never finishes, nothing after that file is ever
+        # converted, and the only outward sign is a climbing restart count.
+        #
+        # The limit is on the AUTOMATIC path only. A person asking for a specific
+        # file to be regenerated is a different question — they are waiting for
+        # an answer about one file, and it is not a crash loop — so the on-demand
+        # path passes no limit and is unchanged. Nor are live upload events.
+        #
+        # And only for converters that parse IN THIS PROCESS. Video and images
+        # stream through a child process; the 3D plugin enforces its own ceiling
+        # (threed_max_input_mb) sized for what BIM models actually weigh. None of
+        # those can take the worker down, and refusing them would strip previews
+        # from the files that most need one. See ConversionPlugin's
+        # `bounds_own_memory`.
+        #
+        # 12 MiB by default. Skipped files are left exactly as they are, so
+        # raising this limit makes the next sweep pick them up with no other
+        # intervention.
+        self.reconcile_max_bytes = int(_env("CSAI_RECONCILE_MAX_BYTES",
+                                            str(12 * 1024 * 1024)))
         self.audit_log_file = _env("CSAI_AUDIT_LOG_FILE", "")            # empty -> stderr
 
         # --- Pluggable AI providers (DEVELOPMENT_PLAN §7; chosen at deploy time) ---

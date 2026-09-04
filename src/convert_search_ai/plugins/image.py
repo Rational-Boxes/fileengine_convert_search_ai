@@ -25,6 +25,9 @@ from .. import tools
 
 class ImagePlugin(ConversionPlugin):
     name = "image"
+    # ImageMagick, on a temp file, in its own process and with its own
+    # resource limits.
+    bounds_own_memory = True
 
     # (logical fmt, max box). Both emitted as stripped PNG.
     _SIZES = [("thumbnail", 256), ("preview", 1280)]

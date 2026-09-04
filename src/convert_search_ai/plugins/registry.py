@@ -64,6 +64,25 @@ class PluginRegistry:
         except Exception:
             return False
 
+    def bounds_own_memory(self, mime: str) -> bool:
+        """True when the plugin that would handle ``mime`` keeps its own memory
+        use bounded — by streaming through an external tool, or by enforcing an
+        input limit of its own.
+
+        The unattended sweeps use this to decide whether their blanket size limit
+        applies. A video or a large BIM model is converted by a child process, or
+        under the converter's own ceiling, and cannot take the worker down; a
+        large PDF, parsed in this interpreter, can. Anything unclaimed answers
+        False — an unknown type is exactly the case where reading the whole thing
+        is the risk."""
+        plugin = self.for_mime(mime)
+        if plugin is None:
+            return False
+        try:
+            return bool(getattr(plugin, "bounds_own_memory", False))
+        except Exception:
+            return False
+
     def convert(self, data: bytes, mime: str, name: str = "") -> ConversionResult:
         """Run the matching plugin. Unknown MIME → ``supported=False`` (not an error).
         A plugin that raises is treated as producing nothing (fail-soft)."""

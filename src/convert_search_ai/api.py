@@ -521,7 +521,13 @@ def ingest_reconcile(request: Request, tenant: str | None = Query(default=None),
 
     The tenant is taken from the caller's identity. It was previously a free query
     parameter on an unauthenticated route, so anyone could name any tenant; a
-    tenant admin now reconciles their own tenant and no one else's."""
+    tenant admin now reconciles their own tenant and no one else's.
+
+    Both modes honour ``CSAI_RECONCILE_MAX_BYTES``: this runs in the same process
+    that serves this request, and a document large enough to kill the worker
+    would kill the API here just as readily. To convert one oversized file
+    deliberately, use ``POST /documents/{file_uid}/convert``, which is the
+    on-demand path and carries no limit."""
     config = request.app.state.config
     if not _check_core(config):
         return JSONResponse(status_code=503, content={"error": "core not reachable"})

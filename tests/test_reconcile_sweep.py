@@ -108,10 +108,10 @@ class FakePipeline:
     def __init__(self, statuses=None):
         self.calls = []
         self._statuses = statuses or {}
-    def convert(self, uid, tenant, force=False):
+    def convert(self, uid, tenant, force=False, max_bytes=None):
         self.calls.append((uid, force))
         class Out: pass
-        o = Out(); o.status = self._statuses.get(uid, "indexed")
+        o = Out(); o.status = self._statuses.get(uid, "indexed"); o.detail = ""
         return o
 
 
@@ -131,10 +131,10 @@ def test_sweep_retries_only_what_needs_it_and_forces_past_the_idempotency_guard(
 
 def test_a_failing_convert_does_not_abort_the_sweep():
     class Boom(FakePipeline):
-        def convert(self, uid, tenant, force=False):
+        def convert(self, uid, tenant, force=False, max_bytes=None):
             if uid == "bad":
                 raise RuntimeError("converter exploded")
-            return super().convert(uid, tenant, force)
+            return super().convert(uid, tenant, force, max_bytes)
 
     rows = [row(file_uid="bad", status="error", chunks=0),
             row(file_uid="good", status="error", chunks=0)]
