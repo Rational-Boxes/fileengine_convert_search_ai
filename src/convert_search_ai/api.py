@@ -36,6 +36,14 @@ import secrets
 from functools import partial
 
 import anyio
+# The SUBMODULES, explicitly. `import anyio` alone does not bind them: anyio
+# 4.15 stopped importing them from its __init__, so `anyio.from_thread.run(...)`
+# raised AttributeError at the first streamed chat token — after the model had
+# already been called and paid for. It worked until then only because something
+# else in the process happened to have imported them first, which is not a
+# guarantee, and stopped being true when the dependency moved.
+import anyio.from_thread
+import anyio.to_thread
 from fastapi import (APIRouter, Body, Depends, Header, HTTPException, Query, Request,
                      WebSocket, WebSocketDisconnect)
 from fastapi.concurrency import run_in_threadpool
