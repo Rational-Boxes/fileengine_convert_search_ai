@@ -46,10 +46,11 @@ def _patch_targets(monkeypatch, reachable):
     """reachable: set of uris that authenticate; others raise _ServerUnreachable."""
     seen = []
 
-    def fake(uri, cfg, username, password):
+    def fake(uri, cfg, username, password, tenant=None):
         seen.append(uri)
         if uri in reachable:
-            return Identity(user=username, roles=["users"], tenant=cfg.tenant, authenticated=True)
+            return Identity(user=username, roles=["users"],
+                            tenant=tenant or cfg.tenant, authenticated=True)
         raise _ServerUnreachable(uri)
 
     monkeypatch.setattr(ldap_auth, "_authenticate_against", fake)
@@ -93,7 +94,8 @@ def test_recovery_after_cooldown(monkeypatch, clock):
     # master recovers; cooldown elapses -> master tried again first
     monkeypatch.setattr(
         ldap_auth, "_authenticate_against",
-        lambda uri, cfg, u, p: (seen.append(uri) or Identity(user=u, tenant=cfg.tenant, authenticated=True))
+        lambda uri, cfg, u, p, tenant=None: (
+            seen.append(uri) or Identity(user=u, tenant=tenant or cfg.tenant, authenticated=True))
         if uri == "ldap://masterhost" else (_ for _ in ()).throw(_ServerUnreachable(uri)),
     )
     clock["v"] = 30.0

@@ -115,8 +115,9 @@ def test_resolve_identity_prefers_local_store_over_bridge():
         def verify(self, *a):
             raise AssertionError("bridge must not be consulted for our own token")
 
-    out = resolve_identity(f"Bearer {tok}", "acme", None, store, FakeBridge())
-    assert out.user == "local" and out.tenant == "acme"
+    # Our own token, presented for the tenant it was issued for.
+    out = resolve_identity(f"Bearer {tok}", "t", None, store, FakeBridge())
+    assert out.user == "local" and out.tenant == "t"
 
 
 def test_resolve_identity_without_bridge_rejects_unknown_token():

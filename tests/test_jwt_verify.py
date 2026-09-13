@@ -75,5 +75,8 @@ def test_identity_is_tenant_scoped():
               "roles": {"t1": ["users", "administrators"], "t2": ["users"]}}
     assert identity_from_claims(claims, "t1") == ("a@b", ["users", "administrators"])
     assert identity_from_claims(claims, "t2") == ("a@b", ["users"])
-    assert identity_from_claims(claims, "t3") == ("a@b", [])
+    # t3 is absent from the map, so the token does not attest membership of it.
+    # This used to answer ("a@b", []) — an authenticated caller in a tenant they
+    # do not belong to, which read-by-default then served.
+    assert identity_from_claims(claims, "t3") is None
     assert identity_from_claims(claims, "") == ("a@b", ["users", "administrators"])
