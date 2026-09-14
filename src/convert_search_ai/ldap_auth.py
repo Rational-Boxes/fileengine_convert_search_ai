@@ -114,8 +114,18 @@ def _authenticate_against(uri: str, cfg, username: str, password: str,
         # from csai, got 401 on every attempt, and left its events un-acked, so
         # folder actions silently stopped firing while every container looked
         # healthy. ldap_manager already filters this way; csai did not.
-        svc.search(cfg.ldap_user_base, f"(|(uid={username})(mail={username}))",
-                   search_scope=SUBTREE, attributes=["cn"])
+        # The user base first, then this service's own base. A worker's account
+        # lives under ou=services so that no user-facing query can see it; that
+        # makes it unresolvable here unless this path is told where to look.
+        bases = [cfg.ldap_user_base]
+        svc_base = getattr(cfg, "ldap_service_base", "") or ""
+        if svc_base:
+            bases.append(svc_base)
+        for b in bases:
+            svc.search(b, f"(|(uid={username})(mail={username}))",
+                       search_scope=SUBTREE, attributes=["cn"])
+            if svc.entries:
+                break
         if not svc.entries:
             return ident
         user_dn = svc.entries[0].entry_dn
