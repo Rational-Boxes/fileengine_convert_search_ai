@@ -85,6 +85,10 @@ class Config:
         # Retrieval is always evaluated as the *end user* — never this account.
         self.tenant = _env("FILEENGINE_CSAI_TENANT", "default")
         self.agent_user = _first("FILEENGINE_CSAI_USER", "FILEENGINE_LDAP_USER", "")
+        # Infrastructure identities exempt from the tenant-membership rule (they
+        # are not members of anything). Comma-separated; the service's own agent
+        # is always included. They carry NO tenant roles — see tenant_access.
+        self.service_principals = _env("FILEENGINE_SERVICE_PRINCIPALS", "")
         self.agent_password = _first("FILEENGINE_CSAI_PASSWORD", "FILEENGINE_LDAP_PASSWORD", "")
         # Indexing must see ALL content so the vector index is complete; per-user
         # ACLs are enforced later, at retrieval time (PermissionGate). The core

@@ -42,7 +42,10 @@ def test_resolve_bearer_scopes_to_request_tenant():
     store = TokenStore()
     ident = Identity(user="svc", roles=["readers"], tenant="default", authenticated=True)
     tok = store.issue(ident)
-    assert resolve_identity(f"Bearer {tok}", "acme", None, store) == replace(ident, tenant="acme")
+    # A token is bound to the tenant it was issued for. It used to be re-scoped
+    # by the request, carrying its issue-time roles into another tenant.
+    assert resolve_identity(f"Bearer {tok}", "acme", None, store) is None
+    assert resolve_identity(f"Bearer {tok}", "default", None, store) == ident
     assert resolve_identity("Bearer bad", "acme", None, store) is None
     assert resolve_identity("", "acme", None, store) is None
 
@@ -50,8 +53,9 @@ def test_resolve_bearer_scopes_to_request_tenant():
 def test_resolve_basic_binds_via_ldap(monkeypatch):
     cfg = Config()
 
-    def fake_auth(config, user, password):
-        return Identity(user=user, roles=["users"], tenant=config.tenant,
+    def fake_auth(config, user, password, tenant=None):
+        # Roles are resolved FOR a tenant; the stand-in scopes the same way.
+        return Identity(user=user, roles=["users"], tenant=tenant or config.tenant,
                         authenticated=(password == "right"))
 
     monkeypatch.setattr(ha, "authenticate", fake_auth)
