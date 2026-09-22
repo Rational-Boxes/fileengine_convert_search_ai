@@ -47,10 +47,13 @@ _MD_MIMES = frozenset({"text/markdown", "text/x-markdown"})
 # plugin still wins if it ever does not.
 _MD_EXTS = (".markdown", ".mdown", ".mkdn", ".mdwn", ".mkd", ".md")
 
-# What a Markdown file's type can plausibly come back as when the bytes were all
-# that was consulted. Deliberately narrow: a .md name does NOT override a real
-# format verdict, so PDF bytes called notes.md stay a PDF.
-_GENERIC_FOR_MD = frozenset({"text/plain", "application/octet-stream"})
+# A .md name claims the file whenever the recorded type is one the bytes could not
+# have settled: a generic verdict, or a TEXT one. libmagic reads a Markdown file
+# full of fenced code blocks and answers `application/javascript`, `text/html` or
+# `text/x-c++` — in production that was 227 of 948 Markdown files — so "generic
+# only" left a quarter of them with the wrong renderer.
+#
+# It stops at the text boundary: PDF bytes called notes.md stay a PDF.
 
 
 def is_markdown_name(name: str) -> bool:
@@ -326,15 +329,17 @@ class MarkdownPlugin(ConversionPlugin):
         return mime in _MD_MIMES
 
     def claims(self, mime: str, name: str = "") -> bool:
-        """Markdown by MIME, or by name when the MIME is only "it is text".
+        """Markdown by MIME, or by name when the MIME could not have settled it.
 
-        A `.md` file whose type came back `text/plain` is still Markdown, and the
-        renderer reads the bytes rather than the MIME, so there is nothing to lose
-        by taking it. A `text/plain` verdict on a file called something else is not
-        claimed — that belongs to the source/text plugins."""
+        A `.md` file whose type came back `text/plain` — or `application/javascript`,
+        which is what libmagic makes of fenced code blocks — is still Markdown, and
+        the renderer reads the bytes rather than the MIME, so there is nothing to
+        lose by taking it. A textual verdict on a file called something else is not
+        claimed: that belongs to the source/text plugins."""
         if self.supports(mime):
             return True
-        return is_markdown_name(name) and (not mime or mime in _GENERIC_FOR_MD)
+        from ..mime import is_refinable
+        return is_markdown_name(name) and (not mime or is_refinable(mime))
 
     def render(self, data: bytes, mime: str, name: str) -> List[Rendition]:
         if not data:

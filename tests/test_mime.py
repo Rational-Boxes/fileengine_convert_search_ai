@@ -129,3 +129,46 @@ def test_the_sniffer_still_wins_over_libmagic_and_the_name(monkeypatch):
     _with_magic(monkeypatch, "text/plain")
     ifc = b"ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('IFC4'));\nDATA;\n"
     assert detect(ifc, "Project.ifc") == "application/x-ifc"
+
+
+# ── libmagic classifies the LANGUAGE of text; the name knows the convention ──
+#
+# Production numbers, one tenant: of 948 Markdown files, 718 were recorded
+# `text/plain` and 227 carried a language verdict — `application/javascript` for
+# fenced code blocks, `text/html`, `text/x-ruby`, `text/x-c++`, `text/x-Algol68`.
+# A rule that only refined GENERIC verdicts left that quarter rendering as source.
+
+@pytest.mark.parametrize("verdict", [
+    "application/javascript", "text/html", "text/x-ruby", "text/x-c++",
+    "text/x-Algol68", "application/json", "text/x-script.python",
+])
+def test_a_markdown_name_outranks_a_language_guess(monkeypatch, verdict):
+    _with_magic(monkeypatch, verdict)
+    body = b"# Title\n\n```js\nconst a = 1;\n```\n"
+    assert detect(body, "notes.md") == "text/markdown"
+
+
+def test_but_only_for_the_conventions_we_curate(monkeypatch):
+    # A .py file keeps libmagic's answer: the name is not in the curated maps, and
+    # mimetypes' text/x-python is not more authoritative than libmagic's subtype.
+    _with_magic(monkeypatch, "text/x-script.python")
+    assert detect(b"import os\n", "script.py") == "text/x-script.python"
+
+
+def test_and_never_across_the_text_binary_boundary(monkeypatch):
+    # An .obj name cannot turn a real PNG into a 3D model, nor a .md name a PDF.
+    _with_magic(monkeypatch, "image/png")
+    assert detect(b"\x89PNG-ish", "model.obj") == "image/png"
+    _with_magic(monkeypatch, "application/zip")
+    assert detect(b"PK-ish", "notes.md") == "application/zip"
+
+
+def test_is_refinable_draws_the_line_where_documented():
+    from convert_search_ai.mime import is_refinable
+    assert is_refinable("text/plain")
+    assert is_refinable("application/javascript")
+    assert is_refinable("text/x-c++")
+    assert is_refinable("application/rss+xml")
+    assert not is_refinable("application/pdf")
+    assert not is_refinable("image/png")
+    assert not is_refinable("model/gltf-binary")

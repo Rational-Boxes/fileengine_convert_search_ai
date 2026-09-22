@@ -54,9 +54,15 @@ def _mistyped_by_a_generic_verdict(row, registry) -> Optional[str]:
 
     Two properties keep this from becoming a treadmill:
 
-    * It fires only when the RECORDED type is generic. A file whose bytes really
-      did identify it — a PNG that happens to be called notes.txt — has a specific
-      recorded type, is not reconsidered, and keeps the answer the content gave.
+    * It fires only when the recorded type is one the bytes could not have settled:
+      generic, or textual (libmagic classifies the LANGUAGE of a text file, which
+      for Markdown-with-code-blocks comes out as javascript, html or c++). A file
+      whose bytes really did identify it — a PNG called notes.txt — keeps that
+      answer and is never reconsidered.
+    * It compares against the CURATED extension maps only, never `mimetypes`. That
+      is what stops it churning: `mimetypes` says text/x-python for a .py file
+      where libmagic says text/x-script.python, neither is wrong, and a rule built
+      on that difference would re-convert every source file on every sweep.
     * It is self-extinguishing. The re-conversion records the type detection gives
       today, and if that differs it is by definition no longer the recorded one, so
       the row stops matching. Where detection agrees with the record (a .txt file
@@ -73,12 +79,12 @@ def _mistyped_by_a_generic_verdict(row, registry) -> Optional[str]:
     Requires the row's name: a row that never recorded one (older schema) is left
     alone rather than guessed at."""
     name = getattr(row, "name", "") or ""
-    if not name or row.mime not in mimelib.GENERIC_TYPES:
+    if not name or not mimelib.is_refinable(row.mime):
         return None
-    refined = mimelib.detect(b"", name)
-    if refined == row.mime:
+    curated = mimelib.curated_by_name(name)
+    if not curated or curated == row.mime:
         return None
-    return f"mistyped/{row.mime}->{refined}"
+    return f"mistyped/{row.mime}->{curated}"
 
 
 def needs_conversion(row, registry) -> Optional[str]:

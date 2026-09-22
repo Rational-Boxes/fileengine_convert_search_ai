@@ -215,3 +215,32 @@ def test_an_obj_model_recorded_as_plain_text_is_reconverted():
     why = needs_conversion(row(status="converted", mime="text/plain",
                                name="model.obj", chunks=0), r)
     assert why == "mistyped/text/plain->model/obj"
+
+
+def test_markdown_recorded_as_a_language_guess_is_also_reconverted():
+    # The 227-file case: libmagic called the fenced code blocks javascript, so the
+    # record is specific and a generic-only rule would never revisit it.
+    r = default_registry(None)
+    assert needs_conversion(row(status="indexed", mime="application/javascript",
+                                name="notes.md", chunks=9), r) \
+        == "mistyped/application/javascript->text/markdown"
+    assert needs_conversion(row(status="indexed", mime="text/html",
+                                name="notes.md", chunks=9), r) \
+        == "mistyped/text/html->text/markdown"
+
+
+def test_a_source_file_is_never_swept_for_its_subtype():
+    # text/x-script.python (libmagic) vs text/x-python (mimetypes) is a difference
+    # that means nothing. Driving the rule off the curated maps is what stops this
+    # re-converting every source file on every sweep, forever.
+    r = default_registry(None)
+    assert needs_conversion(row(status="indexed", mime="text/x-script.python",
+                                name="script.py", chunks=4), r) is None
+    assert needs_conversion(row(status="indexed", mime="text/html",
+                                name="page.html", chunks=4), r) is None
+
+
+def test_a_real_format_record_is_left_alone_whatever_the_name_says():
+    r = default_registry(None)
+    assert needs_conversion(row(status="indexed", mime="application/pdf",
+                                name="notes.md", chunks=4), r) is None

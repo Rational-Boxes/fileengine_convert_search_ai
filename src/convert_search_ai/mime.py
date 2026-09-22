@@ -71,6 +71,70 @@ GENERIC_TYPES = frozenset({
 # name-blind detection mistyped.
 _GENERIC_TYPES = GENERIC_TYPES          # kept for callers using the old name
 
+# Types that are TEXT, whatever subtype libmagic settled on.
+#
+# The second half of the same problem, and production is where it showed: of 948
+# Markdown files in one tenant, 718 were recorded `text/plain` — and 227 were
+# recorded `application/javascript`, `text/html`, `text/x-ruby`, `text/x-c++` or
+# `text/x-Algol68`, because libmagic looks at a Markdown file full of fenced code
+# blocks and classifies the LANGUAGE it sees. Those verdicts are not generic, so a
+# rule that only refined generic ones left a quarter of the corpus rendering as
+# source.
+#
+# Within text, the extension is the better authority: libmagic is guessing at a
+# language from content, while ".md" is a statement about the document's
+# convention. Across the text/binary boundary the bytes remain the authority —
+# `application/pdf` or `image/png` is never talked out of by a name.
+_TEXTUAL_TYPES = frozenset({
+    "application/json", "application/ld+json",
+    "application/javascript", "application/x-javascript", "application/ecmascript",
+    "application/typescript", "application/x-typescript",
+    "application/xml", "application/x-xml",
+    "application/yaml", "application/x-yaml", "application/toml",
+    "application/sql", "application/x-sql", "application/graphql",
+    "application/x-sh", "application/x-shellscript", "application/x-csh",
+    "application/x-python", "application/x-python-code",
+    "application/x-perl", "application/x-ruby", "application/x-php",
+    "application/x-tex", "application/x-latex",
+})
+
+
+def is_textual(mime: str) -> bool:
+    """True when ``mime`` describes text — `text/*`, the source-ish
+    `application/*` types, or a structured `+xml`/`+json` subtype."""
+    if not mime:
+        return False
+    if mime.startswith("text/") or mime in _TEXTUAL_TYPES:
+        return True
+    return mime.startswith("application/") and (mime.endswith("+xml") or mime.endswith("+json"))
+
+
+def is_refinable(mime: str) -> bool:
+    """True when the NAME is allowed to correct ``mime``.
+
+    Generic verdicts say nothing about format; textual ones describe a language
+    rather than a convention. Everything else is a format the bytes identified,
+    and stays."""
+    return mime in GENERIC_TYPES or is_textual(mime)
+
+
+def curated_by_name(name: str) -> Optional[str]:
+    """The type this service's own extension maps assign to ``name``, or None.
+
+    Only the curated maps — no `mimetypes` — because this answers "is this one of
+    the conventions we know the sniffer cannot see", and that has to be a closed
+    set. It is also what the reconcile sweep compares against: a rule driven by
+    `mimetypes` would re-convert every .py file forever, since `mimetypes` says
+    text/x-python where libmagic says text/x-script.python and neither is wrong."""
+    if not name:
+        return None
+    lower = name.lower()
+    for table in (_EXT_3D, _EXT_TEXT):
+        for ext in sorted(table, key=len, reverse=True):
+            if lower.endswith(ext):
+                return table[ext]
+    return None
+
 # Text conventions libmagic cannot see and `mimetypes` may not know. Markdown's
 # many spellings are all in use in the wild; .yaml/.yml are here because YAML is
 # structured data a converter may want to treat as such rather than as source.
@@ -193,13 +257,11 @@ def _by_name(name: str) -> Optional[str]:
     map — ".city.json" must beat ".json", and ".ifcxml" must beat neither .ifc nor
     .xml by accident — so they are scanned by descending extension length rather
     than dict order."""
+    curated = curated_by_name(name)
+    if curated:
+        return curated
     if not name:
         return None
-    lower = name.lower()
-    for table in (_EXT_3D, _EXT_TEXT):
-        for ext in sorted(table, key=len, reverse=True):
-            if lower.endswith(ext):
-                return table[ext]
     guess, _ = mimetypes.guess_type(name)
     return guess or None
 
@@ -217,6 +279,13 @@ def _refine(guess: str, name: str) -> str:
     text conventions, the curated 3D/AEC map, and text/* from `mimetypes`. A name
     cannot promote plain text to `application/pdf` or `image/png`."""
     if guess not in GENERIC_TYPES:
+        # A textual verdict is a language guess; a curated extension outranks it.
+        # Nothing else may be overridden, and `mimetypes` is deliberately not
+        # consulted here — only the conventions we know sniffing cannot see.
+        if is_textual(guess):
+            curated = curated_by_name(name)
+            if curated and curated != guess:
+                return curated
         return guess
     refined = _by_name(name)
     if not refined or refined == guess:
