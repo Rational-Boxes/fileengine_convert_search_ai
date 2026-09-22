@@ -40,6 +40,24 @@ from .doc_preview import DEFAULT_PREVIEW_PX, DEFAULT_THUMBNAIL_PX, page1_preview
 
 _MD_MIMES = frozenset({"text/markdown", "text/x-markdown"})
 
+# Markdown is a CONVENTION over plain text, so the filename is the only reliable
+# signal: libmagic answers `text/plain` for every one of these, and did so in
+# production while the source-code formatter quietly took them all. Detection now
+# refines that verdict from the name, and claiming the extensions here means this
+# plugin still wins if it ever does not.
+_MD_EXTS = (".markdown", ".mdown", ".mkdn", ".mdwn", ".mkd", ".md")
+
+# What a Markdown file's type can plausibly come back as when the bytes were all
+# that was consulted. Deliberately narrow: a .md name does NOT override a real
+# format verdict, so PDF bytes called notes.md stay a PDF.
+_GENERIC_FOR_MD = frozenset({"text/plain", "application/octet-stream"})
+
+
+def is_markdown_name(name: str) -> bool:
+    """True when ``name`` is one of Markdown's several spellings."""
+    lower = (name or "").lower()
+    return any(lower.endswith(ext) for ext in _MD_EXTS)
+
 # --- inline Markdown -> reportlab mini-markup -------------------------------
 
 _CODE_SPAN = re.compile(r"`([^`]+)`")
@@ -306,6 +324,17 @@ class MarkdownPlugin(ConversionPlugin):
 
     def supports(self, mime: str) -> bool:
         return mime in _MD_MIMES
+
+    def claims(self, mime: str, name: str = "") -> bool:
+        """Markdown by MIME, or by name when the MIME is only "it is text".
+
+        A `.md` file whose type came back `text/plain` is still Markdown, and the
+        renderer reads the bytes rather than the MIME, so there is nothing to lose
+        by taking it. A `text/plain` verdict on a file called something else is not
+        claimed — that belongs to the source/text plugins."""
+        if self.supports(mime):
+            return True
+        return is_markdown_name(name) and (not mime or mime in _GENERIC_FOR_MD)
 
     def render(self, data: bytes, mime: str, name: str) -> List[Rendition]:
         if not data:

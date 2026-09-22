@@ -22,6 +22,7 @@ decide it is ``unsupported`` rather than crash."""
 from __future__ import annotations
 
 import mimetypes
+from typing import Optional
 
 DEFAULT = "application/octet-stream"
 
@@ -46,6 +47,43 @@ _MAGIC = [
     (0, b"ply\r", "model/ply"),
     (0, b"#VRML", "model/vrml"),           # VRML world (#VRML V2.0 utf8 / V1.0)
 ]
+
+# A GENERIC verdict is a floor, not an answer.
+#
+# Sniffing identifies a FORMAT; several of the types this service converts are a
+# CONVENTION over plain text, and no amount of looking at the bytes will
+# distinguish them. libmagic answers `text/plain` for Markdown, IFC/STEP, ASCII
+# STL, OBJ and YAML alike, and `application/json` for both CityJSON and
+# glTF-JSON. Returning that verdict and never consulting the name is what sent
+# every .md file to the source-code formatter instead of the document renderer —
+# and every .ifc to it as well, instead of the 3D pipeline.
+#
+# So for these verdicts only, the name gets to refine the answer. A SPECIFIC
+# verdict is never overridden: bytes that sniff as a PDF stay a PDF whatever the
+# file is called, which is the property that stops a name from talking this
+# service into treating one format as another.
+GENERIC_TYPES = frozenset({
+    "text/plain",
+    "application/json",
+    "application/octet-stream",   # == DEFAULT, spelled out for grep-ability
+})
+# Public: the reconcile sweep needs the same rule to find files an earlier,
+# name-blind detection mistyped.
+_GENERIC_TYPES = GENERIC_TYPES          # kept for callers using the old name
+
+# Text conventions libmagic cannot see and `mimetypes` may not know. Markdown's
+# many spellings are all in use in the wild; .yaml/.yml are here because YAML is
+# structured data a converter may want to treat as such rather than as source.
+_EXT_TEXT = {
+    ".markdown": "text/markdown",
+    ".mdown": "text/markdown",
+    ".mkdn": "text/markdown",
+    ".mdwn": "text/markdown",
+    ".mkd": "text/markdown",
+    ".md": "text/markdown",
+    ".yaml": "application/yaml",
+    ".yml": "application/yaml",
+}
 
 # Extension map for 3D/AEC types many of which libmagic/mimetypes don't know.
 _EXT_3D = {
@@ -147,8 +185,58 @@ def _sniff_zip(data: bytes) -> str:
     return "application/zip"
 
 
+def _by_name(name: str) -> Optional[str]:
+    """The type ``name``'s extension implies, or None.
+
+    The curated maps come first because they hold what `mimetypes` gets wrong or
+    has never heard of (.ifc, .mkd, .city.json). Longest-suffix wins within each
+    map — ".city.json" must beat ".json", and ".ifcxml" must beat neither .ifc nor
+    .xml by accident — so they are scanned by descending extension length rather
+    than dict order."""
+    if not name:
+        return None
+    lower = name.lower()
+    for table in (_EXT_3D, _EXT_TEXT):
+        for ext in sorted(table, key=len, reverse=True):
+            if lower.endswith(ext):
+                return table[ext]
+    guess, _ = mimetypes.guess_type(name)
+    return guess or None
+
+
+def _refine(guess: str, name: str) -> str:
+    """Let the NAME resolve a generic verdict; never override a specific one.
+
+    The asymmetry is the security property. Refining `text/plain` costs nothing —
+    the bytes said "this is text" and the name says which KIND of text, which is
+    a claim about convention, not content. Refining a specific verdict would let
+    a file called `invoice.pdf` be treated as a PDF because of its name, which is
+    exactly the confusion an attacker wants.
+
+    A refinement is also only accepted when it stays in the same neighbourhood:
+    text conventions, the curated 3D/AEC map, and text/* from `mimetypes`. A name
+    cannot promote plain text to `application/pdf` or `image/png`."""
+    if guess not in GENERIC_TYPES:
+        return guess
+    refined = _by_name(name)
+    if not refined or refined == guess:
+        return guess
+    if refined in _EXT_3D.values() or refined in _EXT_TEXT.values():
+        return refined
+    if refined.startswith("text/"):
+        return refined
+    # Anything else (a binary type claimed purely by extension) is ignored: the
+    # bytes are the authority on whether this is a document, an image or an
+    # archive, and they already answered.
+    return guess
+
+
 def detect(data: bytes, name: str = "") -> str:
-    """Best-effort MIME type for ``data`` (with optional file ``name``)."""
+    """Best-effort MIME type for ``data`` (with optional file ``name``).
+
+    Content first, then the name — but a generic content verdict (see
+    :data:`GENERIC_TYPES`) is refined by the name rather than returned as-is,
+    because "it is text" is not a format."""
     if data:
         sniffed = _sniff(data)
         if sniffed:
@@ -157,15 +245,10 @@ def detect(data: bytes, name: str = "") -> str:
             import magic  # type: ignore
             guess = magic.from_buffer(bytes(data[:8192]), mime=True)
             if guess and guess != DEFAULT:
-                return guess
+                return _refine(guess, name)
         except Exception:
             pass
-    if name:
-        lower = name.lower()
-        for ext, mime in _EXT_3D.items():
-            if lower.endswith(ext):
-                return mime
-        guess, _ = mimetypes.guess_type(name)
-        if guess:
-            return guess
+    named = _by_name(name)
+    if named:
+        return named
     return DEFAULT

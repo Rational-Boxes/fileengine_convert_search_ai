@@ -110,3 +110,49 @@ def test_video_emits_poster_only_when_no_usable_encoder(monkeypatch):
     rends = VideoPlugin().render(b"v", "video/mp4", "clip.mp4")
     fmts = {r.fmt for r in rends}
     assert fmts == {"poster"}  # still get the poster, just no clip
+
+
+# ── dispatch sees the filename, and Markdown is not source code ─────────────
+
+def test_markdown_is_claimed_by_the_markdown_plugin_not_the_source_formatter():
+    from convert_search_ai.plugins.registry import default_registry
+    r = default_registry(None)
+    assert r.for_mime("text/markdown", "notes.md").name == "markdown"
+    # The case that shipped broken: libmagic says text/plain, and the source
+    # plugin claims text/* wholesale — so without a name-aware claim it wins.
+    assert r.for_mime("text/plain", "notes.md").name == "markdown"
+    assert r.for_mime("text/plain", "notes.mkd").name == "markdown"
+    assert r.for_mime("text/plain", "README.MARKDOWN").name == "markdown"
+
+
+def test_the_source_formatter_still_owns_everything_else():
+    from convert_search_ai.plugins.registry import default_registry
+    r = default_registry(None)
+    assert r.for_mime("text/plain", "notes.txt").name == "source"
+    assert r.for_mime("text/x-python", "app.py").name == "source"
+    assert r.for_mime("text/plain", "").name == "source"
+
+
+def test_a_markdown_name_does_not_override_a_real_format():
+    # PDF bytes called notes.md are a PDF: the name only resolves a GENERIC type.
+    from convert_search_ai.plugins.registry import default_registry
+    r = default_registry(None)
+    assert r.for_mime("application/pdf", "notes.md").name == "pdf"
+    assert r.for_mime("image/png", "diagram.md").name == "image"
+
+
+def test_claims_defaults_to_supports_for_plugins_that_do_not_care():
+    # A plugin that never heard of `claims` keeps working — the interface has a
+    # default, so adding name-awareness could not break an existing converter.
+    from convert_search_ai.plugins.base import ConversionPlugin
+
+    class OnlyMime(ConversionPlugin):
+        name = "only-mime"
+
+        def supports(self, mime):
+            return mime == "application/x-thing"
+
+    p = OnlyMime()
+    assert p.claims("application/x-thing") is True
+    assert p.claims("application/x-thing", "whatever.thing") is True
+    assert p.claims("text/plain", "whatever.thing") is False

@@ -104,7 +104,7 @@ class ConversionPipeline:
         # most need one while buying nothing.
         if max_bytes and info.size > max_bytes:
             by_name = mimelib.detect(b"", info.name)
-            if not self.registry.bounds_own_memory(by_name):
+            if not self.registry.bounds_own_memory(by_name, info.name):
                 # The row is deliberately left as it stands — no 'unsupported',
                 # no 'error'. Neither is true, and both would be a claim about
                 # the FILE when this is a statement about the limit in force

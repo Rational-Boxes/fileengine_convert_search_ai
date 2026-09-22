@@ -147,6 +147,19 @@ class ConversionPlugin(ABC):
     def supports(self, mime: str) -> bool:
         ...
 
+    def claims(self, mime: str, name: str = "") -> bool:
+        """Whether this plugin should handle ``(mime, name)`` — dispatch asks this.
+
+        Defaults to :meth:`supports`, so a plugin that only cares about MIME needs
+        nothing. Override it where the FILENAME carries the format and the MIME
+        cannot: Markdown, IFC, ASCII STL and OBJ are all `text/plain` to libmagic,
+        so a MIME-only registry hands every one of them to whichever plugin claims
+        text/* first. Detection now refines those verdicts from the name
+        (`mime._refine`), but a plugin that says out loud which extensions are its
+        own does not depend on that having worked — and it lets a plugin DECLINE a
+        file another one owns, which registration order alone cannot express."""
+        return self.supports(mime)
+
     def render(self, data: bytes, mime: str, name: str) -> List[Rendition]:
         """Presentation renditions for the source (default: none)."""
         return []
