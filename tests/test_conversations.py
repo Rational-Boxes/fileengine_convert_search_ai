@@ -23,8 +23,10 @@ from convert_search_ai.ldap_auth import Identity
 
 
 class FakeChat:
+    # **kwargs: see the note in test_api_m3.py — the endpoint grows keywords and
+    # a stub that enumerates them fails only where the DB is up.
     def answer(self, identity, *, message, system_prompt="", history=None, k=8, web_search=None,
-               conversation_id=None):
+               conversation_id=None, **_kw):
         yield {"type": "token", "text": f"Answer to: {message}"}
         yield {"type": "citations", "citations": [{"marker": 1, "kind": "doc", "file_uid": "f1"}]}
 
