@@ -56,3 +56,76 @@ def test_extension_fallback_for_text():
 
 def test_unknown_is_default():
     assert detect(b"\x01\x02\x03nothing-here") == DEFAULT
+
+
+# ── a generic verdict is a floor, not an answer ─────────────────────────────
+#
+# libmagic (python-magic) is installed in the container and NOT in a plain dev
+# checkout, which is why this only ever misbehaved in production: it answers
+# `text/plain` for Markdown, OBJ and YAML alike, and `detect` used to return that
+# and never look at the name. Markdown then went to the source-code formatter
+# instead of the document renderer. These tests stub the module so the behaviour
+# is pinned either way round.
+
+class _FakeMagic:
+    """Stands in for python-magic, answering whatever libmagic really answers."""
+
+    def __init__(self, verdict):
+        self.verdict = verdict
+
+    def from_buffer(self, data, mime=False):  # noqa: ARG002 — signature parity
+        return self.verdict
+
+
+def _with_magic(monkeypatch, verdict):
+    import sys
+    monkeypatch.setitem(sys.modules, "magic", _FakeMagic(verdict))
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("name", [
+    "notes.md", "notes.markdown", "notes.mdown", "notes.mkd", "notes.mdwn", "README.MD",
+])
+def test_markdown_survives_a_text_plain_verdict(monkeypatch, name):
+    _with_magic(monkeypatch, "text/plain")
+    assert detect(b"# Title\n\nbody **bold**\n", name) == "text/markdown"
+
+
+def test_obj_survives_a_text_plain_verdict(monkeypatch):
+    # OBJ has no signature to sniff, so before the refinement a .obj model was
+    # plain text and went to the source formatter — the 3D chain never saw it.
+    _with_magic(monkeypatch, "text/plain")
+    assert detect(b"# Blender v2.8\nv 0 0 0\nf 1 2 3\n", "model.obj") == "model/obj"
+
+
+def test_a_plain_text_file_stays_plain_text(monkeypatch):
+    _with_magic(monkeypatch, "text/plain")
+    assert detect(b"just some words", "notes.txt") == "text/plain"
+
+
+def test_source_keeps_the_specific_verdict_libmagic_gives_it(monkeypatch):
+    # A specific verdict is never second-guessed, even when mimetypes would say
+    # something else for the extension.
+    _with_magic(monkeypatch, "text/x-script.python")
+    assert detect(b"import os\n", "script.py") == "text/x-script.python"
+
+
+def test_a_name_cannot_promote_text_to_a_binary_format(monkeypatch):
+    # The refinement is confined to text conventions and the curated 3D map. A
+    # .pdf name over plain-text bytes must NOT become application/pdf.
+    _with_magic(monkeypatch, "text/plain")
+    assert detect(b"not really a pdf", "invoice.pdf") == "text/plain"
+
+
+def test_content_still_beats_the_name_for_a_real_format():
+    # No stub: the built-in sniffer sees %PDF- and wins over the .md extension.
+    # This is the property that stops a name talking the service into a format.
+    assert detect(b"%PDF-1.7\n1 0 obj<</Type/Catalog>>endobj\n", "trap.md") == "application/pdf"
+
+
+def test_the_sniffer_still_wins_over_libmagic_and_the_name(monkeypatch):
+    _with_magic(monkeypatch, "text/plain")
+    ifc = b"ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('IFC4'));\nDATA;\n"
+    assert detect(ifc, "Project.ifc") == "application/x-ifc"

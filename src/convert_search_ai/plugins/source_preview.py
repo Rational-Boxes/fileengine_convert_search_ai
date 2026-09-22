@@ -209,6 +209,24 @@ class SourcePreviewPlugin(ConversionPlugin):
         self.thumbnail_px = thumbnail_px
         self.preview_px = preview_px
 
+    def claims(self, mime: str, name: str = "") -> bool:
+        """Everything :meth:`supports` claims, EXCEPT files that belong elsewhere.
+
+        This plugin claims `text/*` wholesale, which is right for source and
+        structured text and wrong for the formats that merely happen to be text.
+        Markdown is the one that bit: libmagic calls a .md file `text/plain`, this
+        plugin claims text/*, and being registered before the plain-text catch-all
+        it won — so documents meant to render as documents came out as
+        syntax-highlighted source listings. Registration order cannot express
+        "not this one", because the MIME the two plugins see is identical.
+
+        Declining by name is the narrow fix: the Markdown renderer gets its own
+        files back, and nothing else this plugin handles changes."""
+        from .markdown_preview import is_markdown_name
+        if is_markdown_name(name):
+            return False
+        return self.supports(mime)
+
     def supports(self, mime: str) -> bool:
         if not mime:
             return False

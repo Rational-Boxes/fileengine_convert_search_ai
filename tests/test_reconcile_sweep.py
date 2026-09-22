@@ -73,7 +73,13 @@ def test_a_render_only_plugin_also_revives_its_unsupported_files():
 
 
 def test_unsupported_stays_unsupported_when_nothing_claims_the_type():
-    junk = row(status="unsupported", mime="application/octet-stream", chunks=0)
+    # The NAME has to imply nothing either. The default fixture name is "n.txt",
+    # which today's detection reads as text/plain — a type TextPlugin claims — so
+    # the row would be retried for that reason and this test would no longer be
+    # about "nothing claims the type" at all. An extension-less blob is the case
+    # it means: unknown bytes, unknown name, nothing to offer it to.
+    junk = row(status="unsupported", mime="application/octet-stream",
+               name="blob", chunks=0)
     reg = PluginRegistry([TextPlugin(), RenderOnlyPlugin()])
     assert needs_conversion(junk, reg) is None
 
@@ -150,3 +156,62 @@ def test_max_files_bounds_the_work():
     counts = sweep_tenant(FakeStore(rows), PluginRegistry([TextPlugin()]), pipe,
                           "default", max_files=2)
     assert counts["retried"] == 2 and len(pipe.calls) == 2
+
+
+# --- reason 4: a generic verdict that now resolves elsewhere -----------------
+#
+# This is how a detection fix reaches the files it was written for. Markdown was
+# recorded `text/plain` and converted by the source-code formatter, at status
+# 'converted' — a state no status-based rule revisits. Detection now refines the
+# name, so the sweep can see that the recorded type is not what this file is.
+
+from convert_search_ai.plugins.registry import default_registry  # noqa: E402
+
+
+def test_markdown_recorded_as_plain_text_is_reconverted():
+    r = default_registry(None)
+    why = needs_conversion(row(status="indexed", mime="text/plain",
+                               name="notes.md", chunks=5), r)
+    assert why == "mistyped/text/plain->text/markdown"
+
+
+def test_and_it_does_not_fire_again_once_the_type_is_recorded_properly():
+    # Self-extinguishing: the re-conversion stores text/markdown, which is not a
+    # generic type, so the row cannot match this rule a second time. Without that
+    # property the sweep would re-convert the same file on every pass forever.
+    r = default_registry(None)
+    assert needs_conversion(row(status="indexed", mime="text/markdown",
+                                name="notes.md", chunks=5), r) is None
+
+
+def test_a_file_whose_bytes_really_identified_it_is_left_alone():
+    # A PNG called notes.txt has a SPECIFIC recorded type — the content answered,
+    # and the name must not drag it back into a re-convert loop.
+    r = default_registry(None)
+    assert needs_conversion(row(status="indexed", mime="image/png",
+                                name="notes.txt", chunks=0), r) is None
+
+
+def test_plain_text_is_not_reconverted_just_for_being_generic():
+    # text/plain for a .txt file is the right answer, and the same plugin handles
+    # it either way — nothing to redo.
+    r = default_registry(None)
+    assert needs_conversion(row(status="indexed", mime="text/plain",
+                                name="notes.txt", chunks=2), r) is None
+
+
+def test_a_row_with_no_recorded_name_is_left_alone():
+    # Older rows may have no name. Guessing from an empty string would either do
+    # nothing or do something arbitrary; leaving it alone is the honest option.
+    r = default_registry(None)
+    assert needs_conversion(row(status="indexed", mime="text/plain",
+                                name="", chunks=1), r) is None
+
+
+def test_an_obj_model_recorded_as_plain_text_is_reconverted():
+    # Same defect, quieter: OBJ has no sniffable signature, so a .obj model was
+    # plain text and the 3D chain never ran on it.
+    r = default_registry(None)
+    why = needs_conversion(row(status="converted", mime="text/plain",
+                               name="model.obj", chunks=0), r)
+    assert why == "mistyped/text/plain->model/obj"

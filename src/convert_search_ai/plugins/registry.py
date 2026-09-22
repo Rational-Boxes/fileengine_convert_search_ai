@@ -28,27 +28,36 @@ class PluginRegistry:
     def register(self, plugin: ConversionPlugin) -> None:
         self._plugins.append(plugin)
 
-    def for_mime(self, mime: str) -> Optional[ConversionPlugin]:
-        """First registered plugin that supports ``mime`` (registration order =
-        priority — most specific plugins are registered first)."""
+    def for_mime(self, mime: str, name: str = "") -> Optional[ConversionPlugin]:
+        """First registered plugin that claims ``(mime, name)`` (registration order
+        = priority — most specific plugins are registered first).
+
+        ``name`` is optional and passed on to :meth:`ConversionPlugin.claims`,
+        which defaults to a MIME-only decision. It matters because several formats
+        this service converts are conventions over plain text — Markdown, IFC,
+        ASCII STL, OBJ — and libmagic calls all of them `text/plain`. Dispatching
+        on the MIME alone therefore sent every one of them to the first plugin that
+        claims text/*, which is the source-code formatter. Callers that know the
+        filename should pass it; the ones that genuinely do not (a status row with
+        only a recorded MIME) still work exactly as before."""
         for p in self._plugins:
             try:
-                if p.supports(mime):
+                if p.claims(mime, name):
                     return p
             except Exception:
                 continue
         return None
 
-    def supports(self, mime: str) -> bool:
+    def supports(self, mime: str, name: str = "") -> bool:
         """True when ANY registered plugin claims ``mime`` — text or renditions.
 
         Kept separate from :meth:`extracts_text` because a converter that only
         renders is still new support: adding an image or video format produces
         thumbnails and previews and no text at all, so a text-only test would
         skip exactly the files a new image plugin was installed to handle."""
-        return self.for_mime(mime) is not None
+        return self.for_mime(mime, name) is not None
 
-    def extracts_text(self, mime: str) -> bool:
+    def extracts_text(self, mime: str, name: str = "") -> bool:
         """True when a registered plugin claims ``mime`` *and* extracts text from it.
 
         This is the sweep's definition of "this file belongs in the index", and it
@@ -56,7 +65,7 @@ class PluginRegistry:
         grows, so a file recorded ``unsupported`` before its converter existed is
         indistinguishable from one that will never be supported — except by asking
         the registry as it stands today."""
-        plugin = self.for_mime(mime)
+        plugin = self.for_mime(mime, name)
         if plugin is None:
             return False
         try:
@@ -64,7 +73,7 @@ class PluginRegistry:
         except Exception:
             return False
 
-    def bounds_own_memory(self, mime: str) -> bool:
+    def bounds_own_memory(self, mime: str, name: str = "") -> bool:
         """True when the plugin that would handle ``mime`` keeps its own memory
         use bounded — by streaming through an external tool, or by enforcing an
         input limit of its own.
@@ -75,7 +84,7 @@ class PluginRegistry:
         large PDF, parsed in this interpreter, can. Anything unclaimed answers
         False — an unknown type is exactly the case where reading the whole thing
         is the risk."""
-        plugin = self.for_mime(mime)
+        plugin = self.for_mime(mime, name)
         if plugin is None:
             return False
         try:
@@ -86,7 +95,7 @@ class PluginRegistry:
     def convert(self, data: bytes, mime: str, name: str = "") -> ConversionResult:
         """Run the matching plugin. Unknown MIME → ``supported=False`` (not an error).
         A plugin that raises is treated as producing nothing (fail-soft)."""
-        plugin = self.for_mime(mime)
+        plugin = self.for_mime(mime, name)
         if plugin is None:
             return ConversionResult(supported=False)
         try:

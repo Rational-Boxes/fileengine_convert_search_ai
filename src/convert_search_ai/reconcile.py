@@ -24,6 +24,8 @@ from __future__ import annotations
 import logging
 from typing import Dict, Optional
 
+from . import mime as mimelib
+
 log = logging.getLogger("convert_search_ai.reconcile")
 
 
@@ -38,6 +40,45 @@ log = logging.getLogger("convert_search_ai.reconcile")
 #: 'converted' and 'indexed' are NOT here — they are terminal, and are re-judged
 #: on plugin coverage instead (see :func:`needs_conversion`).
 RETRY_STATUSES = ("pending", "converting", "index_failed", "error")
+
+
+def _mistyped_by_a_generic_verdict(row, registry) -> Optional[str]:
+    """Set when this row's recorded type is a GENERIC one that today's detection
+    would refine into a different plugin's territory.
+
+    This is what backfills a detection fix. Content sniffing calls Markdown, IFC,
+    ASCII STL and OBJ all `text/plain`, and for a long time that verdict was
+    returned as-is — so every one of those files was converted by whichever plugin
+    claims text/* (the source-code formatter) and recorded at `converted`, which
+    no status-based rule will ever revisit.
+
+    Two properties keep this from becoming a treadmill:
+
+    * It fires only when the RECORDED type is generic. A file whose bytes really
+      did identify it — a PNG that happens to be called notes.txt — has a specific
+      recorded type, is not reconsidered, and keeps the answer the content gave.
+    * It is self-extinguishing. The re-conversion records the type detection gives
+      today, and if that differs it is by definition no longer the recorded one, so
+      the row stops matching. Where detection agrees with the record (a .txt file
+      recorded text/plain, an extension-less blob recorded octet-stream) it never
+      fired in the first place.
+
+    Note what this deliberately does NOT do: compare which plugin would handle the
+    two types today. Dispatch is now name-aware, so the mistyped row already routes
+    to the right converter — and asking that question would answer "same plugin,
+    nothing to do" for precisely the files whose renditions were produced by the
+    wrong one, back when dispatch could only see the MIME. The stored renditions
+    are the artefact of a PAST decision; what matters is that the record is stale.
+
+    Requires the row's name: a row that never recorded one (older schema) is left
+    alone rather than guessed at."""
+    name = getattr(row, "name", "") or ""
+    if not name or row.mime not in mimelib.GENERIC_TYPES:
+        return None
+    refined = mimelib.detect(b"", name)
+    if refined == row.mime:
+        return None
+    return f"mistyped/{row.mime}->{refined}"
 
 
 def needs_conversion(row, registry) -> Optional[str]:
@@ -62,6 +103,11 @@ def needs_conversion(row, registry) -> Optional[str]:
     3. **A text extractor claims this type, but the document has no chunks.**
        Extraction was supposed to produce something and did not.
 
+    4. **The recorded type was a generic verdict that now resolves elsewhere** —
+       see :func:`_mistyped_by_a_generic_verdict`. This is how a detection fix
+       reaches the files it was written for: they sit at 'converted', with
+       renditions produced by the wrong plugin, and no status says so.
+
     The chunk count is what keeps reason 3 honest. A JPEG and a failed PDF both
     sit at 'converted' with nothing in the index; ``extracts_text`` says only the
     PDF was ever supposed to produce any, so images and video are not dragged
@@ -69,9 +115,12 @@ def needs_conversion(row, registry) -> Optional[str]:
     once, when their converter actually arrives."""
     if row.status in RETRY_STATUSES:
         return row.status
-    if row.status == "unsupported" and registry.supports(row.mime):
+    if row.status == "unsupported" and registry.supports(row.mime, row.name):
         return "unsupported/now-supported"
-    if row.chunks == 0 and registry.extracts_text(row.mime):
+    mistyped = _mistyped_by_a_generic_verdict(row, registry)
+    if mistyped:
+        return mistyped
+    if row.chunks == 0 and registry.extracts_text(row.mime, row.name):
         # 'indexed' with zero chunks is a real case too: a document whose text
         # extracted to an empty string. Cheap to retry, and the alternative is
         # trusting a status that the chunk count contradicts.
@@ -168,7 +217,6 @@ def reconcile_tenant(mf, pipeline, tenant: str, *, max_files: Optional[int] = No
     there is rather than only the ones already recorded."""
     from fileengine import ROOT_UID
 
-    from . import mime as mimelib
     from ._client import FileEngineError
 
     counts = {"files": 0, "converted": 0, "skipped": 0, "unsupported": 0,
@@ -201,7 +249,7 @@ def reconcile_tenant(mf, pipeline, tenant: str, *, max_files: Optional[int] = No
             # Same rule as the pipeline's: only types parsed in-process are
             # limited, judged from the name because the bytes are the risk.
             if max_bytes and getattr(e, "size", 0) > max_bytes \
-                    and not pipeline.registry.bounds_own_memory(mimelib.detect(b"", e.name)):
+                    and not pipeline.registry.bounds_own_memory(mimelib.detect(b"", e.name), e.name):
                 counts["too_large"] += 1
                 log.warning("reconcile: skipping %s (%s): %d bytes exceeds the limit of %d",
                             e.uid, e.name, e.size, max_bytes)
