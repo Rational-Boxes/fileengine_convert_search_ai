@@ -30,18 +30,59 @@ sys.path.insert(0, os.path.join(_HERE, "..", "src"))
 # Sensible defaults so unit tests are hermetic; real runs override via env/.env.
 os.environ.setdefault("FILEENGINE_CSAI_TENANT", "default")
 
+# Take the DATABASE settings from this checkout's .env, which is the file the app
+# itself boots from — but nothing else from it.
+#
+# Without this, `Config()` in a test process fell back to the upstream defaults
+# (port 5432, database convert_search_ai, role fileengine_user) while the dev
+# Postgres this checkout actually uses is somewhere else entirely. Every DB-backed
+# test then skipped with "Postgres (CSAI_PG_*) not reachable" — a true statement
+# about a database nobody runs, and indistinguishable from the DB genuinely being
+# down. Roughly a dozen tests were dark that way, and two of them had been failing
+# for a while behind the skip.
+#
+# Only CSAI_PG_* keys, and only as defaults: an explicit environment variable
+# still wins, so CI can point elsewhere, and the rest of the dev config (chat
+# provider, API keys, LDAP) stays out of unit tests, which must not depend on it.
+def _seed_db_env_from_dotenv() -> None:
+    path = os.path.join(_HERE, "..", ".env")
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key, value = key.strip(), value.strip().strip('"').strip("'")
+                if key.startswith("CSAI_PG_"):
+                    os.environ.setdefault(key, value)
+    except OSError:
+        pass          # no .env is a perfectly normal checkout; defaults apply
 
-def _services_up() -> bool:
-    """True when LDAP + core are reachable and the agent can authenticate."""
+
+_seed_db_env_from_dotenv()
+
+
+def _live_blocker() -> str:
+    """Empty when LDAP + core are reachable and the agent can authenticate;
+    otherwise WHY not.
+
+    Two conditions used to share one message. "LDAP/core not reachable" is
+    actively misleading when the directory is up and the suite simply has no agent
+    credentials to present — it sends you to check infrastructure that is fine.
+    test_e2e_live.py and test_auth_coordination_live.py already distinguish the
+    two; this now matches them."""
     try:
         from convert_search_ai.config import Config
         from convert_search_ai.ldap_auth import authenticate
         cfg = Config()
         if not cfg.agent_user or not cfg.agent_password:
-            return False
-        return authenticate(cfg, cfg.agent_user, cfg.agent_password).authenticated
-    except Exception:
-        return False
+            return "agent credentials not set (FILEENGINE_CSAI_USER/PASSWORD)"
+        if not authenticate(cfg, cfg.agent_user, cfg.agent_password).authenticated:
+            return f"agent {cfg.agent_user!r} could not authenticate against {cfg.ldap_endpoint}"
+        return ""
+    except Exception as e:  # noqa: BLE001 — a gate must not raise
+        return f"LDAP/core not reachable ({type(e).__name__}: {e})"
 
 
 def _db_up() -> bool:
@@ -61,7 +102,8 @@ def _db_up() -> bool:
         return False
 
 
-live = pytest.mark.skipif(not _services_up(), reason="LDAP/core not reachable")
+_LIVE_BLOCKER = _live_blocker()
+live = pytest.mark.skipif(bool(_LIVE_BLOCKER), reason=_LIVE_BLOCKER or "live")
 live_db = pytest.mark.skipif(not _db_up(), reason="Postgres (CSAI_PG_*) not reachable")
 
 

@@ -23,8 +23,13 @@ from convert_search_ai.ldap_auth import Identity
 
 
 class FakeChat:
+    # **kwargs on purpose: the endpoint passes whatever ChatService.answer()
+    # accepts (report_target, scope_folder_uids, app_url, consent …), and a stub
+    # that spells the list out goes stale silently — these tests are @live_db, so
+    # a mismatch only surfaces where a Postgres happens to be reachable, which is
+    # how `report_target` reached main unnoticed.
     def answer(self, identity, *, message, system_prompt="", history=None, k=8,
-               web_search=None, conversation_id=None):
+               web_search=None, conversation_id=None, **_kw):
         yield {"type": "token", "text": f"Answer to: {message}"}
         yield {"type": "citations", "citations": [{"file_uid": "f1", "marker": 1}]}
 
