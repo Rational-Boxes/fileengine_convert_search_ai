@@ -36,6 +36,28 @@ from .schema import ensure_tenant_schema, schema_name
 _breaker: Optional[CircuitBreaker] = None
 
 
+def pg_safe_text(text):
+    """``text`` with NUL characters removed, or ``text`` unchanged when there are
+    none (and ``None`` passed straight through).
+
+    Postgres text columns cannot hold 0x00 — psycopg raises
+    ``DataError: PostgreSQL text fields cannot contain NUL (0x00) bytes`` — and
+    there is no encoding in which a NUL is meaningful *extracted text*. It arrives
+    because extraction decodes unknown bytes with ``errors="replace"``: a file
+    stored in a wide or mislabelled encoding decodes to text sprinkled with them.
+
+    Measured on production during a re-conversion pass: 52 files (PHP fixtures
+    named `from.<encoding>.php`) failed to store for this reason, each one
+    recorded as a failed conversion with a Postgres error in the detail — a file
+    the service could otherwise index perfectly well, lost to one byte.
+
+    Dropping the NULs rather than rejecting the document is the right trade: what
+    remains is the text, and the alternative is no text at all."""
+    if text is None or "\x00" not in text:
+        return text
+    return text.replace("\x00", "")
+
+
 def _get_breaker(config: Config) -> CircuitBreaker:
     global _breaker
     if _breaker is None:

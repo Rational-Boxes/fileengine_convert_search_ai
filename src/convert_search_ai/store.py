@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Sequence
 
 from .config import Config
+from .db import pg_safe_text
 
 
 @dataclass
@@ -97,7 +98,13 @@ class DocumentStore:
                name: str = "", path: str = "", content_md: Optional[str] = None,
                status: str = "pending", error: Optional[str] = None,
                provision: bool = True) -> None:
-        """Insert or update a document row (provisions the tenant schema by default)."""
+        """Insert or update a document row (provisions the tenant schema by default).
+
+        ``content_md`` is sanitised on the way in — see :func:`pg_safe_text`. Text
+        extraction decodes bytes with ``errors="replace"``, and a source file in an
+        encoding the decoder guesses wrong yields NUL characters that Postgres
+        refuses outright, failing the whole conversion."""
+        content_md = pg_safe_text(content_md)
         with self._conn(tenant, provision=provision) as conn, conn.cursor() as cur:
             cur.execute(
                 """

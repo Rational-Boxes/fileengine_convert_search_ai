@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 from .config import Config
+from .db import pg_safe_text
 
 
 @dataclass
@@ -52,6 +53,11 @@ class ChunkStore:
         with self._conn(tenant) as conn, conn.cursor() as cur:
             cur.execute("DELETE FROM chunks WHERE file_uid = %s", (file_uid,))
             for ordinal, text, emb in items:
+                # Same NUL guard as documents.content_md: chunks are slices of that
+                # text, so anything that reaches one reaches the other, and the
+                # insert is the last place to catch it before Postgres refuses the
+                # whole re-index.
+                text = pg_safe_text(text)
                 cur.execute(
                     "INSERT INTO chunks (file_uid, ordinal, text, embedding) "
                     "VALUES (%s, %s, %s, %s::vector)",
