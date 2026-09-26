@@ -632,7 +632,7 @@ a worse copy of itself is pure loss.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/documents/{file_uid}/media` | Request publication. Body: `{profile?}`. Returns the job (existing or new) — **202**, never blocking. Requires WRITE on the file: publishing writes a child and consumes quota. **This is the mechanism §4.3's triggers call, not a second product surface** — `share_service` is its usual caller, and a direct call is the retry / re-encode path. |
+| `POST` | `/documents/{file_uid}/media` | Request publication. Body: `{profile?}`. Returns the job (existing or new) — **202**, never blocking. **Requires WRITE** on the file — publishing writes a child and consumes quota; settled as a decision, not a default (§14-Q6). **This is the mechanism §4.3's triggers call, not a second product surface** — `share_service` is its usual caller, and a direct call is the retry / re-encode path. |
 | `GET` | `/documents/{file_uid}/media` | Current state: the job (if any) and the `media`/`audio` rendition for the current source version, with `duration_ms`, `output_bytes`, `encoder`. READ-gated. |
 | `DELETE` | `/documents/{file_uid}/media` | Cancel a running job, or remove a published rendition. WRITE-gated. Refuses (409) while a **live** share link depends on it (§6.2). |
 
@@ -2022,27 +2022,30 @@ teaser, media publishing is outbound automation for clients, prospects and the
 website (§2). Separate renditions, separate triggers, separate lifecycles; they
 share only FFmpeg and the rendition writer (§4.1).
 
-### Still open
+**Q6 — Publishing requires WRITE** *(settled 2026-09-26)*. A publish writes a
+hidden child and consumes the tenant's quota, and the permission that governs
+writing to a file is WRITE. Confirmed rather than relaxed.
 
-**Q6 — Who may publish?** §4.6 gates publication on **WRITE**, because it writes
-a hidden child and consumes the tenant's quota.
+The alternative considered and rejected was READ + `share_external`, on the
+grounds that publishing is a marketing action on someone else's file and the
+person sending a clip to a prospect is frequently not the person who owns the
+footage. It was rejected because the quota consequence is real — a publish can
+add gigabytes to a folder the requester cannot otherwise write to — and because
+`share_external` is a statement about *sending things outside*, not about
+spending someone else's storage. The two are separable authorities and
+collapsing them would be the easier mistake to make.
 
-The purpose stated in §2 pulls the other way, and worth weighing before this is
-built: publishing is a **marketing action on someone else's file**. The person
-sending a clip to a prospect is frequently not the person who owns the footage,
-and requiring WRITE means either giving them edit rights on production media —
-the wrong permission for the job — or routing every publish through the owner.
-READ + `share_external` matches what the operation actually is: *"may share this
-outside"*, which is precisely what that group already means.
+**The consequence to design around, rather than work around:** a user who may
+share a video but not write to it cannot publish it. That is intended, and the
+supported answers are to grant WRITE on the folder the marketing clips live in,
+or to keep those clips in a folder that user owns. The **`folder_actions`
+binding** (§4.8, Q8) is the third and probably best answer at scale — the action
+runs as its own service principal, so the folder's configuration carries the
+authority and no individual needs WRITE on production media at all.
 
-The counter-argument is quota: a publish can add gigabytes to a folder its
-requester cannot otherwise write to. That is answerable with
-`CSAI_MEDIA_MAX_OUTPUT_BYTES` and the job's own accounting rather than with a
-permission bit.
-
-**WRITE is still what is written down**, because it is the conservative default
-and the easier of the two to relax. It should be revisited deliberately before
-MS2, not discovered at MS6 when a marketing user cannot publish anything.
+This is now a **decision**, not a default: §4.6 and MS2 implement WRITE, and
+relaxing it later would need the quota argument answered rather than merely
+noted.
 
 **Q7 — Eager SD encode** *(settled by §2.1, 2026-09-26)*. The question was
 whether doubling transcode cost per video is worth a 480p option nobody may pick.
@@ -2051,6 +2054,8 @@ recipient of an intro video is often on a phone — which is precisely who the S
 rendition is for. **Eager**, and the lazy variant is not worth keeping as an
 option. It would become one again only if long recordings turned out to be a
 common input, which §2.1 says they are not.
+
+### Still open
 
 **Q8 — Is the folder-action trigger in scope?** §4.8 proposes *publish on arrival*
 as a `folder_actions` plug-in — drop a clip in `Marketing/To publish`, get a
