@@ -33,7 +33,7 @@ independently testable.
 | **`audit_service`** | the new action codes and the egress alert rule | §12 | MS9 |
 | **`folder_actions`** | *(proposed, §14-Q8)* a **Publish media** plug-in: drop a clip in a folder, get a published rendition and a minted link | §4.8 | MS10 |
 | **`ldap_manager`** | **nothing** — the two new modes deliberately send no mail and mint no OTP | §5 | — |
-| **`file_engine_core`** | byte-range reads on `StreamFileDownload` / `GetFile` — **its own proposal**, `design_documents/PROPOSAL_byte_range_reads.md`, on branch `proposal/byte-range-reads`. Not a blocker: MS4 ships on the cache until B0 lands | §3-R16 | B0–B6, parallel |
+| **`file_engine_core`** | the storage pipeline: per-version transform record (**a defect fix, owed regardless**), selective compression, byte-range reads. **Its own specification** — `design_documents/storage_pipeline.md`, branch `proposal/byte-range-reads`. Not a blocker: MS4 ships on the cache | §3-R16 | S0–S5, parallel |
 
 **The two things that gate everything else** are the ops precondition (a
 wildcard certificate for `*-media.<base>`, §6.5) and MS0's streaming fetch,
@@ -283,10 +283,17 @@ the change quietly."* The reasoning for reversing it:
   of a slow one.** The first has to be correct or the feature breaks; the second
   can be dropped at any time.
 
-The design is now its own core document —
-**`file_engine_core/design_documents/PROPOSAL_byte_range_reads.md`** — because a
-proto change to the core outlives this feature and does not belong inside a CSAI
-spec. Its shape, in one paragraph: `offset` / `length` on `GetFileRequest`, range
+The design is now a **core specification in its own right** —
+**`file_engine_core/design_documents/storage_pipeline.md`**, with
+`PROPOSAL_byte_range_reads.md` and `PROPOSAL_selective_compression.md` retained
+as its rationale. It is scoped and staged as core work rather than as a
+dependency of this feature, because specifying it turned up **two defects that
+exist today in every deployment and have nothing to do with media**: the core
+does not record which transforms it applied to a stored version (it re-derives
+them from current configuration at read time, so turning compression off hands
+the raw zlib stream to clients as file content, silently), and it compresses
+payloads that cannot be compressed, on write and on every read. Its **S0 is a
+prerequisite** — a defect fix owed regardless of this feature. Its shape, in one paragraph: `offset` / `length` on `GetFileRequest`, range
 metadata including `total_size` on the first response frame, and a tiered
 implementation — every format gets a correct range immediately by windowing at
 the emit sink (which stops the discarded bytes crossing gRPC), formats that
@@ -306,9 +313,11 @@ document works through properly.
 §6.6's rule that **the cache never short-circuits the authority re-check** is
 unaffected and remains non-negotiable.
 
-**Sequencing:** MS4 does not block on the core work. Tier 1 of the core proposal
-(B0) is self-contained and already removes the discarded-bytes-across-gRPC cost;
-until it lands, the cache carries the feature exactly as originally designed.
+**Sequencing:** MS4 does not block on the core work, and the core work does not
+wait on MS4. `storage_pipeline.md` §6.1 records what each consumer needs: this
+feature needs **S2 + S3b** for an O(1) seek and **nothing at all** to ship, since
+the cache carries it exactly as originally designed until then. **S0 is owed
+independently** and should be scheduled on its own merits.
 
 ---
 
