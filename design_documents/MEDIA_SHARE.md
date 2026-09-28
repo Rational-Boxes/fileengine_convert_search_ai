@@ -1930,6 +1930,46 @@ New codes in `audit_service`, all following OSL §12's fail-closed rule:
 | `share_media_meter_degraded` | the rolling-window store became unavailable | so the gap in metering is itself in the record |
 | `share_media_completed` | a view reaches `playback_complete_pct` (§7.4) | carries `completion_basis`; the event that drives the *"Priya finished your video"* attention item |
 
+### 12.1 The rule this door needs stated out loud
+
+**Audit the decision, not the request.** Every other door in this platform sees
+roughly one request per user action. This one sees ten to fifty — ranged GETs,
+seeks, re-buffers — and a hash-chained log is the wrong place for all of them.
+
+That is why `share_media_session` is once per session. The rule is written here
+rather than left as a pattern because the natural instinct, when something needs
+measuring, is to emit an event per occurrence, and on this door that produces a
+chain nobody can read and a cost exceeding the bytes served.
+
+**Two events are deliberately NOT emitted**, and the reasoning belongs in the
+record so it is not "fixed" later:
+
+- **The poster fetch** (§9.4). Mail-privacy proxies fetch images
+  unconditionally, so a campaign to two hundred recipients would write hundreds
+  of audit entries describing something that is not even a view. It is metered;
+  it is not audited.
+- **The playback beacon** (§7.4). Once per 30 s of playback, per viewer. The
+  meaningful transition — completion — has its own event above.
+
+### 12.2 Additions the feature needs
+
+Six, each closing a question the current set cannot answer.
+
+| Code | When | Why it is needed |
+|---|---|---|
+| `share_media_session_end` | a viewing session closes | **The important one.** `share_media_session` records that a session opened; nothing records what it *did*. Carries `bytes`, duration, and how it ended — `completed` \| `abandoned` \| `throttled` \| `expired`. Without it the ledger cannot answer how much egress a link caused, which is the number billing is made of and the number cross-tenant overload detection needs. One per session, so it is bounded by viewers rather than by seeks. |
+| `share_media_cache_fill` | the byte cache fetches a rendition from the core | **A read of the file that currently leaves no trace.** The fill is a delegated `StreamFileDownload` as the creator — the audit log's job is "everything that touched this file", and a whole-file read that appears nowhere in its history is a gap. Bounded: once per rendition, not per request. It is also §6.9's leading indicator, so having it in the ledger rather than only in metrics makes it queryable after the fact. |
+| `share_media_new_referrer` | a link is played from a referring host not seen before | Bounded by *distinct* sites, not by requests, and it is what makes §4.4a's referrer-concentration detection possible. One embedding site driving many links looks ordinary per link. |
+| `media_rendition_reaped` | the orphan reaper removes a published rendition (§4.3.1) | Content deletion. Not optional — the platform audits destruction, and a reaper that quietly removes gigabytes is exactly the kind of background process that should not be silent. |
+| `media_publish_abandoned` | a job ends after exhausting `CSAI_MEDIA_MAX_ATTEMPTS` | `media_publish_failed` does not distinguish "failed once" from "failed, requeued three times, gave up". For a feature whose cost is CPU, the retries are the expensive part, so the terminal event carries the attempt count. |
+| `share_media_mode_denied` | an `open` link is refused for want of `share_public`, `confirm_public`, or `allow_open_mode` | Denials are audited generally; a specific code makes "who keeps trying to publish to the open internet" a rule rather than a log search. |
+
+`share_media_session_end` deserves one more note: **its `bytes` is the same
+field the billing work needs** on the envelope, not a media-specific addition.
+Metering egress from the ledger rather than from metrics requires it anyway, and
+putting it on session close gives both at once — durable, attributable, and
+bounded by viewers.
+
 **The actor string must distinguish the three modes.** OSL §4.3 defines
 `share:<link_uid>|<verified_email>` and builds its whole accountability argument
 on that address being *proven*. Writing a claimed address in the same slot would
