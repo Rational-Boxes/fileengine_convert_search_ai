@@ -2329,6 +2329,42 @@ until the encode finishes (§6.2).
    audit event; a slow-but-legitimate reader survives the throughput floor while
    a stalled connection does not; killing Redis degrades metering while
    Postgres budgets still refuse an exhausted link.
+   **Built 2026-10-03 (branches, unmerged) — for the §13 review:**
+   - *No byte cache* (Q10): ranges are read from the core's authenticated seek
+     per request, so §13.11's cache-fill surface does not exist; the metering
+     fill counters are not implemented.
+   - *Media sessions get their own table*, `share_media_sessions`, so
+     `share_redemptions.verified_email` keeps its "never unverified" NOT NULL.
+     The session token is the ranged-GET credential (`?t=`, a `<video>` cannot
+     send a header); only its hash is stored. Open viewers are one audience row
+     per session (no resume yet), so `max_viewers` on an open link counts
+     sessions.
+   - *Authority*: checked at session open and at most `media_recheck_seconds`
+     later per (tenant, link); `acl.changed` / `role.*` bump a per-tenant epoch
+     in Redis that forces the next check (shared across replicas). **LDAP group
+     changes emit no core event**, so for those the interval is the bound.
+   - *Rendition resolution* lists the source's children as the creator (cached
+     30 s) and plays the newest version whose primary exists; 480p is offered
+     only if that same version has it.
+   - *Ladder*: link/tenant hour + tenant day windows and per-link/per-client
+     concurrency in Redis; rung 1 notifies the creator once per window with the
+     PeerTube/YouTube/Vimeo advice; rung 2 = 429 + Retry-After, audited once per
+     window; rung 3 parks (`parked_until`, never revokes) on a spent durable
+     budget, the tenant day window, or rung 2 sustained; explained (503) only for
+     OPEN links. The throughput floor is checked between chunks, so a client
+     stalled inside a socket write is bounded by the server's timeouts, not by it.
+   - *Not yet emitted*: `share_media_new_referrer` (referer_host is recorded on
+     the session), `share_media_meter_degraded` as an audit event (the metric is).
+   - *Edge*: `<tenant>-media.<base>` in both the compose renderer and the Ansible
+     ingress (a `media` site type: only `/media/v1/`, 404 otherwise, per-IP
+     limits, access log without the query). **Finding:** nginx's ERROR log
+     still records the full request line on an upstream failure, query string
+     included — true of `/share/v1/public/` today as well.
+   - *Deploy*: one switch, `share_media_enabled`, drives share, the CSAI media
+     worker, the vhost and the admin console's interface list.
+   **Tests:** share_service `test_media_door.py` (41, one or more per §13 point)
+   and `test_live_media_door.py` (the running stack: claim, three byte-identical
+   ranges, exact charge, revocation mid-view).
 6. **MS5 — the audience & the sidecar.** The debounced projection writer, the
    CSV format with the injection guard, flush-on-revoke, the purge and erasure
    paths. **Tests:** a thousand viewers produce one sidecar version per debounce
