@@ -84,10 +84,27 @@ PIPELINE_STATUSES = {"pending", "converting", "converted", "indexed",
                      "index_failed", "unsupported", "error"}
 
 
+def _documents_ddl(ddl: str) -> str:
+    """Only the ``documents`` table's statements — its CREATE TABLE and the
+    ALTERs that heal its constraint. Other tables (``media_jobs``) carry their
+    own, unrelated ``status`` vocabularies and must not be read as this one."""
+    parts = re.split(r";\s*\n", ddl)
+    return ";\n".join(p for p in parts
+                       if re.search(r'"\{?[^"]*\}?"?\.documents\b|\.documents\s', p))
+
+
 def _ddl_statuses(ddl: str):
-    """Every status vocabulary declared in the DDL (CREATE TABLE + the ALTER)."""
+    """Every status vocabulary declared for ``documents`` (CREATE TABLE + the ALTER)."""
     return [set(re.findall(r"'([a-z_]+)'", m))
-            for m in re.findall(r"status IN \(([^)]*)\)", ddl)]
+            for m in re.findall(r"status IN \(([^)]*)\)", _documents_ddl(ddl))]
+
+
+def test_the_parser_sees_the_documents_vocabulary_and_not_media_jobs():
+    # Guards the guard: scoping must neither lose the documents CHECKs (the
+    # test above would then pass vacuously) nor pick up media_jobs' own.
+    vocabs = _ddl_statuses(tenant_ddl("default"))
+    assert len(vocabs) == 2                      # CREATE TABLE + the self-healing ALTER
+    assert all("indexed" in v and "queued" not in v for v in vocabs)
 
 
 def test_schema_permits_every_status_the_pipeline_writes():

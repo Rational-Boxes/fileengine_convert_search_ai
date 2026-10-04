@@ -166,3 +166,36 @@ def test_the_audience_sidecars_are_never_mistaken_for_renditions():
     from convert_search_ai.renditions import parse_rendition_name
     assert parse_rendition_name("audience-3f2a0c1e-9b7d-4c1a-8e2f-0a1b2c3d4e5f.csv") is None
     assert parse_rendition_name("audience.csv") is None
+
+
+# ── a published rendition outlives a new upload (MEDIA_SHARE.md §6.2 vs §4.7) ──
+#
+# §6.2: a media link pins the cut that was published when it was minted, and a
+# new source version does NOT retarget it. §4.7 said superseded media would be
+# pruned automatically — the two cannot both hold, and the prune would win: the
+# ingest of a new version deletes the published copy every live link and embed
+# is serving. Published renditions are therefore exempt from VERSION pruning;
+# their lifetime is the share's, and the orphan reaper (§4.3.1) removes them.
+
+def test_a_new_version_prunes_old_previews_but_keeps_old_published_media():
+    from convert_search_ai.renditions import RenditionWriter
+    from fakes import FakeEntry, FakeMF
+    mf = FakeMF()
+    mf.renditions["f"] = {
+        "v1-preview.webm": "r1", "v1-poster.png": "r2",
+        "v1-media.webm": "r3", "v1-media_sd.webm": "r4", "v1-emailposter.gif": "r5",
+        "v1-audio.mp3": "r6", "v1-audio_opus.webm": "r7",
+        "v2-preview.webm": "r8",
+    }
+    removed = RenditionWriter(mf).prune_old_versions("f", "v2", "default")
+    assert sorted(removed) == ["v1-poster.png", "v1-preview.webm"]
+    left = set(mf.renditions["f"])
+    assert {"v1-media.webm", "v1-media_sd.webm", "v1-emailposter.gif",
+            "v1-audio.mp3", "v1-audio_opus.webm", "v2-preview.webm"} == left
+
+
+def test_the_published_fmts_are_all_known_fmts():
+    from convert_search_ai.media_encode import PROFILE_OUTPUT
+    from convert_search_ai.renditions import PUBLISHED_FMTS, _KNOWN_FMTS
+    assert PUBLISHED_FMTS <= _KNOWN_FMTS
+    assert {fmt for fmt, _e, _m in PROFILE_OUTPUT.values()} == PUBLISHED_FMTS

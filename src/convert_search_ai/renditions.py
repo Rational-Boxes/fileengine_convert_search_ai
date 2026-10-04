@@ -54,6 +54,13 @@ _KNOWN_FMTS = frozenset({
     "media", "media_sd", "audio", "audio_opus", "emailposter",
 })
 
+#: Published media (MEDIA_SHARE.md §4.1). Recognised — so the orphan reaper
+#: (§4.3.1) can find them and nothing is ever left unparseable — but EXEMPT from
+#: version pruning: a media link pins the cut published when it was minted, and a
+#: new upload must not delete what every live link and embed is serving (§6.2).
+#: Their lifetime is the share's, not the source version's.
+PUBLISHED_FMTS = frozenset({"media", "media_sd", "audio", "audio_opus", "emailposter"})
+
 #: RESERVED sibling namespace, never a rendition: `audience-<link_uid>.csv` and
 #: `audience.csv` are the media-share audience sidecars (MEDIA_SHARE.md §8.1).
 #: parse_rendition_name returns None for them because the trailing token is a
@@ -150,9 +157,11 @@ class RenditionWriter:
             parsed = parse_rendition_name(e.name)
             if not parsed:
                 continue                       # not one of our renditions — leave it
-            version, _fmt, _ext = parsed
+            version, fmt, _ext = parsed
             if version == keep:
                 continue                       # current version's rendition — keep
+            if fmt in PUBLISHED_FMTS:
+                continue                       # a published cut — the share decides
             try:
                 self.mf.remove(e.uid, tenant=tenant)
                 removed.append(e.name)

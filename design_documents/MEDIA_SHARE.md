@@ -1867,7 +1867,7 @@ usually does want the file.
 | `CSAI_MEDIA_GIF_ENABLED` | `true` | Produce the `emailposter` GIF (§9.4). |
 | `CSAI_MEDIA_GIF_SECONDS` | `3` | Animated poster duration. |
 | `CSAI_MEDIA_GIF_FPS` | `8` | Animated poster frame rate. |
-| `CSAI_MEDIA_GIF_WIDTH` | `560` | Animated poster width — the usual email body width. |
+| `CSAI_MEDIA_GIF_WIDTH` | `280` | Animated poster width — half the usual email body width *(halved 2026-10-03)*. |
 | `CSAI_MEDIA_GIF_MAX_BYTES` | `2 MiB` | Refuse to attach a poster larger than this. |
 | `CSAI_MEDIA_FFMPEG_THREADS` | `0` | `-threads`; 0 = FFmpeg's choice. |
 
@@ -2165,6 +2165,27 @@ contain one. `media-sd` would parse as fmt `sd`, so it would never be pruned:
 the exact leak §4.1 warns about. The **profiles** keep their names
 (`video-480p-vp9`, `audio-opus`); only the rendition fmts above change. Read
 `media-sd` / `audio-opus` elsewhere in this document as those fmts.
+
+**Q14 — Published renditions are exempt from version pruning** *(a
+contradiction found in MS2, 2026-10-03; supersedes §4.7's first bullet)*. §4.7
+said superseded `media`/`audio` children are pruned automatically; §6.2 says a
+media link keeps serving the cut it was minted with after a new upload. The prune
+would win — ingesting a new version would delete the copy every live link and
+embed serves. `PUBLISHED_FMTS` are therefore recognised (so they parse) but
+skipped by `prune_old_versions`; their lifetime is the share's, enforced by the
+§4.3.1 reaper, which removes one only when share_service positively confirms no
+live link needs it AND the grace period has passed — any doubt keeps it.
+
+**Implementation notes from MS1–MS2 (2026-10-03).** `media_jobs.status` adds
+`skipped` (no SD copy of an SD source; no Opus without libopus — correct
+outcomes, not failures) and the table records `width`/`height`, which §6.8's
+source list needs. The email poster steps DOWN to fit `CSAI_MEDIA_GIF_MAX_BYTES`
+(fewer frames, smaller, fewer colours, then a still with the play button) rather
+than failing: a real 1080p phone clip overshot the budget at the original 560 px.
+Measured on that clip (63.5 s, 1080p30 H.264, 17 Mb/s, dense foliage): 720p VP9
+8.15 Mb/s / 64.7 MB in 100 s; 480p 4.0 Mb/s / 31.8 MB in 118 s; poster 280×158,
+24 frames, 894 KB. CRF without a bitrate ceiling lets busy footage get large —
+an open review point.
 
 **The drawer's default stays the 10-second silent `preview`** *(2026-10-03,
 refines §10)*. Where a `media` / `media_sd` rendition exists, the preview player

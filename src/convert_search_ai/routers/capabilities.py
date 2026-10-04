@@ -143,6 +143,35 @@ def _search(config: Config) -> dict:
     }
 
 
+def _media(config: Config) -> dict:
+    """Media publishing (MEDIA_SHARE.md §4.6), and the three conditions that
+    decide it: FFmpeg present, a usable encoder from the ladder, and a media
+    worker seen alive recently. The third is the one otherwise discovered only
+    by waiting an hour for a job that never starts — so the SPA hides the media
+    share option rather than offering a button that queues work nobody runs."""
+    from .. import tools
+    from ..media_encode import MediaSettings, PROFILE_OUTPUT, profiles_for
+    from ..media_worker import worker_alive
+
+    profiles: list = []
+    if not getattr(config, "media_enabled", True):
+        reason = "CSAI_MEDIA_ENABLED is off"
+    elif not tools.have("ffmpeg"):
+        reason = "ffmpeg is not installed"
+    else:
+        enc = set(tools.ffmpeg_encoders())
+        if not enc & {"libvpx-vp9", "libvpx", "libx264", "libopenh264"}:
+            reason = "this FFmpeg build has no usable video encoder"
+        elif not worker_alive(config):
+            reason = "no media worker is running"
+        else:
+            reason = ""
+        s = MediaSettings.from_config(config)
+        profiles = sorted(set(profiles_for("video/x", s)) | set(profiles_for("audio/x", s)))
+    return {"publish": not reason, "reason": reason, "profiles": profiles,
+            "fmts": sorted({fmt for fmt, _e, _m in PROFILE_OUTPUT.values()})}
+
+
 @router.get("/capabilities")
 def capabilities(request: Request) -> dict:
     """The deployment's feature configuration, as one document.
@@ -159,4 +188,5 @@ def capabilities(request: Request) -> dict:
         "chat": _chat(config),
         "web_search": _web_search(config),
         "search": _search(config),
+        "media": _media(config),
     }

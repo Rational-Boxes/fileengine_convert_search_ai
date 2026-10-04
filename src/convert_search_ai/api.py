@@ -602,3 +602,162 @@ async def convert_document(file_uid: str, request: Request,
         "renditions": out.renditions_written,
         "has_markdown": out.has_markdown,
     })
+
+
+# ------------------------------- media publishing ---------------------------
+#
+# MEDIA_SHARE.md §4.6. The full-length, web-playable renditions are produced ON
+# REQUEST TO PUBLISH — normally by share_service when a media link is minted
+# (MS3), or directly here, which is also the retry / re-encode path. Never on
+# ingest (§4.3). Unlike /convert, which renders as the agent for anyone signed
+# in, publishing writes a child and spends the tenant's quota, so it requires
+# WRITE on the file AS THE CALLER (§14-Q6, settled).
+
+def _media_jobs(app):
+    jobs = getattr(app.state, "media_jobs", None)
+    if jobs is None:
+        from .media_jobs import PostgresMediaJobStore
+        jobs = PostgresMediaJobStore(app.state.config)
+        app.state.media_jobs = jobs
+    return jobs
+
+
+def _caller_client(identity: Identity, config: Config):
+    from . import core_client
+    return core_client.client_for(identity, config)
+
+
+def _may(mf, identity: Identity, file_uid: str, perm: str) -> bool:
+    """The permission AND existence. The core grants READ by default to a uid
+    with no matching rule — including one that does not exist — so the bare
+    check would answer yes for a deleted file. Fail closed on any error."""
+    try:
+        return bool(mf.check_permission(file_uid, perm, tenant=identity.tenant)
+                    and mf.entity_exists(file_uid))
+    except Exception:
+        return False
+
+
+def _media_source(request: Request, mf, identity: Identity, file_uid: str):
+    """(info, mime) for the file, or an HTTPException. The MIME is the one the
+    ingest worker sniffed from the content when there is one, else judged from
+    the name — publishing is not worth reading the whole file to decide."""
+    from . import mime as mimelib
+    try:
+        info = mf.stat(file_uid, tenant=identity.tenant)
+    except Exception:
+        raise HTTPException(status_code=404, detail="no such file")
+    if getattr(info, "is_dir", False):
+        raise HTTPException(status_code=400, detail="a folder cannot be published")
+    mime = ""
+    try:
+        doc = _ingestor(request.app).store.get_status(identity.tenant, file_uid)
+        mime = (doc.mime or "") if doc else ""
+    except Exception:
+        mime = ""
+    if not (mime.startswith("video/") or mime.startswith("audio/")):
+        mime = mimelib.detect(b"", info.name)
+    return info, mime
+
+
+def _published_names(request: Request, identity: Identity, file_uid: str, version: str) -> list:
+    from .renditions import PUBLISHED_FMTS, parse_rendition_name
+    try:
+        names = _ingestor(request.app).pipeline.writer.names_for_version(
+            file_uid, version, identity.tenant)
+    except Exception:
+        return []
+    out = []
+    for n in names:
+        parsed = parse_rendition_name(n)
+        if parsed and parsed[1] in PUBLISHED_FMTS:
+            out.append(n)
+    return out
+
+
+@router.post("/documents/{file_uid}/media")
+async def publish_media(file_uid: str, request: Request, body: dict = Body(default={}),
+                        identity: Identity = Depends(_identity)) -> JSONResponse:
+    """Request publication of the file's CURRENT version. 202 with the jobs —
+    existing or new; asking twice never queues twice. Never blocks on the encode."""
+    from .media_encode import MediaSettings, PROFILE_OUTPUT, profiles_for
+    config = request.app.state.config
+    if not getattr(config, "media_enabled", True):
+        raise HTTPException(status_code=404, detail="media publishing is disabled")
+    mf = _caller_client(identity, config)
+    if not await run_in_threadpool(_may, mf, identity, file_uid, "w"):
+        raise HTTPException(status_code=403, detail="publishing requires write access to the file")
+    info, mime = await run_in_threadpool(_media_source, request, mf, identity, file_uid)
+    wanted = profiles_for(mime, MediaSettings.from_config(config))
+    if not wanted:
+        raise HTTPException(status_code=415, detail=f"{mime or 'this file'} is not audio or video")
+    requested = (body or {}).get("profile")
+    if requested:
+        if requested not in PROFILE_OUTPUT or requested not in wanted:
+            raise HTTPException(status_code=400, detail=f"profile {requested!r} does not apply to {mime}")
+        wanted = [requested]
+
+    from .db import provision_tenant
+    await run_in_threadpool(provision_tenant, config, identity.tenant)
+    jobs = _media_jobs(request.app)
+    version = getattr(info, "version", "") or ""
+    out = []
+    for profile in wanted:
+        job, created = await run_in_threadpool(jobs.request, identity.tenant, file_uid,
+                                               version, profile, identity.user)
+        out.append({**job.to_api(), "created": created})
+    audit.record(action="media_publish_requested", user=identity.user, tenant=identity.tenant,
+                 result="success", file_uid=file_uid, version=version,
+                 profiles=",".join(wanted))
+    return JSONResponse(status_code=202, content={"file_uid": file_uid, "source_version": version,
+                                                  "mime": mime, "jobs": out})
+
+
+@router.get("/documents/{file_uid}/media")
+async def media_state(file_uid: str, request: Request,
+                      identity: Identity = Depends(_identity)) -> dict:
+    """The publish state of the file's current version: its jobs and the
+    published renditions present. READ-gated."""
+    config = request.app.state.config
+    mf = _caller_client(identity, config)
+    gate = request.app.state.permission_gate
+    if not await run_in_threadpool(gate.can_read, mf, identity, file_uid):
+        raise HTTPException(status_code=403, detail="not permitted")
+    info, mime = await run_in_threadpool(_media_source, request, mf, identity, file_uid)
+    version = getattr(info, "version", "") or ""
+    from .db import provision_tenant
+    await run_in_threadpool(provision_tenant, config, identity.tenant)
+    jobs = await run_in_threadpool(_media_jobs(request.app).for_file, identity.tenant,
+                                   file_uid, version)
+    return {"file_uid": file_uid, "source_version": version, "mime": mime,
+            "jobs": [j.to_api() for j in jobs],
+            "renditions": await run_in_threadpool(_published_names, request, identity,
+                                                  file_uid, version)}
+
+
+@router.delete("/documents/{file_uid}/media")
+async def unpublish_media(file_uid: str, request: Request,
+                          identity: Identity = Depends(_identity)) -> JSONResponse:
+    """Cancel the file's queued and running publish jobs. WRITE-gated.
+
+    Removing a PUBLISHED rendition is refused while it cannot be shown that no
+    live media link depends on it (§6.2): unpublishing would otherwise silently
+    break every embed on a customer's site. The liveness source is
+    share_service's media-refs route; until it is configured the answer is 409,
+    which fails safe."""
+    config = request.app.state.config
+    mf = _caller_client(identity, config)
+    if not await run_in_threadpool(_may, mf, identity, file_uid, "w"):
+        raise HTTPException(status_code=403, detail="unpublishing requires write access to the file")
+    from .db import provision_tenant
+    await run_in_threadpool(provision_tenant, config, identity.tenant)
+    cancelled = await run_in_threadpool(_media_jobs(request.app).cancel, identity.tenant, file_uid)
+    if cancelled:
+        audit.record(action="media_publish_cancelled", user=identity.user,
+                     tenant=identity.tenant, result="success", file_uid=file_uid,
+                     jobs=len(cancelled))
+        return JSONResponse(status_code=200, content={
+            "file_uid": file_uid, "cancelled": [j.to_api() for j in cancelled], "removed": []})
+    raise HTTPException(status_code=409, detail=(
+        "nothing is being published, and removing a published copy is refused until "
+        "it can be confirmed that no live share link depends on it"))

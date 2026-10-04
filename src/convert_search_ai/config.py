@@ -391,6 +391,41 @@ class Config:
         self.doc_thumbnail_px = int(_env("CSAI_DOC_THUMBNAIL_PX", "256"))
         self.doc_preview_px = int(_env("CSAI_DOC_PREVIEW_PX", "1280"))
 
+        # ── Media publishing (MEDIA_SHARE.md §4, §11) ─────────────────────
+        # Full-length, web-playable renditions produced ON REQUEST TO PUBLISH —
+        # never on ingest, and there is deliberately no autopublish switch
+        # (§4.3). Run by the separate media worker so an hour-long VP9 encode
+        # never stalls the ingest stream or starves it of CPU (§4.4).
+        self.media_enabled = _bool("CSAI_MEDIA_ENABLED", True)
+        self.media_orphan_days = int(_env("CSAI_MEDIA_ORPHAN_DAYS", "30"))
+        self.media_workers = int(_env("CSAI_MEDIA_WORKERS", "1"))
+        self.media_job_timeout_seconds = int(_env("CSAI_MEDIA_JOB_TIMEOUT_SECONDS", "21600"))
+        self.media_stale_seconds = int(_env("CSAI_MEDIA_STALE_SECONDS", "300"))
+        self.media_max_attempts = int(_env("CSAI_MEDIA_MAX_ATTEMPTS", "3"))
+        self.media_max_input_bytes = int(_env("CSAI_MEDIA_MAX_INPUT_BYTES", "0"))
+        self.media_max_output_bytes = int(_env("CSAI_MEDIA_MAX_OUTPUT_BYTES", "0"))
+        self.media_video_height = int(_env("CSAI_MEDIA_VIDEO_HEIGHT", "720"))
+        self.media_video_crf = int(_env("CSAI_MEDIA_VIDEO_CRF", "31"))
+        self.media_sd_enabled = _bool("CSAI_MEDIA_SD_ENABLED", True)
+        self.media_sd_height = int(_env("CSAI_MEDIA_SD_HEIGHT", "480"))
+        self.media_sd_crf = int(_env("CSAI_MEDIA_SD_CRF", "33"))
+        self.media_audio_bitrate = _env("CSAI_MEDIA_AUDIO_BITRATE", "128k")
+        self.media_mp3_quality = int(_env("CSAI_MEDIA_MP3_QUALITY", "0"))
+        self.media_opus_enabled = _bool("CSAI_MEDIA_OPUS_ENABLED", True)
+        self.media_opus_bitrate = _env("CSAI_MEDIA_OPUS_BITRATE", "96k")
+        self.media_gif_enabled = _bool("CSAI_MEDIA_GIF_ENABLED", True)
+        self.media_gif_seconds = int(_env("CSAI_MEDIA_GIF_SECONDS", "3"))
+        self.media_gif_fps = int(_env("CSAI_MEDIA_GIF_FPS", "8"))
+        self.media_gif_width = int(_env("CSAI_MEDIA_GIF_WIDTH", "280"))
+        self.media_gif_max_bytes = int(_env("CSAI_MEDIA_GIF_MAX_BYTES", str(2 * 1024 * 1024)))
+        self.media_ffmpeg_threads = int(_env("CSAI_MEDIA_FFMPEG_THREADS", "0"))
+        # How often the media worker polls for queued jobs when idle.
+        self.media_poll_seconds = float(_env("CSAI_MEDIA_POLL_SECONDS", "5"))
+        # share_service's liveness route for the orphan reaper (§4.3.1). Unset →
+        # the reaper keeps everything: deleting content because the liveness
+        # source is missing is the wrong direction to be wrong in.
+        self.media_refs_url = _env("CSAI_MEDIA_REFS_URL", "")
+
         # Source/text preview: Pygments style for the colour-coded first-page PDF,
         # and how many leading lines to render (the rest is clipped — it's a
         # preview, the full text is still extracted for search).

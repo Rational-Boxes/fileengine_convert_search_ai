@@ -64,7 +64,7 @@ class MediaSettings:
     gif_enabled: bool = True
     gif_seconds: int = 3
     gif_fps: int = 8
-    gif_width: int = 560
+    gif_width: int = 280            # half the usual 560 email body width (2026-10-03)
     gif_max_bytes: int = 2 * 1024 * 1024
     threads: int = 0                 # 0 = FFmpeg's choice
     timeout_seconds: int = 21600
@@ -80,7 +80,7 @@ class MediaSettings:
             mp3_quality=g("media_mp3_quality", 0), opus_enabled=g("media_opus_enabled", True),
             opus_bitrate=g("media_opus_bitrate", "96k"), gif_enabled=g("media_gif_enabled", True),
             gif_seconds=g("media_gif_seconds", 3), gif_fps=g("media_gif_fps", 8),
-            gif_width=g("media_gif_width", 560), gif_max_bytes=g("media_gif_max_bytes", 2 * 1024 * 1024),
+            gif_width=g("media_gif_width", 280), gif_max_bytes=g("media_gif_max_bytes", 2 * 1024 * 1024),
             threads=g("media_ffmpeg_threads", 0), timeout_seconds=g("media_job_timeout_seconds", 21600),
             max_output_bytes=g("media_max_output_bytes", 0))
 
@@ -432,6 +432,23 @@ def _play_button(path: str, size: int) -> None:
     im.save(path)
 
 
+def _gif_attempts(settings: MediaSettings) -> list:
+    """(fps, width, colours, seconds) to try, best-first, until one fits under
+    ``gif_max_bytes``. Measured on a real 1080p phone clip (2026-10-03): 560 px at
+    8 fps came out at 3.5 MB, over the 2 MiB email budget — a busy scene is the
+    normal case, not an edge one, so the poster steps DOWN rather than failing.
+    The last rung is a single still frame with the play button: exactly what
+    Outlook shows anyway (§9.4), so it is a correct poster, just not animated."""
+    w, fps, secs = settings.gif_width, settings.gif_fps, settings.gif_seconds
+    return [
+        (fps, w, 256, secs),
+        (max(4, fps * 3 // 4), w, 128, secs),
+        (max(4, fps // 2), max(240, w * 4 // 5), 96, secs),
+        (max(3, fps // 2), max(200, w * 2 // 3), 64, max(2, secs * 2 // 3)),
+        (0, w, 256, 0),                      # one still frame
+    ]
+
+
 def _encode_gif(src, d, p, settings, on_progress, should_cancel):
     if not p.has_video:
         return EncodeResult("failed", detail="the source has no video track")
@@ -443,22 +460,32 @@ def _encode_gif(src, d, p, settings, on_progress, should_cancel):
     # From early in the clip, but past a black first frame where there is room.
     start = 1 if p.duration_ms > (settings.gif_seconds + 1) * 1000 else 0
     out = os.path.join(d, "out.gif")
-    # The overlay is composited onto EVERY frame, starting with the first:
-    # Outlook shows only the first frame of a GIF, and the play button is what
-    # makes that still read as a video (§9.4).
-    graph = (f"[0:v]trim=start={start}:duration={settings.gif_seconds},setpts=PTS-STARTPTS,"
-             f"fps={settings.gif_fps},scale={settings.gif_width}:-2:flags=lanczos[v];"
-             f"[v][1:v]overlay=(W-w)/2:(H-h)/2,split[a][b];"
-             f"[a]palettegen=stats_mode=diff[pal];[b][pal]paletteuse=dither=bayer:bayer_scale=4")
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-nostats", "-progress", "pipe:1",
-           "-i", src, "-i", button, "-filter_complex", graph, "-loop", "0", out]
-    status = _run_ffmpeg(cmd, settings.gif_seconds * 1000, settings, on_progress, should_cancel)
-    if status == "cancelled":
-        return EncodeResult("cancelled", detail="cancelled")
-    if status != "ok":
-        return EncodeResult("failed", detail="the email poster encode failed")
-    size = os.path.getsize(out) if os.path.exists(out) else 0
-    if size > settings.gif_max_bytes:
-        return EncodeResult("failed", detail=(f"the email poster is too large ({size} bytes, "
-                                              f"limit {settings.gif_max_bytes})"))
-    return _finish("video-emailposter", out, "gif", "image/gif", "gif", settings, on_progress)
+    last_size = 0
+    for fps, width, colours, secs in _gif_attempts(settings):
+        # The overlay is composited onto EVERY frame, starting with the first:
+        # Outlook shows only the first frame of a GIF, and the play button is
+        # what makes that still read as a video (§9.4).
+        if fps:
+            head = (f"[0:v]trim=start={start}:duration={secs},setpts=PTS-STARTPTS,"
+                    f"fps={fps},scale={width}:-2:flags=lanczos[v];")
+        else:
+            head = (f"[0:v]trim=start={start}:duration=0.5,setpts=PTS-STARTPTS,"
+                    f"scale={width}:-2:flags=lanczos,select=eq(n\\,0)[v];")
+        graph = (head + "[v][1:v]overlay=(W-w)/2:(H-h)/2,split[a][b];"
+                 f"[a]palettegen=max_colors={colours}:stats_mode=diff[pal];"
+                 "[b][pal]paletteuse=dither=bayer:bayer_scale=5")
+        cmd = ["ffmpeg", "-y", "-hide_banner", "-nostats", "-progress", "pipe:1",
+               "-i", src, "-i", button, "-filter_complex", graph]
+        cmd += ["-loop", "0"] if fps else ["-frames:v", "1"]
+        cmd.append(out)
+        status = _run_ffmpeg(cmd, max(secs, 1) * 1000, settings, None, should_cancel)
+        if status == "cancelled":
+            return EncodeResult("cancelled", detail="cancelled")
+        if status != "ok":
+            return EncodeResult("failed", detail="the email poster encode failed")
+        last_size = os.path.getsize(out) if os.path.exists(out) else 0
+        if 0 < last_size <= settings.gif_max_bytes:
+            return _finish("video-emailposter", out, "gif", "image/gif",
+                           "gif" if fps else "gif-still", settings, on_progress)
+    return EncodeResult("failed", detail=(f"the email poster is too large ({last_size} bytes, "
+                                          f"limit {settings.gif_max_bytes}) even as a still"))

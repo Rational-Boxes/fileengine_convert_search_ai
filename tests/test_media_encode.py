@@ -215,7 +215,7 @@ def test_an_email_poster_over_the_size_cap_is_refused(landscape):
     tight = me.MediaSettings(video_height=180, sd_height=120, gif_width=160,
                              gif_seconds=1, gif_fps=4, gif_max_bytes=100)
     r = me.encode("video-emailposter", landscape, tight)
-    assert r.status == "failed" and "too large" in r.detail
+    assert r.status == "failed" and "too large" in r.detail and "still" in r.detail
 
 
 # ── progress and cancellation ───────────────────────────────────────────────
@@ -245,3 +245,23 @@ def test_an_output_over_the_ceiling_is_failed_and_discarded(landscape):
 def test_an_unknown_profile_is_refused():
     with pytest.raises(ValueError):
         me.encode("video-4k-av1", "/nonexistent", SMALL)
+
+
+def test_a_poster_over_budget_steps_down_rather_than_failing(landscape):
+    # A budget the first rung cannot meet but a smaller one can: the result is a
+    # poster, not a failure — a busy phone clip is the normal case (2026-10-03).
+    first = me.encode("video-emailposter", landscape, SMALL)
+    assert first.status == "ok"
+    budget = first.output_bytes - 1
+    first.rendition.release()
+    tight = me.MediaSettings(video_height=180, sd_height=120, gif_width=160,
+                             gif_seconds=1, gif_fps=4, gif_max_bytes=budget)
+    r = me.encode("video-emailposter", landscape, tight)
+    assert r.status == "ok", r.detail
+    assert r.output_bytes <= budget
+    from PIL import Image
+    with Image.open(r.rendition.path) as im:
+        im.seek(0)
+        first_frame = im.convert("RGB")
+        assert first_frame.getpixel((first_frame.width // 2, first_frame.height // 2))[0] > 200
+    r.rendition.release()
