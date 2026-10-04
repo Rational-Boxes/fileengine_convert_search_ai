@@ -2384,6 +2384,32 @@ until the encode finishes (§6.2).
    another session's uid is refused; with tracking off there is no route and no
    rows; the retention curve matches a hand-computed column popcount.
 
+   **Built 2026-10-03 (MS5 + MS5b, branches, unmerged) — for review:**
+   - *bytes-floor is judged at SESSION END only* (expiry or revocation), never at
+     the end of a stream: a browser fetches a short clip whole as soon as it
+     loads, before anyone presses play, so a stream-end check called every loaded
+     clip "probably watched". A session that sent any beacon never falls back to
+     bytes. It uses the link's 720p size, so a 480p-only viewer rarely reaches it
+     — conservative by design.
+   - `share_media_playback` keys on `share_media_sessions`, not
+     `share_redemptions` (the sketch above predates the separate session table).
+   - *The rollup is written as the oldest live link's creator* (a real principal
+     who shared the video); a failed write is recorded and retried at the
+     debounce cadence, not every sweep.
+   - *Erasure is a tenant-admin route*, `POST /share/v1/admin/audience/erase`:
+     the platform has no address-erasure event to consume.
+   - **Open finding — sidecar versions keep PII.** The core versions every file,
+     and each projection is a new version. Regenerating after an erasure (or a
+     retention purge) removes the address from the CURRENT `audience.csv`, but
+     earlier versions still hold it. Clearing them needs a version cull, i.e.
+     `CULL_VERSIONS`, which a creator does not hold by default. Options: grant
+     the cull to the sidecar writer, have the core not version hidden CSV
+     sidecars, or accept and document it. Needs a decision before enabling.
+   - The roster and per-link export are the creator's own (not widened to tenant
+     admins); the rollup's readers are whoever can read the video (its ACL).
+   **Tests:** `test_media_audience.py` (29) and the live door suite (beacon →
+   roster → `audience.csv` written into the core as the creator and read back
+   through the bridge; an unchanged flush adds no version).
 8. **MS6 — frontend: owner side.** Inline playback of the published rendition,
    the encode state and progress, the media branch of the Share tab with the
    three access modes and the confirmation, the embed snippets, the audience
