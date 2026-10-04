@@ -803,12 +803,15 @@ verbatim.
    - with `publish: false` it refuses with a reason, for a scripted caller that
      wants a link only if the bytes already exist and does not want to spend CPU
      discovering otherwise.
-3. **Pins the rendition by name**, not by uid resolved later — same reasoning as
-   OSL's version pinning, and the same trap the development plan records
-   (`back=N` is positional and shifts). A new source version does **not**
-   retarget a live link; the link keeps serving the cut that was published when
-   it was minted, and the Share tab shows *"a newer version of this file has been
-   published — re-share to use it"*.
+3. **Plays the newest version that has finished publishing** *(revised
+   2026-10-03 — the link originally pinned the cut it was minted with)*. A new
+   upload is a correction the outside viewer should see. The link resolves, at
+   session open, to the newest source version whose publish set is complete
+   (every job finished, the primary rendition succeeded) — never to an encode
+   still running, so a correction never takes a link dark. Uploading a new
+   version of a file with a live media link **is** a publish request for it
+   (share_service, on `file.updated`, MS3). The rendition is still resolved from
+   the link's own record and the file, never from the caller (§13.4).
 4. **Stores `duration_ms`, `output_bytes`, `poster_uid`** on the link, so the
    peek endpoint and the embed can answer without touching the core.
 5. **Refuses if the published rendition exceeds `share.media_max_bytes`.**
@@ -2166,15 +2169,26 @@ the exact leak §4.1 warns about. The **profiles** keep their names
 (`video-480p-vp9`, `audio-opus`); only the rendition fmts above change. Read
 `media-sd` / `audio-opus` elsewhere in this document as those fmts.
 
-**Q14 — Published renditions are exempt from version pruning** *(a
-contradiction found in MS2, 2026-10-03; supersedes §4.7's first bullet)*. §4.7
-said superseded `media`/`audio` children are pruned automatically; §6.2 says a
-media link keeps serving the cut it was minted with after a new upload. The prune
-would win — ingesting a new version would delete the copy every live link and
-embed serves. `PUBLISHED_FMTS` are therefore recognised (so they parse) but
-skipped by `prune_old_versions`; their lifetime is the share's, enforced by the
-§4.3.1 reaper, which removes one only when share_service positively confirms no
-live link needs it AND the grace period has passed — any doubt keeps it.
+**Q14 — A link plays the newest PUBLISHED version; superseded copies retire
+when the new set completes** *(2026-10-03; supersedes §4.7's first bullet and
+§6.2's original pinning)*. Decided: a share link should show a correction. "Newest"
+means newest whose publish has **finished** — the previous copy keeps playing
+until then. Consequences, all implemented in MS2:
+
+- `PUBLISHED_FMTS` are exempt from the ingest pipeline's version pruning: pruning
+  at upload would delete the copy links play before its replacement exists.
+- When every job for a version is terminal and its primary rendition (`media` /
+  `audio`) succeeded, the worker removes the published copies of OLDER versions —
+  all of them, so a size the new version lacks (480p of an SD source) is not left
+  on offer with stale footage. A failed publish retires nothing; an older version
+  finishing late never touches a newer one. Audited as `media_link_retargeted`,
+  with the requester, because what outside viewers see changed.
+- **Accepted consequence:** anyone with WRITE on the file can change what
+  external viewers of an existing link — including an `open` one embedded on a
+  public site — see. That is the point of following corrections; the audit event
+  is what makes it accountable.
+- The orphan reaper (§4.3.1) still covers the case with no newer version: a
+  published copy no live link has needed for the grace period.
 
 **Implementation notes from MS1–MS2 (2026-10-03).** `media_jobs.status` adds
 `skipped` (no SD copy of an SD source; no Opus without libopus — correct
@@ -2236,7 +2250,9 @@ until the encode finishes (§6.2).
    call fails, and never touches `poster` or `preview`.
 4. **MS3 — `share_service`: kind 3, owner side.** `access_mode` + its CHECK
    constraint, `max_viewers`, `allowed_embed_origins`, `display_name`, creation
-   with `pending_media`, the `media-refs` internal route, the audience table.
+   with `pending_media`, the `media-refs` internal route, the audience table,
+   and **republish on upload** (Q14): a `file.updated` for a file with a live
+   media link requests publication of the new version.
    No public surface yet. **Tests:** `claimed`/`open` refused for kinds 0–2 at
    the database; `access_mode` immutable; an open link needs all three gates.
 5. **MS4 — `share_service`: the media door.** The `<tenant>-media.<base>` origin

@@ -344,3 +344,70 @@ def test_the_refs_client_with_no_url_cannot_answer():
     from convert_search_ai.media_worker import ShareRefs
     refs = ShareRefs(types.SimpleNamespace(media_refs_url="", internal_secret="s"))
     assert refs.live_renditions(T, "vid") is None
+
+
+# ── a link plays the newest PUBLISHED version (2026-10-03, supersedes §6.2) ──
+#
+# A new upload is a correction the outside viewer should see. Links follow the
+# newest version that has FINISHED publishing — the old copy keeps playing until
+# then, so a correction never takes a link dark — and the superseded published
+# copies are removed once the new version's set is complete. All of them, so a
+# new source too small for 480p does not leave the old 480p on offer.
+
+def _publish(x, version, profiles=("video-720p-vp9", "video-480p-vp9")):
+    for p in profiles:
+        x.jobs.request(T, "vid", version, p, "ann")
+    while x.w.run_once():
+        pass
+
+
+def test_old_published_copies_stay_until_the_new_version_is_published():
+    x = _world()
+    _publish(x, "v1")
+    assert {"v1-media.webm", "v1-media_sd.webm"} <= set(x.mf.renditions["vid"])
+    x.jobs.request(T, "vid", "v2", "video-720p-vp9", "ann")
+    x.jobs.request(T, "vid", "v2", "video-480p-vp9", "ann")
+    x.w.run_once()                       # v2 720p done, v2 480p still queued
+    left = set(x.mf.renditions["vid"])
+    assert "v1-media.webm" in left and "v1-media_sd.webm" in left
+
+
+def test_the_superseded_copies_go_once_the_new_set_is_complete():
+    x = _world()
+    _publish(x, "v1")
+    _publish(x, "v2")
+    left = set(x.mf.renditions["vid"])
+    assert {"v2-media.webm", "v2-media_sd.webm"} <= left
+    assert not {"v1-media.webm", "v1-media_sd.webm"} & left
+
+
+def test_an_old_size_the_new_version_lacks_is_removed_too():
+    x = _world()
+    _publish(x, "v1")
+    # v2's source is already standard definition: its 480p is skipped.
+    x.w.encode_fn = _ok_encoder()
+    def enc(profile, src, settings, **kw):
+        if profile == "video-480p-vp9":
+            return EncodeResult("skipped", detail="the source is already standard definition")
+        return _ok_encoder()(profile, src, settings, **kw)
+    x.w.encode_fn = enc
+    _publish(x, "v2")
+    left = set(x.mf.renditions["vid"])
+    assert "v2-media.webm" in left
+    assert "v1-media_sd.webm" not in left        # no stale SD left on offer
+
+
+def test_a_failed_new_publish_keeps_the_old_copies_playing():
+    x = _world()
+    _publish(x, "v1")
+    x.w.encode_fn = _ok_encoder(status="failed", detail="encoder crashed")
+    _publish(x, "v2")
+    left = set(x.mf.renditions["vid"])
+    assert {"v1-media.webm", "v1-media_sd.webm"} <= left
+
+
+def test_a_newer_version_is_never_removed_by_an_older_publish_finishing():
+    x = _world()
+    _publish(x, "v2")
+    _publish(x, "v1")                    # a late retry of an older version
+    assert {"v2-media.webm", "v2-media_sd.webm"} <= set(x.mf.renditions["vid"])

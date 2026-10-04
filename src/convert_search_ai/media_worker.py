@@ -262,6 +262,11 @@ class MediaWorker:
         if done is None:
             # Not running any more — cancelled under us. Its record stands.
             return "cancelled"
+        try:
+            self._retire_superseded(tenant, done)
+        except Exception:
+            log.warning("could not retire superseded copies of %s — keeping them",
+                        done.file_uid, exc_info=True)
         if status == "succeeded":
             log.info("media job %s succeeded: %s (%s bytes, %s)", job.job_uid,
                      done.rendition_name, done.output_bytes, done.encoder)
@@ -277,6 +282,44 @@ class MediaWorker:
                         job_uid=done.job_uid, file_uid=done.file_uid, profile=done.profile,
                         detail=done.detail, attempts=done.attempts)
         return status
+
+    #: The rendition a version must have published before links move to it.
+    _PRIMARY = ("video-720p-vp9", "audio-mp3")
+
+    def _retire_superseded(self, tenant: str, job: MediaJob) -> None:
+        """A share link plays the NEWEST PUBLISHED version (decided 2026-10-03,
+        superseding §6.2's pinning): a new upload is a correction the outside
+        viewer should see. Once every job for this version has finished and its
+        primary rendition succeeded, the published copies of OLDER versions are
+        removed — all of them, so a size the new version lacks (480p of a source
+        that is already SD) is not left on offer with stale footage.
+
+        Until then the old copies keep playing: a correction never takes a link
+        dark. A failed publish retires nothing. An older version finishing late
+        never touches a newer one."""
+        from .renditions import PUBLISHED_FMTS, _safe_version, parse_rendition_name
+        mine = self.jobs.for_file(tenant, job.file_uid, job.source_version)
+        if not mine or any(j.status in ("queued", "running") for j in mine):
+            return
+        if not any(j.profile in self._PRIMARY and j.status == "succeeded" for j in mine):
+            return
+        current = _safe_version(job.source_version)
+        retired = []
+        for e in self.mf.dir(job.file_uid, tenant=tenant) or []:
+            parsed = parse_rendition_name(getattr(e, "name", ""))
+            if not parsed:
+                continue
+            version, fmt, _ext = parsed
+            if fmt in PUBLISHED_FMTS and version < current:
+                self.mf.remove(e.uid, tenant=tenant)
+                retired.append(e.name)
+        if retired:
+            log.info("links on %s now play %s; retired %s", job.file_uid,
+                     job.source_version, ", ".join(sorted(retired)))
+            # What outside viewers see changed: on the record, with who caused it.
+            self._audit(tenant, "media_link_retargeted", job.requested_by,
+                        file_uid=job.file_uid, version=job.source_version,
+                        retired=",".join(sorted(retired)))
 
     def _announce(self, etype: str, tenant: str, job: MediaJob) -> None:
         """media.published / media.publish_failed on the core events stream,
@@ -296,7 +339,9 @@ class MediaWorker:
         try:
             from . import audit
             audit.record(action=action, user=user or "-", tenant=tenant,
-                         result="success" if action == "media_published" else "failure",
+                         result=("success" if action in ("media_published",
+                                                         "media_link_retargeted")
+                                 else "failure"),
                          **extra)
         except Exception:
             log.warning("could not audit %s", action, exc_info=True)
