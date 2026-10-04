@@ -1786,8 +1786,10 @@ is absent rather than leading somewhere that fails.
 - **Embed** next to **Copy link**: the `<fe-media-share>` snippet, the iframe
   snippet, and the oEmbed URL, each one-click copyable.
 
-**Status & history** (OSL §10.2) gains the audience surface from §7.2, the
-*"a newer version of this file has been published"* state from §6.2, and an
+**Status & history** (OSL §10.2) gains the audience surface from §7.2,
+which version the link is currently playing — and *"a corrected version is being
+prepared; viewers see the previous one until it is ready"* while a newer upload
+encodes (§6.2, Q14) — and an
 egress meter — bytes served against `max_bytes`, plus the §6.9 rung with its
 *publish elsewhere* guidance when it is above zero.
 
