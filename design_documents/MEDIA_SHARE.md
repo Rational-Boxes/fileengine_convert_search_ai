@@ -2143,9 +2143,15 @@ The cache returns only if measurement shows a need, with `range_method` as its
 trigger exactly as R16 describes. Dropping it removes the cache's cull, its
 single-flight fill, warm-on-mint, and the whole cache-miss-amplification
 surface; §6.9's byte, concurrency and session controls stay.
-**Precondition for MS4:** confirm a v2 read reports `range_method = "seek"` —
-the post-deploy verification on 2026-10-01 observed `scan` on an 80 MiB v2
-file, which must be explained before MS4 relies on seeks.
+**Precondition for MS4 — met (2026-10-03).** The 2026-10-01 `scan` reading on
+an 80 MiB v2 file was a reporting defect, not a scan: `get_range` filled its
+range report only *after* the read, and StreamFileDownload copies it onto the
+first frame from inside the sink — so every first frame said `total_size 0`,
+`ranged false`, `range_method ""`. The read itself was already a v2 seek. Fixed
+in core branch `fix/range-metadata-on-first-frame` (the report is filled before
+the first byte; an empty window still gets a metadata-only frame so a door can
+answer 416). Verified end to end through the bridge on a 137 MB clip: exact
+`Content-Range`/`Content-Length`, byte-identical windows, 416 `bytes */total`.
 
 **Q11 — The media door honours tenant state.** Not in the original design,
 because the mechanism did not exist. Every public share route now refuses a
