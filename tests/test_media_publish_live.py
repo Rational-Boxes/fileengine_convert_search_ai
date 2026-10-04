@@ -155,6 +155,10 @@ def world():
     from convert_search_ai.store import DocumentStore
 
     cfg = Config()
+    # No share_service to ask: the unpublish test is about the FAIL-SAFE answer
+    # (cannot confirm no live link -> keep). share_service's own live suite
+    # covers the answered cases end to end.
+    cfg.media_refs_url = ""
     schema = db.provision_tenant(cfg, TENANT)
     mf = agent_client(cfg)
     work = tempfile.mkdtemp(prefix="csai_media_e2e_")
@@ -345,7 +349,7 @@ def test_the_published_rendition_streams_through_a_playback_ticket(world, publis
 
 # --- unpublish is fail-safe until share_service answers ------------------------------
 
-def test_unpublishing_a_finished_set_is_refused_and_removes_nothing(world, published):
+def test_unpublishing_is_refused_while_share_service_cannot_answer(world, published):
     before = set(_children(world["mf"], published["uid"]))
     r = world["c"].delete(f"/documents/{published['uid']}/media", headers=world["h"])
     assert r.status_code == 409
