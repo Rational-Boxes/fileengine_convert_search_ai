@@ -38,17 +38,27 @@ class VideoPlugin(ConversionPlugin):
     name = "video"
     # ffmpeg reads the temp file and streams; nothing is parsed in-process.
     bounds_own_memory = True
+    # And the pipeline need not read the source at all: it streams it to disk and
+    # hands us the path (MEDIA_SHARE.md §4.2a, MS0).
+    consumes_path = True
 
     def supports(self, mime: str) -> bool:
         return mime.startswith("video/")
 
     def render(self, data: bytes, mime: str, name: str) -> List[Rendition]:
+        """Bytes in — for callers that already hold them. Writes them to a temp
+        file and does exactly what :meth:`render_from_path` does."""
         if not tools.have("ffmpeg") or not data:
             return []
-        out: List[Rendition] = []
         with tools.workdir() as d:
-            src = tools.write_temp(d, "in", data)
+            return self.render_from_path(tools.write_temp(d, "in", data), mime, name)
 
+    def render_from_path(self, path: str, mime: str, name: str) -> List[Rendition]:
+        if not tools.have("ffmpeg") or not os.path.exists(path) or os.path.getsize(path) == 0:
+            return []
+        out: List[Rendition] = []
+        src = path
+        with tools.workdir() as d:
             # Poster: one frame ~1s in, scaled to 640px wide.
             poster = os.path.join(d, "poster.png")
             if tools.run(["ffmpeg", "-y", "-ss", "1", "-i", src, "-frames:v", "1",

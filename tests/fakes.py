@@ -55,6 +55,7 @@ class FakeMF:
         self.children = {}     # parent_uid -> [FakeEntry] (for dir()/reconcile)
         self.puts = []         # (uid, bytes)
         self.gets = []         # uids whose CONTENT was read — the expensive part
+        self.streams = []      # uids streamed in chunks (never held whole)
         self._n = 1000
 
     def add_file(self, uid, name, content=b"", version="v1", is_dir=False, size=None):
@@ -77,6 +78,20 @@ class FakeMF:
         if f is None:
             raise NotFoundError("file does not exist", operation="get", uid=uid)
         return io.BytesIO(f["content"])
+
+    def get_stream(self, uid, version="", tenant=None, chunk=7, **kw):
+        """The streaming read (MS0). Like the real client it is a generator, so a
+        missing file raises on first iteration, not at the call. Deliberately
+        tiny chunks, so a consumer that assumes one chunk is the whole file
+        fails a test rather than passing by luck."""
+        self.streams.append(uid)
+        self.gets.append(uid)   # still a read of the content, just not held whole
+        f = self.files.get(uid)
+        if f is None:
+            raise NotFoundError("file does not exist", operation="get_stream", uid=uid)
+        data = f["content"]
+        for i in range(0, len(data), chunk):
+            yield data[i:i + chunk]
 
     def touch(self, parent_uid, name, tenant=None, **kw):
         self._n += 1

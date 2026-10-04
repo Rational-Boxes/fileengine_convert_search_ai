@@ -143,6 +143,18 @@ class ConversionPlugin(ABC):
     #: worker.
     bounds_own_memory: bool = False
 
+    #: Can this converter work from a PATH instead of bytes? (MEDIA_SHARE.md
+    #: §4.2a, MS0.) When true the pipeline streams the source to a temp file in
+    #: bounded chunks and calls :meth:`render_from_path`, so the source is never
+    #: held in this process at all. Before this, every file was read whole first
+    #: — and a video, exempt from the sweep's size limit because FFmpeg bounds
+    #: its own memory, reached that read with nothing in the way.
+    #:
+    #: A plugin that sets it must not depend on :meth:`extract` receiving the
+    #: content: a path plugin produces renditions only (see §16.3 on why the
+    #: video plugin must not grow an ``extract``).
+    consumes_path: bool = False
+
     @abstractmethod
     def supports(self, mime: str) -> bool:
         ...
@@ -163,6 +175,14 @@ class ConversionPlugin(ABC):
     def render(self, data: bytes, mime: str, name: str) -> List[Rendition]:
         """Presentation renditions for the source (default: none)."""
         return []
+
+    def render_from_path(self, path: str, mime: str, name: str) -> List[Rendition]:
+        """Renditions from a source on disk. Called instead of :meth:`render` when
+        :attr:`consumes_path` is set. The default reads the file and calls
+        :meth:`render`, which is only correct for a small source — a plugin that
+        sets ``consumes_path`` overrides this and hands the path to its tool."""
+        with open(path, "rb") as f:
+            return self.render(f.read(), mime, name)
 
     def extract(self, data: bytes, mime: str, name: str) -> Optional[str]:
         """Extracted Markdown/text content for the source (default: none)."""

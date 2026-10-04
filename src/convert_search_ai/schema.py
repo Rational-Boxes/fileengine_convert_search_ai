@@ -200,6 +200,42 @@ ALTER TABLE "{schema}".mcp_integration DROP CONSTRAINT IF EXISTS mcp_integration
 ALTER TABLE "{schema}".documents DROP CONSTRAINT IF EXISTS documents_status_check;
 ALTER TABLE "{schema}".documents ADD CONSTRAINT documents_status_check
     CHECK (status IN ('pending','converting','converted','indexed','index_failed','unsupported','error'));
+
+-- Media publishing jobs (MEDIA_SHARE.md §4.4). One row per (file, source
+-- version, profile): the UNIQUE is the idempotency — asking twice returns the
+-- existing job, and a new source version is a NEW row, never a mutation. Lives
+-- in this guarded block (spec Q12): idempotent DDL is not concurrency-safe DDL.
+-- `profile` is free text, not an enum, so a future `transcript` profile needs
+-- no migration (§16.5).
+CREATE TABLE IF NOT EXISTS "{schema}".media_jobs (
+    job_uid         UUID        PRIMARY KEY,
+    file_uid        TEXT        NOT NULL,
+    source_version  TEXT        NOT NULL,
+    profile         TEXT        NOT NULL,
+    status          TEXT        NOT NULL
+                    CHECK (status IN ('queued','running','succeeded','skipped','failed','cancelled')),
+    requested_by    TEXT        NOT NULL,
+    requested_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    started_at      TIMESTAMPTZ,
+    finished_at     TIMESTAMPTZ,
+    heartbeat_at    TIMESTAMPTZ,
+    attempts        SMALLINT    NOT NULL DEFAULT 0,
+    progress_pct    SMALLINT    NOT NULL DEFAULT 0,
+    source_bytes    BIGINT,
+    output_bytes    BIGINT,
+    duration_ms     BIGINT,
+    width           INTEGER,
+    height          INTEGER,
+    encoder         TEXT,
+    rendition_name  TEXT,
+    detail          TEXT,
+    UNIQUE (file_uid, source_version, profile)
+);
+CREATE INDEX IF NOT EXISTS media_jobs_queue
+    ON "{schema}".media_jobs (status, requested_at)
+    WHERE status IN ('queued', 'running');
+CREATE INDEX IF NOT EXISTS media_jobs_file
+    ON "{schema}".media_jobs (file_uid, source_version);
 '''
 
 
