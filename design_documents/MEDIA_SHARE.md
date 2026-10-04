@@ -2158,6 +2158,20 @@ pruning leak (§4.1) is real — absent from `_KNOWN_FMTS`; the pipeline still r
 the whole source into memory (`pipeline.py:135–138`, §4.2a); and video still
 converts inline in the ingest worker (`ingest.py:126`, §4.2b).
 
+**Q13 — Two fmt names change: `media_sd` and `audio_opus`** *(found by MS1's
+round-trip test, 2026-10-03)*. A rendition is named `<version>-<fmt>.<ext>` and
+`parse_rendition_name` splits on the LAST hyphen — the fmt token may never
+contain one. `media-sd` would parse as fmt `sd`, so it would never be pruned:
+the exact leak §4.1 warns about. The **profiles** keep their names
+(`video-480p-vp9`, `audio-opus`); only the rendition fmts above change. Read
+`media-sd` / `audio-opus` elsewhere in this document as those fmts.
+
+**The drawer's default stays the 10-second silent `preview`** *(2026-10-03,
+refines §10)*. Where a `media` / `media_sd` rendition exists, the preview player
+offers the full video as an explicit choice — *Watch full video*, 720p / 480p —
+and never switches to it by itself: the preview is for a quick idea of the
+video without distracting sound.
+
 **Transcode trigger, restated (2026-10-03):** the full 720p + 480p conversion
 of the whole video happens on the request to publish — a media share being
 configured — and a wait after creating the link is acceptable. That is §4.3 and

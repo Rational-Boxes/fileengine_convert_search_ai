@@ -38,7 +38,27 @@ _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 # "chatlog" is the chat-provenance hidden child attached to AI-generated reports
 # (see design_documents/CHAT_WITH_AI.md §4.6) — a rendition-shaped sidecar, so it
 # inherits the parent's ACL + cascade delete for free.
-_KNOWN_FMTS = frozenset({"thumbnail", "preview", "pdf", "poster", "model", "chatlog"})
+_KNOWN_FMTS = frozenset({
+    "thumbnail", "preview", "pdf", "poster", "model", "chatlog",
+    # Written by plugins/xeokit3d.py but missing here until 2026-10-03, so every
+    # superseded metamodel JSON was never pruned (MEDIA_SHARE.md §4.1). A test
+    # now asserts every fmt any producer emits round-trips through
+    # parse_rendition_name, which retires this class of leak.
+    "metamodel",
+    # Publish-grade media (MEDIA_SHARE.md §4.1), produced by the media worker.
+    # `media_sd` / `audio_opus`, not the spec's original hyphenated names: the
+    # fmt token must never contain "-" (parse_rendition_name splits on the LAST
+    # one), and `media-sd` would parse as fmt "sd" and never be pruned.
+    # Must be here: a 1 GB `media` rendition that the pruner cannot parse is a
+    # storage incident on the first re-upload, not an untidy leftover.
+    "media", "media_sd", "audio", "audio_opus", "emailposter",
+})
+
+#: RESERVED sibling namespace, never a rendition: `audience-<link_uid>.csv` and
+#: `audience.csv` are the media-share audience sidecars (MEDIA_SHARE.md §8.1).
+#: parse_rendition_name returns None for them because the trailing token is a
+#: UUID / absent and is not in _KNOWN_FMTS. No fmt may ever be named after a
+#: UUID or "audience" — a test pins that the sidecar names do not parse.
 
 
 def _safe_version(version: str) -> str:

@@ -120,3 +120,49 @@ def test_prune_is_best_effort_on_delete_failure():
 
     # Must not raise — cleanup failures are logged, not fatal to the conversion.
     assert w.prune_old_versions("file1", "v2", "default") == []
+
+
+# ── every fmt any producer emits must round-trip (MEDIA_SHARE.md §4.1) ───────
+#
+# `metamodel` was written by plugins/xeokit3d.py and absent from _KNOWN_FMTS, so
+# parse_rendition_name returned None for it and prune_old_versions skipped every
+# superseded copy — forever. For a 5 KB JSON that was untidy; for a 1 GB `media`
+# rendition it would be a storage incident. This test reads the producers' source,
+# so a new fmt with the same omission fails here rather than on someone's disk.
+
+def _emitted_fmts():
+    import pathlib
+    import re
+    from convert_search_ai import media_encode
+    root = pathlib.Path(__file__).resolve().parents[1] / "src" / "convert_search_ai"
+    found = set()
+    pat = re.compile(r"""Rendition(?:\.from_path)?\(\s*(?:fmt\s*=\s*)?["']([A-Za-z0-9_-]+)["']""")
+    for f in list((root / "plugins").glob("*.py")) + [root / "pipeline.py"]:
+        found |= set(pat.findall(f.read_text()))
+    found |= {fmt for fmt, _ext, _mime in media_encode.PROFILE_OUTPUT.values()}
+    return found
+
+
+def test_the_scan_finds_the_known_producers():
+    # Guards the guard: a regex that matched nothing would make the next test
+    # pass vacuously.
+    fmts = _emitted_fmts()
+    assert {"poster", "preview", "metamodel", "media", "media_sd", "audio"} <= fmts
+
+
+def test_every_emitted_fmt_round_trips_through_the_parser():
+    from convert_search_ai.renditions import parse_rendition_name, rendition_name
+    for fmt in sorted(_emitted_fmts()):
+        name = rendition_name("20261003_101010.123", fmt, "bin")
+        parsed = parse_rendition_name(name)
+        assert parsed is not None and parsed[1] == fmt, (
+            f"{fmt!r} is emitted but does not parse as a rendition — add it to "
+            f"_KNOWN_FMTS (and never put a '-' in a fmt), or it is never pruned")
+
+
+def test_the_audience_sidecars_are_never_mistaken_for_renditions():
+    # MEDIA_SHARE.md §8.1: a reserved sibling namespace. True today only because
+    # no fmt is named after a UUID; pinned so it stays true.
+    from convert_search_ai.renditions import parse_rendition_name
+    assert parse_rendition_name("audience-3f2a0c1e-9b7d-4c1a-8e2f-0a1b2c3d4e5f.csv") is None
+    assert parse_rendition_name("audience.csv") is None

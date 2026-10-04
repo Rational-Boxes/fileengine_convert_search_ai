@@ -1,0 +1,464 @@
+# Copyright (C) 2026 James Hickman
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+"""Publish-grade media renditions (MEDIA_SHARE.md §4.1, §4.5, §9.4) — MS1.
+
+These are OUTBOUND artifacts: a whole video at 720p and 480p, an audio file as
+MP3 and Opus, and a small animated poster for email. They are produced only when
+a media share is configured (§4.3), by the media worker — never on ingest.
+
+That is why this is a module of functions and not a ConversionPlugin. Plugins are
+dispatched on ingest for every file of their MIME type; registering a publish
+encoder there would transcode every uploaded video and audio file, which is
+exactly the automatic conversion §4.3 forbids. The ingest-time ``VideoPlugin``
+keeps producing ``poster`` + the 10-second ``preview`` and nothing more.
+
+Everything works from a PATH (MS0's ``consumes_path``): the source is never held
+in memory, and the outputs are file-backed renditions the writer streams.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import subprocess
+import time
+from dataclasses import dataclass, field
+from typing import Callable, Optional, Set
+
+from . import tools
+from .plugins.base import Rendition
+
+log = logging.getLogger("convert_search_ai.media_encode")
+
+
+# ── settings ────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class MediaSettings:
+    """The encoder parameters (§11). Built from Config by :meth:`from_config`;
+    constructed directly by tests with small dimensions."""
+
+    video_height: int = 720          # the HD profile's cap, as a short edge
+    video_crf: int = 31
+    sd_enabled: bool = True
+    sd_height: int = 480
+    sd_crf: int = 33
+    audio_bitrate: str = "128k"      # Opus inside the video
+    mp3_quality: int = 0             # LAME -q:a (0 = V0)
+    opus_enabled: bool = True
+    opus_bitrate: str = "96k"        # the standalone audio-opus rendition
+    gif_enabled: bool = True
+    gif_seconds: int = 3
+    gif_fps: int = 8
+    gif_width: int = 560
+    gif_max_bytes: int = 2 * 1024 * 1024
+    threads: int = 0                 # 0 = FFmpeg's choice
+    timeout_seconds: int = 21600
+    max_output_bytes: int = 0        # 0 = unbounded
+
+    @classmethod
+    def from_config(cls, config) -> "MediaSettings":
+        g = lambda k, d: getattr(config, k, d)  # noqa: E731
+        return cls(
+            video_height=g("media_video_height", 720), video_crf=g("media_video_crf", 31),
+            sd_enabled=g("media_sd_enabled", True), sd_height=g("media_sd_height", 480),
+            sd_crf=g("media_sd_crf", 33), audio_bitrate=g("media_audio_bitrate", "128k"),
+            mp3_quality=g("media_mp3_quality", 0), opus_enabled=g("media_opus_enabled", True),
+            opus_bitrate=g("media_opus_bitrate", "96k"), gif_enabled=g("media_gif_enabled", True),
+            gif_seconds=g("media_gif_seconds", 3), gif_fps=g("media_gif_fps", 8),
+            gif_width=g("media_gif_width", 560), gif_max_bytes=g("media_gif_max_bytes", 2 * 1024 * 1024),
+            threads=g("media_ffmpeg_threads", 0), timeout_seconds=g("media_job_timeout_seconds", 21600),
+            max_output_bytes=g("media_max_output_bytes", 0))
+
+
+# ── the vocabulary ──────────────────────────────────────────────────────────
+
+#: profile -> (rendition fmt, ext, mime) for the PREFERRED target. A fallback
+#: target (VP8, H.264) changes ext/mime but never the fmt.
+PROFILE_OUTPUT = {
+    "video-720p-vp9": ("media", "webm", "video/webm"),
+    "video-480p-vp9": ("media_sd", "webm", "video/webm"),
+    "audio-mp3": ("audio", "mp3", "audio/mpeg"),
+    "audio-opus": ("audio_opus", "webm", "audio/webm"),
+    "video-emailposter": ("emailposter", "gif", "image/gif"),
+}
+
+VIDEO_PROFILES = ("video-720p-vp9", "video-480p-vp9", "video-emailposter")
+AUDIO_PROFILES = ("audio-mp3", "audio-opus")
+
+
+def profiles_for(mime: str, settings: MediaSettings) -> list:
+    """The profiles a publish request queues for a source of ``mime`` (§4.5).
+    Eager: both video sizes together (Q7). Skips that depend on the SOURCE (SD
+    for an already-small video, Opus without libopus) are decided at encode time
+    and recorded as ``skipped``, not failed."""
+    if mime.startswith("video/"):
+        out = ["video-720p-vp9"]
+        if settings.sd_enabled:
+            out.append("video-480p-vp9")
+        if settings.gif_enabled:
+            out.append("video-emailposter")
+        return out
+    if mime.startswith("audio/"):
+        out = ["audio-mp3"]
+        if settings.opus_enabled:
+            out.append("audio-opus")
+        return out
+    return []
+
+
+# Video encode targets, best-first (§4.5). The preview ladder's shape, with
+# publish-grade settings: constrained quality, `good` deadline — slow is allowed.
+_VIDEO_TARGETS = [
+    ("libvpx-vp9", "webm", "video/webm"),
+    ("libvpx", "webm", "video/webm"),
+    ("libx264", "mp4", "video/mp4"),
+    ("libopenh264", "mp4", "video/mp4"),
+]
+
+
+# ── probing ─────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class Probe:
+    duration_ms: int = 0
+    width: int = 0
+    height: int = 0
+    vcodec: str = ""
+    acodec: str = ""
+    format_name: str = ""
+
+    @property
+    def has_video(self) -> bool:
+        return bool(self.vcodec)
+
+    @property
+    def has_audio(self) -> bool:
+        return bool(self.acodec)
+
+    @property
+    def short_edge(self) -> int:
+        return min(self.width, self.height) if self.width and self.height else 0
+
+
+def probe(path: str) -> Optional[Probe]:
+    """ffprobe the file. None when it cannot be read as media at all."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-print_format", "json", "-show_streams",
+             "-show_format", path],
+            capture_output=True, check=False, timeout=120, text=True)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0:
+        return None
+    try:
+        info = json.loads(out.stdout or "{}")
+    except ValueError:
+        return None
+    p = Probe(format_name=str((info.get("format") or {}).get("format_name") or ""))
+    try:
+        p.duration_ms = int(float((info.get("format") or {}).get("duration") or 0) * 1000)
+    except (TypeError, ValueError):
+        p.duration_ms = 0
+    for s in info.get("streams") or []:
+        if s.get("codec_type") == "video" and not p.vcodec:
+            # An attached cover image (an MP3's artwork) is not a video track.
+            if (s.get("disposition") or {}).get("attached_pic"):
+                continue
+            p.vcodec = str(s.get("codec_name") or "")
+            p.width, p.height = int(s.get("width") or 0), int(s.get("height") or 0)
+        elif s.get("codec_type") == "audio" and not p.acodec:
+            p.acodec = str(s.get("codec_name") or "")
+    return p
+
+
+# ── results ─────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class EncodeResult:
+    status: str                          # ok | skipped | failed | cancelled
+    rendition: Optional[Rendition] = None
+    encoder: str = ""
+    detail: str = ""
+    output_bytes: int = 0
+    duration_ms: int = 0
+    width: int = 0
+    height: int = 0
+
+
+# ── the encode ──────────────────────────────────────────────────────────────
+
+
+def _cap_scale(short_edge_cap: int) -> str:
+    """Cap the SHORT edge at ``short_edge_cap`` (so the long edge at 16:9 is
+    ``cap * 16 / 9``), never upscale, keep even dimensions, and respect
+    orientation (§4.5). `scale=1280:-2` would turn a portrait phone video into a
+    1280×2276 file; this keeps it 720×1280."""
+    c = int(short_edge_cap)
+    return (f"scale='if(gt(iw,ih),-2,min({c},iw))':'if(gt(iw,ih),min({c},ih),-2)'")
+
+
+def _threads(settings: MediaSettings) -> list:
+    return ["-threads", str(settings.threads)] if settings.threads else []
+
+
+def _video_cmd(src: str, out: str, encoder: str, ext: str, cap: int, crf: int,
+               settings: MediaSettings, encoders: Set[str]) -> list:
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-nostats", "-progress", "pipe:1",
+           "-i", src, "-map", "0:v:0", "-map", "0:a:0?", "-vf", _cap_scale(cap),
+           "-pix_fmt", "yuv420p", *_threads(settings)]
+    if encoder == "libvpx-vp9":
+        cmd += ["-c:v", "libvpx-vp9", "-crf", str(crf), "-b:v", "0", "-row-mt", "1",
+                "-tile-columns", "2", "-deadline", "good", "-cpu-used", "2", "-g", "240"]
+    elif encoder == "libvpx":
+        cmd += ["-c:v", "libvpx", "-crf", str(crf - 21 if crf > 21 else 10), "-b:v", "2M",
+                "-deadline", "good", "-cpu-used", "2", "-g", "240"]
+    elif encoder == "libx264":
+        cmd += ["-c:v", "libx264", "-crf", "23", "-preset", "medium", "-g", "240"]
+    else:  # libopenh264
+        cmd += ["-c:v", "libopenh264", "-b:v", "2500k", "-g", "240"]
+    if ext == "webm":
+        if "libopus" in encoders:
+            cmd += ["-c:a", "libopus", "-b:a", settings.audio_bitrate]
+        else:
+            cmd += ["-c:a", "libvorbis", "-q:a", "6"]
+    else:
+        cmd += ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"]
+    return cmd + [out]
+
+
+def _conformant(p: Probe, cap: int) -> bool:
+    """Already what we would produce: VP9 (+ Opus or no audio) in WebM, within
+    the cap. Re-encoding it would be a worse copy of itself (§4.5)."""
+    return ("webm" in p.format_name and p.vcodec == "vp9"
+            and p.acodec in ("opus", "") and 0 < p.short_edge <= cap)
+
+
+def _run_ffmpeg(cmd: list, duration_ms: int, settings: MediaSettings,
+                on_progress: Optional[Callable[[int], None]],
+                should_cancel: Optional[Callable[[], bool]]) -> str:
+    """Run an FFmpeg command that writes ``-progress pipe:1``. Returns
+    'ok' | 'failed' | 'cancelled' | 'timeout'. Reports a monotonic 0..99 while
+    running; the caller reports 100 on success."""
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                text=True, bufsize=1)
+    except OSError as e:
+        log.warning("ffmpeg could not start: %s", e)
+        return "failed"
+    started = time.monotonic()
+    last = -1
+    try:
+        for line in proc.stdout:              # one `key=value` per line
+            if should_cancel is not None and should_cancel():
+                proc.kill()
+                proc.wait()
+                return "cancelled"
+            if time.monotonic() - started > settings.timeout_seconds:
+                proc.kill()
+                proc.wait()
+                return "timeout"
+            key, _, value = line.strip().partition("=")
+            # out_time_us is microseconds; out_time_ms is ALSO microseconds
+            # (a long-standing FFmpeg naming quirk), so either works.
+            if key in ("out_time_us", "out_time_ms") and duration_ms > 0:
+                try:
+                    us = int(value)
+                except ValueError:
+                    continue
+                pct = max(0, min(99, int(us / 1000 * 100 / duration_ms)))
+                if pct > last and on_progress is not None:
+                    last = pct
+                    on_progress(pct)
+        # A cancel requested after the last progress line still wins.
+        if should_cancel is not None and should_cancel():
+            proc.kill()
+            proc.wait()
+            return "cancelled"
+        return "ok" if proc.wait() == 0 else "failed"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+def _finish(profile: str, out_path: str, ext: str, mime: str, encoder: str,
+            settings: MediaSettings, on_progress) -> EncodeResult:
+    """Detach a successful output as a file-backed rendition, enforcing the
+    output ceiling (§4.7)."""
+    fmt = PROFILE_OUTPUT[profile][0]
+    size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
+    if size <= 0:
+        return EncodeResult("failed", detail="the encoder produced no output")
+    if settings.max_output_bytes and size > settings.max_output_bytes:
+        return EncodeResult("failed", detail=(f"output of {size} bytes exceeds the ceiling "
+                                              f"of {settings.max_output_bytes}"))
+    got = probe(out_path) or Probe()
+    detached = tools.detach(out_path)
+    if detached is None:
+        return EncodeResult("failed", detail="the encoder output could not be kept")
+    path, cleanup = detached
+    if on_progress is not None:
+        on_progress(100)
+    return EncodeResult("ok", Rendition.from_path(fmt, ext, path, mime, cleanup=cleanup),
+                        encoder=encoder, output_bytes=size, duration_ms=got.duration_ms,
+                        width=got.width, height=got.height)
+
+
+def encode(profile: str, src: str, settings: MediaSettings, *,
+           encoders: Optional[Set[str]] = None,
+           on_progress: Optional[Callable[[int], None]] = None,
+           should_cancel: Optional[Callable[[], bool]] = None) -> EncodeResult:
+    """Produce one publish rendition from the source at ``src``.
+
+    Never raises for an encoding problem: the outcome is the result's ``status``
+    and a user-safe ``detail``, so the job can record it. A ``skipped`` result is
+    a correct outcome (no SD copy of an SD source; no Opus without libopus), not
+    a failure. An output exceeding ``max_output_bytes`` is failed and discarded,
+    never written."""
+    if profile not in PROFILE_OUTPUT:
+        raise ValueError(f"unknown media profile {profile!r}")
+    if not tools.have("ffmpeg"):
+        return EncodeResult("failed", detail="ffmpeg is not installed")
+    enc = set(encoders) if encoders is not None else set(tools.ffmpeg_encoders())
+    p = probe(src)
+    if p is None:
+        return EncodeResult("failed", detail="the source could not be read as media")
+
+    with tools.workdir() as d:
+        if profile in ("video-720p-vp9", "video-480p-vp9"):
+            return _encode_video(profile, src, d, p, settings, enc, on_progress, should_cancel)
+        if profile == "video-emailposter":
+            return _encode_gif(src, d, p, settings, on_progress, should_cancel)
+        return _encode_audio(profile, src, d, p, settings, enc, on_progress, should_cancel)
+
+
+def _encode_video(profile, src, d, p, settings, enc, on_progress, should_cancel):
+    if not p.has_video:
+        return EncodeResult("failed", detail="the source has no video track")
+    hd = profile == "video-720p-vp9"
+    cap = settings.video_height if hd else settings.sd_height
+    crf = settings.video_crf if hd else settings.sd_crf
+    if not hd and p.short_edge and p.short_edge <= settings.sd_height:
+        # A second identical-size file is pure storage (§4.5).
+        return EncodeResult("skipped", detail="the source is already standard definition")
+
+    if _conformant(p, cap):
+        out = os.path.join(d, "out.webm")
+        status = _run_ffmpeg(["ffmpeg", "-y", "-hide_banner", "-nostats", "-progress", "pipe:1",
+                              "-i", src, "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", out],
+                             p.duration_ms, settings, on_progress, should_cancel)
+        if status == "ok":
+            return _finish(profile, out, "webm", "video/webm", "copy", settings, on_progress)
+        if status == "cancelled":
+            return EncodeResult("cancelled", detail="cancelled")
+        # A remux that fails falls through to a real encode.
+
+    target = next((t for t in _VIDEO_TARGETS if t[0] in enc), None)
+    if target is None:
+        return EncodeResult("failed", detail="no usable video encoder in this FFmpeg build")
+    encoder, ext, mime = target
+    out = os.path.join(d, f"out.{ext}")
+    status = _run_ffmpeg(_video_cmd(src, out, encoder, ext, cap, crf, settings, enc),
+                         p.duration_ms, settings, on_progress, should_cancel)
+    if status == "cancelled":
+        return EncodeResult("cancelled", detail="cancelled")
+    if status == "timeout":
+        return EncodeResult("failed", detail="the encode exceeded its time limit")
+    if status != "ok":
+        return EncodeResult("failed", detail=f"the {encoder} encode failed")
+    return _finish(profile, out, ext, mime, encoder, settings, on_progress)
+
+
+def _encode_audio(profile, src, d, p, settings, enc, on_progress, should_cancel):
+    if not p.has_audio:
+        return EncodeResult("failed", detail="the source has no audio track")
+    if profile == "audio-mp3":
+        if "libmp3lame" not in enc:
+            return EncodeResult("failed", detail="this FFmpeg build has no MP3 encoder")
+        out = os.path.join(d, "out.mp3")
+        cmd = ["ffmpeg", "-y", "-hide_banner", "-nostats", "-progress", "pipe:1", "-i", src,
+               "-vn", "-map", "0:a:0", "-c:a", "libmp3lame", "-q:a", str(settings.mp3_quality),
+               "-write_xing", "1", *_threads(settings), out]
+        encoder, ext, mime = "libmp3lame", "mp3", "audio/mpeg"
+    else:
+        if "libopus" not in enc:
+            return EncodeResult("skipped", detail="this FFmpeg build has no Opus encoder")
+        out = os.path.join(d, "out.webm")
+        cmd = ["ffmpeg", "-y", "-hide_banner", "-nostats", "-progress", "pipe:1", "-i", src,
+               "-vn", "-map", "0:a:0", "-c:a", "libopus", "-b:a", settings.opus_bitrate,
+               "-f", "webm", *_threads(settings), out]
+        encoder, ext, mime = "libopus", "webm", "audio/webm"
+    status = _run_ffmpeg(cmd, p.duration_ms, settings, on_progress, should_cancel)
+    if status == "cancelled":
+        return EncodeResult("cancelled", detail="cancelled")
+    if status == "timeout":
+        return EncodeResult("failed", detail="the encode exceeded its time limit")
+    if status != "ok":
+        return EncodeResult("failed", detail=f"the {encoder} encode failed")
+    return _finish(profile, out, ext, mime, encoder, settings, on_progress)
+
+
+# ── the email poster (§9.4) ─────────────────────────────────────────────────
+
+
+def _play_button(path: str, size: int) -> None:
+    """A dark translucent disc with a white triangle, as a PNG for the overlay.
+    Without one, an image of a video reads as a screenshot and is not clicked."""
+    from PIL import Image, ImageDraw
+    im = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    dr = ImageDraw.Draw(im)
+    dr.ellipse((0, 0, size - 1, size - 1), fill=(0, 0, 0, 170))
+    s = size
+    dr.polygon([(int(s * 0.38), int(s * 0.28)), (int(s * 0.38), int(s * 0.72)),
+                (int(s * 0.74), int(s * 0.50))], fill=(255, 255, 255, 255))
+    im.save(path)
+
+
+def _encode_gif(src, d, p, settings, on_progress, should_cancel):
+    if not p.has_video:
+        return EncodeResult("failed", detail="the source has no video track")
+    button = os.path.join(d, "play.png")
+    try:
+        _play_button(button, max(24, settings.gif_width // 5))
+    except Exception as e:  # noqa: BLE001 - Pillow missing or broken
+        return EncodeResult("failed", detail=f"could not draw the play button ({e})")
+    # From early in the clip, but past a black first frame where there is room.
+    start = 1 if p.duration_ms > (settings.gif_seconds + 1) * 1000 else 0
+    out = os.path.join(d, "out.gif")
+    # The overlay is composited onto EVERY frame, starting with the first:
+    # Outlook shows only the first frame of a GIF, and the play button is what
+    # makes that still read as a video (§9.4).
+    graph = (f"[0:v]trim=start={start}:duration={settings.gif_seconds},setpts=PTS-STARTPTS,"
+             f"fps={settings.gif_fps},scale={settings.gif_width}:-2:flags=lanczos[v];"
+             f"[v][1:v]overlay=(W-w)/2:(H-h)/2,split[a][b];"
+             f"[a]palettegen=stats_mode=diff[pal];[b][pal]paletteuse=dither=bayer:bayer_scale=4")
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-nostats", "-progress", "pipe:1",
+           "-i", src, "-i", button, "-filter_complex", graph, "-loop", "0", out]
+    status = _run_ffmpeg(cmd, settings.gif_seconds * 1000, settings, on_progress, should_cancel)
+    if status == "cancelled":
+        return EncodeResult("cancelled", detail="cancelled")
+    if status != "ok":
+        return EncodeResult("failed", detail="the email poster encode failed")
+    size = os.path.getsize(out) if os.path.exists(out) else 0
+    if size > settings.gif_max_bytes:
+        return EncodeResult("failed", detail=(f"the email poster is too large ({size} bytes, "
+                                              f"limit {settings.gif_max_bytes})"))
+    return _finish("video-emailposter", out, "gif", "image/gif", "gif", settings, on_progress)
