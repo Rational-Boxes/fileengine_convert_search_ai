@@ -1836,8 +1836,10 @@ difference between a day and a week if transcripts are ever added.
 
 **Recipient landing page** (`ShareLandingView.vue`) gains the media branch:
 poster + player, the gate appropriate to the mode, a *preparing* state with
-progress, and — deliberately — a **Download** button unless the creator disabled
-it (`allow_download`, default true for `verified`, false for `open`). The
+progress, and a **Download** button only when the creator asked for one
+(`allow_download`, default **false in every mode** — revised 2026-10-04: the
+owner wants a media link to be the player only; it was default-true for
+`verified`, which put a Download button under the player unasked). The
 download hands over the **MP3** for audio and the **720p WebM** for video: the
 most compatible artifact, not whichever source the player happened to pick. Hiding it
 on an open link is not protection, it is a default: a public marketing video does
@@ -2432,8 +2434,8 @@ until the encode finishes (§6.2).
    and degrades to `alt` text plus a visible link when images are blocked; a
    poster fetch is never counted as a view.
    **Built 2026-10-04 (frontend `feat/media-share`, share_service, unmerged):**
-   MediaLanding + MediaPlayer + the beacon; `allow_download` (default yes for
-   verified) with `GET /media/v1/{link}/download` as the one route allowed an
+   MediaLanding + MediaPlayer + the beacon; `allow_download` (default no in every
+   mode since 2026-10-04; was yes for verified) with `GET /media/v1/{link}/download` as the one route allowed an
    attachment; the outside-share peek names the door (`media_base`) for kind 3
    and its generic session/content refuse media. **Review point:** in dev the
    door is proxied onto the SPA origin, so the production CROSS-ORIGIN path
