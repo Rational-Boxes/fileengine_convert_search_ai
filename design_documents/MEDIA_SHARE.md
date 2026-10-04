@@ -2398,13 +2398,14 @@ until the encode finishes (§6.2).
      debounce cadence, not every sweep.
    - *Erasure is a tenant-admin route*, `POST /share/v1/admin/audience/erase`:
      the platform has no address-erasure event to consume.
-   - **Open finding — sidecar versions keep PII.** The core versions every file,
-     and each projection is a new version. Regenerating after an erasure (or a
-     retention purge) removes the address from the CURRENT `audience.csv`, but
-     earlier versions still hold it. Clearing them needs a version cull, i.e.
-     `CULL_VERSIONS`, which a creator does not hold by default. Options: grant
-     the cull to the sidecar writer, have the core not version hidden CSV
-     sidecars, or accept and document it. Needs a decision before enabling.
+   - **Sidecar history — decided 2026-10-04 (option 2).** The core keeps exactly
+     ONE version of a hidden `audience.csv` / `audience-<uuid>.csv` (core branch
+     `feat/unversioned-audience-sidecars`, stacked on the range fix): each write
+     retires the superseded version, with a `cull.versions` accountability record
+     carrying `reason = "unversioned_sidecar"`. Narrow by name AND place (a hidden
+     child of a file). Chosen over widening share_service's credential with `acl`
+     + `destroy` (option 1). Per-link files are scrubbed to a header before their
+     soft delete.
    - The roster and per-link export are the creator's own (not widened to tenant
      admins); the rollup's readers are whoever can read the video (its ACL).
    **Tests:** `test_media_audience.py` (29) and the live door suite (beacon →
