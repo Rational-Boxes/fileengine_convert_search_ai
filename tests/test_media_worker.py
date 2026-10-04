@@ -313,25 +313,25 @@ def _reaper_world(live, *, days_ago=40):
     x.w.run_once()                              # publishes v2-media.webm
     x.clock.advance(days_ago * 86400)
     x.mf.renditions["vid"]["v2-preview.webm"] = "rend-preview"
-    refs = types.SimpleNamespace(live_renditions=lambda t, f: live)
+    refs = types.SimpleNamespace(live_links=lambda t, f: live)
     cfg = types.SimpleNamespace(media_orphan_days=30)
     return x, lambda: reap_orphans(cfg, x.jobs, x.mf, refs, now=x.clock())
 
 
 def test_the_reaper_removes_a_published_copy_no_live_link_has_needed_past_the_grace():
-    x, reap = _reaper_world(set())
+    x, reap = _reaper_world(0)
     assert reap() == ["v2-media.webm"]
     assert "v2-media.webm" not in x.mf.renditions["vid"]
     assert "v2-preview.webm" in x.mf.renditions["vid"]       # never the preview
 
 
-def test_the_reaper_keeps_a_copy_a_live_link_still_needs():
-    x, reap = _reaper_world({"v2-media.webm"})
+def test_the_reaper_keeps_a_copy_a_live_link_still_plays():
+    x, reap = _reaper_world(1)
     assert reap() == [] and "v2-media.webm" in x.mf.renditions["vid"]
 
 
 def test_the_reaper_keeps_everything_within_the_grace_period():
-    x, reap = _reaper_world(set(), days_ago=5)
+    x, reap = _reaper_world(0, days_ago=5)
     assert reap() == [] and "v2-media.webm" in x.mf.renditions["vid"]
 
 
@@ -343,7 +343,55 @@ def test_the_reaper_keeps_everything_when_share_service_cannot_answer():
 def test_the_refs_client_with_no_url_cannot_answer():
     from convert_search_ai.media_worker import ShareRefs
     refs = ShareRefs(types.SimpleNamespace(media_refs_url="", internal_secret="s"))
-    assert refs.live_renditions(T, "vid") is None
+    assert refs.live_links(T, "vid") is None
+
+
+class _Resp:
+    def __init__(self, status, body):
+        self.status_code, self._body = status, body
+
+    def json(self):
+        return self._body
+
+
+class _Http:
+    def __init__(self, resp):
+        self.resp, self.calls = resp, []
+
+    def get(self, url, timeout, headers):
+        self.calls.append((url, headers))
+        if isinstance(self.resp, Exception):
+            raise self.resp
+        return self.resp
+
+
+def _refs(resp, secret="s"):
+    from convert_search_ai.media_worker import ShareRefs
+    http = _Http(resp)
+    cfg = types.SimpleNamespace(media_refs_url="http://share/share/v1/internal/media-refs/",
+                                internal_secret=secret)
+    return ShareRefs(cfg, http=http), http
+
+
+def test_the_refs_client_reads_the_live_link_count_and_authenticates():
+    refs, http = _refs(_Resp(200, {"file_uid": "vid", "live_links": 2}))
+    assert refs.live_links(T, "vid") == 2
+    url, headers = http.calls[0]
+    assert url == "http://share/share/v1/internal/media-refs/vid"
+    assert headers == {"X-Tenant": T, "X-Internal-Auth": "s"}
+
+
+def test_the_refs_client_answers_none_for_anything_it_cannot_trust():
+    for resp in (_Resp(503, {}), _Resp(200, {}), _Resp(200, {"live_links": "2"}),
+                 _Resp(200, {"live_links": -1}), _Resp(200, {"live_links": True}),
+                 _Resp(200, None), OSError("down")):
+        refs, _ = _refs(resp)
+        assert refs.live_links(T, "vid") is None, resp
+
+
+def test_the_refs_client_with_no_secret_does_not_ask():
+    refs, http = _refs(_Resp(200, {"live_links": 0}), secret="")
+    assert refs.live_links(T, "vid") is None and http.calls == []
 
 
 # ── a link plays the newest PUBLISHED version (2026-10-03, supersedes §6.2) ──

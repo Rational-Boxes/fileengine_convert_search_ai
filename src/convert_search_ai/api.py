@@ -675,27 +675,22 @@ def _published_names(request: Request, identity: Identity, file_uid: str, versio
     return out
 
 
-@router.post("/documents/{file_uid}/media")
-async def publish_media(file_uid: str, request: Request, body: dict = Body(default={}),
-                        identity: Identity = Depends(_identity)) -> JSONResponse:
-    """Request publication of the file's CURRENT version. 202 with the jobs —
-    existing or new; asking twice never queues twice. Never blocks on the encode."""
+async def _queue_publish(request: Request, mf, identity: Identity, file_uid: str,
+                         requested_profile: str | None) -> dict:
+    """Queue publication of the file's CURRENT version. Shared by the caller-facing
+    route and share_service's internal republish, so the two cannot drift on
+    what a publish is."""
     from .media_encode import MediaSettings, PROFILE_OUTPUT, profiles_for
     config = request.app.state.config
-    if not getattr(config, "media_enabled", True):
-        raise HTTPException(status_code=404, detail="media publishing is disabled")
-    mf = _caller_client(identity, config)
-    if not await run_in_threadpool(_may, mf, identity, file_uid, "w"):
-        raise HTTPException(status_code=403, detail="publishing requires write access to the file")
     info, mime = await run_in_threadpool(_media_source, request, mf, identity, file_uid)
     wanted = profiles_for(mime, MediaSettings.from_config(config))
     if not wanted:
         raise HTTPException(status_code=415, detail=f"{mime or 'this file'} is not audio or video")
-    requested = (body or {}).get("profile")
-    if requested:
-        if requested not in PROFILE_OUTPUT or requested not in wanted:
-            raise HTTPException(status_code=400, detail=f"profile {requested!r} does not apply to {mime}")
-        wanted = [requested]
+    if requested_profile:
+        if requested_profile not in PROFILE_OUTPUT or requested_profile not in wanted:
+            raise HTTPException(status_code=400,
+                                detail=f"profile {requested_profile!r} does not apply to {mime}")
+        wanted = [requested_profile]
 
     from .db import provision_tenant
     await run_in_threadpool(provision_tenant, config, identity.tenant)
@@ -706,11 +701,62 @@ async def publish_media(file_uid: str, request: Request, body: dict = Body(defau
         job, created = await run_in_threadpool(jobs.request, identity.tenant, file_uid,
                                                version, profile, identity.user)
         out.append({**job.to_api(), "created": created})
+    return {"file_uid": file_uid, "source_version": version, "mime": mime,
+            "jobs": out, "profiles": wanted}
+
+
+@router.post("/documents/{file_uid}/media")
+async def publish_media(file_uid: str, request: Request, body: dict = Body(default={}),
+                        identity: Identity = Depends(_identity)) -> JSONResponse:
+    """Request publication of the file's CURRENT version. 202 with the jobs —
+    existing or new; asking twice never queues twice. Never blocks on the encode."""
+    config = request.app.state.config
+    if not getattr(config, "media_enabled", True):
+        raise HTTPException(status_code=404, detail="media publishing is disabled")
+    mf = _caller_client(identity, config)
+    if not await run_in_threadpool(_may, mf, identity, file_uid, "w"):
+        raise HTTPException(status_code=403, detail="publishing requires write access to the file")
+    out = await _queue_publish(request, mf, identity, file_uid, (body or {}).get("profile"))
     audit.record(action="media_publish_requested", user=identity.user, tenant=identity.tenant,
-                 result="success", file_uid=file_uid, version=version,
-                 profiles=",".join(wanted))
-    return JSONResponse(status_code=202, content={"file_uid": file_uid, "source_version": version,
-                                                  "mime": mime, "jobs": out})
+                 result="success", file_uid=file_uid, version=out["source_version"],
+                 profiles=",".join(out.pop("profiles")))
+    return JSONResponse(status_code=202, content=out)
+
+
+@router.post("/internal/documents/{file_uid}/media")
+async def internal_republish_media(file_uid: str, request: Request, body: dict = Body(default={}),
+                                   x_internal_auth: str | None = Header(default=None)) -> JSONResponse:
+    """share_service: a file with a LIVE media link has a new version — publish it
+    (MEDIA_SHARE.md §6.2 rule 3: a link plays the newest version that has finished
+    publishing, so a correction must be published to be seen).
+
+    Body: ``{"tenant", "user", "roles", "link_uid"}`` — ``user`` is the LINK'S
+    CREATOR, on whose authority the link already serves this file.
+
+    Gated on READ as that creator, not WRITE. The caller-facing route asks for
+    WRITE because publishing spends the tenant's CPU and storage on a file
+    nobody has shared; here the spending was decided when the link was minted,
+    and the link already exposes this file's newest version by design. Re-checking
+    READ means a creator who has lost access cannot keep a link fed."""
+    config: Config = request.app.state.config
+    _require_internal(config, x_internal_auth)
+    if not getattr(config, "media_enabled", True):
+        raise HTTPException(status_code=404, detail="media publishing is disabled")
+    b = body or {}
+    user, tenant = b.get("user") or "", b.get("tenant") or ""
+    if not user or not tenant:
+        raise HTTPException(status_code=400, detail="user and tenant are required")
+    identity = Identity(user=user, roles=list(b.get("roles") or []), tenant=tenant,
+                        authenticated=True)
+    mf = _caller_client(identity, config)
+    if not await run_in_threadpool(_may, mf, identity, file_uid, "r"):
+        raise HTTPException(status_code=403, detail="the link's creator can no longer read this file")
+    out = await _queue_publish(request, mf, identity, file_uid, None)
+    audit.record(action="media_publish_requested", user=user, tenant=tenant, result="success",
+                 file_uid=file_uid, version=out["source_version"],
+                 profiles=",".join(out.pop("profiles")), via="share_service",
+                 link_uid=b.get("link_uid") or "")
+    return JSONResponse(status_code=202, content=out)
 
 
 @router.get("/documents/{file_uid}/media")
@@ -738,13 +784,15 @@ async def media_state(file_uid: str, request: Request,
 @router.delete("/documents/{file_uid}/media")
 async def unpublish_media(file_uid: str, request: Request,
                           identity: Identity = Depends(_identity)) -> JSONResponse:
-    """Cancel the file's queued and running publish jobs. WRITE-gated.
+    """Cancel the file's queued and running publish jobs, and — when no live media
+    link plays the file — remove its published renditions. WRITE-gated.
 
-    Removing a PUBLISHED rendition is refused while it cannot be shown that no
-    live media link depends on it (§6.2): unpublishing would otherwise silently
-    break every embed on a customer's site. The liveness source is
-    share_service's media-refs route; until it is configured the answer is 409,
-    which fails safe."""
+    Removing a published copy needs share_service to say POSITIVELY that no live
+    media link plays this file (§6.2): unpublishing would otherwise silently break
+    every embed on a customer's site. Unreachable, unconfigured or unintelligible
+    is answered 409 — the safe direction."""
+    from .media_worker import ShareRefs
+    from .renditions import PUBLISHED_FMTS, parse_rendition_name
     config = request.app.state.config
     mf = _caller_client(identity, config)
     if not await run_in_threadpool(_may, mf, identity, file_uid, "w"):
@@ -752,12 +800,37 @@ async def unpublish_media(file_uid: str, request: Request,
     from .db import provision_tenant
     await run_in_threadpool(provision_tenant, config, identity.tenant)
     cancelled = await run_in_threadpool(_media_jobs(request.app).cancel, identity.tenant, file_uid)
-    if cancelled:
-        audit.record(action="media_publish_cancelled", user=identity.user,
-                     tenant=identity.tenant, result="success", file_uid=file_uid,
-                     jobs=len(cancelled))
-        return JSONResponse(status_code=200, content={
-            "file_uid": file_uid, "cancelled": [j.to_api() for j in cancelled], "removed": []})
-    raise HTTPException(status_code=409, detail=(
-        "nothing is being published, and removing a published copy is refused until "
-        "it can be confirmed that no live share link depends on it"))
+
+    live = await run_in_threadpool(ShareRefs(config).live_links, identity.tenant, file_uid)
+    removed: list = []
+    if live == 0:
+        # The agent removes them, as it wrote them: renditions are the service's
+        # children, and the caller's WRITE on the source is what was checked.
+        agent = _ingestor(request.app).pipeline.writer.mf
+        for e in await run_in_threadpool(lambda: agent.dir(file_uid, tenant=identity.tenant) or []):
+            parsed = parse_rendition_name(getattr(e, "name", ""))
+            if parsed and parsed[1] in PUBLISHED_FMTS:
+                await run_in_threadpool(agent.remove, e.uid, tenant=identity.tenant)
+                removed.append(e.name)
+    if cancelled or removed:
+        audit.record(action="media_unpublished", user=identity.user, tenant=identity.tenant,
+                     result="success", file_uid=file_uid, jobs=len(cancelled),
+                     removed=",".join(removed))
+    if live is None:
+        kept = ("published copies are kept until it can be confirmed that no live share "
+                "link depends on them (share_service did not answer)")
+    elif live:
+        kept = f"{live} live share link(s) play this file; revoke them to remove its published copies"
+    else:
+        kept = ""
+    if cancelled or removed:
+        body = {"file_uid": file_uid, "cancelled": [j.to_api() for j in cancelled],
+                "removed": removed}
+        if kept:
+            body["kept"] = kept
+        return JSONResponse(status_code=200, content=body)
+    if kept:
+        raise HTTPException(status_code=409, detail=kept)
+    raise HTTPException(status_code=404, detail="nothing is published or being published")
+
+

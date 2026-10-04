@@ -359,8 +359,13 @@ class MediaWorker:
 
 
 class ShareRefs:
-    """share_service's ``GET /share/v1/internal/media-refs/{uid}``: which
-    published renditions of a file a LIVE media link still points at.
+    """share_service's ``GET /share/v1/internal/media-refs/{uid}``: how many LIVE
+    media links play this file.
+
+    A count, not a list of renditions: a link plays the newest version that has
+    finished publishing (§6.2 rule 3), so it is bound to the FILE, and whichever
+    published set is newest is the one in use. Superseded sets are retired by the
+    worker itself when a newer set completes.
 
     Returns None whenever it cannot answer — unset URL, network error, a status
     other than 200, a body it does not understand. None means KEEP: deleting
@@ -372,18 +377,18 @@ class ShareRefs:
         self.secret = getattr(config, "internal_secret", "") or ""
         self.http = http
 
-    def live_renditions(self, tenant: str, file_uid: str):
-        if not self.url:
+    def live_links(self, tenant: str, file_uid: str):
+        if not self.url or not self.secret:
             return None
         try:
             import httpx
             client = self.http or httpx
             r = client.get(f"{self.url}/{file_uid}", timeout=10,
-                           headers={"X-Tenant": tenant, "X-Internal-Secret": self.secret})
+                           headers={"X-Tenant": tenant, "X-Internal-Auth": self.secret})
             if r.status_code != 200:
                 return None
-            names = (r.json() or {}).get("renditions")
-            return set(names) if isinstance(names, list) else None
+            n = (r.json() or {}).get("live_links")
+            return n if isinstance(n, int) and not isinstance(n, bool) and n >= 0 else None
         except Exception:
             return None
 
@@ -405,11 +410,11 @@ def reap_orphans(config, jobs, mf, refs: ShareRefs, *, now=None) -> list:
         for job in jobs.finished_publishes(tenant):
             by_file.setdefault(job.file_uid, []).append(job)
         for file_uid, done in by_file.items():
-            live = refs.live_renditions(tenant, file_uid)
-            if live is None:
-                continue                       # cannot ask → keep everything
+            live = refs.live_links(tenant, file_uid)
+            if live is None or live > 0:
+                continue                       # cannot ask, or still played → keep
             for job in done:
-                if not job.rendition_name or job.rendition_name in live:
+                if not job.rendition_name:
                     continue
                 if not job.finished_at or now - job.finished_at < grace:
                     continue

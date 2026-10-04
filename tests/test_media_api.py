@@ -42,8 +42,28 @@ class Gate:
         return self.allow
 
 
-def _setup(monkeypatch, *, mf=None, readable=True, published=(), sniffed_mime=None):
-    app = build_app(Config())
+class AgentMF:
+    """The service's own client: it wrote the renditions, so it removes them."""
+
+    def __init__(self, names=()):
+        self.children = {n: f"uid-{n}" for n in names}
+        self.removed = []
+
+    def dir(self, uid, tenant=None):
+        return [types.SimpleNamespace(name=n, uid=u) for n, u in self.children.items()]
+
+    def remove(self, uid, tenant=None):
+        self.removed.append(uid)
+        self.children = {n: u for n, u in self.children.items() if u != uid}
+
+
+def _setup(monkeypatch, *, mf=None, readable=True, published=(), sniffed_mime=None,
+           live_links=None, children=(), internal_secret=""):
+    from convert_search_ai.media_worker import ShareRefs
+    monkeypatch.setattr(ShareRefs, "live_links", lambda self, t, f: live_links)
+    cfg = Config()
+    cfg.internal_secret = internal_secret
+    app = build_app(cfg)
     mf = mf or CallerMF()
     monkeypatch.setattr(core_client, "client_for", lambda identity, config: mf)
     monkeypatch.setattr(db, "provision_tenant", lambda config, tenant: f"tenant_{tenant}")
@@ -53,7 +73,8 @@ def _setup(monkeypatch, *, mf=None, readable=True, published=(), sniffed_mime=No
     app.state.ingestor = types.SimpleNamespace(
         store=types.SimpleNamespace(get_status=lambda t, u: doc),
         pipeline=types.SimpleNamespace(writer=types.SimpleNamespace(
-            names_for_version=lambda u, v, t: [f"{v}-preview.webm", *published])))
+            names_for_version=lambda u, v, t: [f"{v}-preview.webm", *published],
+            mf=AgentMF(children))))
     tok = app.state.token_store.issue(Identity(user="ann", tenant="acme", authenticated=True))
     return TestClient(app), {"Authorization": f"Bearer {tok}", "X-Tenant": "acme"}, app, mf
 
@@ -140,9 +161,83 @@ def test_unpublish_cancels_running_work(monkeypatch):
     assert {j.status for j in app.state.media_jobs.for_file("acme", "f1")} == {"cancelled"}
 
 
+_PUBLISHED = ("v7-media.webm", "v7-media_sd.webm", "v7-emailposter.gif", "v7-preview.webm",
+              "v7-poster.webp")
+
+
 def test_unpublish_refuses_to_remove_a_published_copy_it_cannot_prove_unused(monkeypatch):
-    c, h, _a, _m = _setup(monkeypatch)
+    c, h, app, _ = _setup(monkeypatch, live_links=None, children=_PUBLISHED)
     assert c.delete("/documents/f1/media", headers=h).status_code == 409
+    assert app.state.ingestor.pipeline.writer.mf.removed == []
+
+
+def test_unpublish_refuses_while_a_live_link_plays_the_file(monkeypatch):
+    c, h, app, _ = _setup(monkeypatch, live_links=2, children=_PUBLISHED)
+    r = c.delete("/documents/f1/media", headers=h)
+    assert r.status_code == 409 and "2 live share link" in r.json()["detail"]
+    assert app.state.ingestor.pipeline.writer.mf.removed == []
+
+
+def test_unpublish_removes_only_published_copies_once_no_link_plays_them(monkeypatch):
+    c, h, app, _ = _setup(monkeypatch, live_links=0, children=_PUBLISHED)
+    r = c.delete("/documents/f1/media", headers=h)
+    assert r.status_code == 200
+    assert sorted(r.json()["removed"]) == ["v7-emailposter.gif", "v7-media.webm", "v7-media_sd.webm"]
+    left = set(app.state.ingestor.pipeline.writer.mf.children)
+    assert left == {"v7-preview.webm", "v7-poster.webp"}        # the browser's, never ours
+
+
+def test_unpublish_with_nothing_published_is_404(monkeypatch):
+    c, h, _a, _m = _setup(monkeypatch, live_links=0, children=("v7-preview.webm",))
+    assert c.delete("/documents/f1/media", headers=h).status_code == 404
+
+
+def test_unpublish_cancels_but_keeps_copies_a_link_plays(monkeypatch):
+    c, h, app, _ = _setup(monkeypatch, live_links=1, children=_PUBLISHED)
+    c.post("/documents/f1/media", headers=h, json={})
+    r = c.delete("/documents/f1/media", headers=h)
+    assert r.status_code == 200 and len(r.json()["cancelled"]) == 3
+    assert r.json()["removed"] == [] and "live share link" in r.json()["kept"]
+
+
+# ── share_service's internal republish (MS3, §6.2 rule 3) ────────────────────
+
+def _internal(c, secret, body):
+    return c.post("/internal/documents/f1/media", json=body,
+                  headers={"X-Internal-Auth": secret} if secret is not None else {})
+
+
+def test_internal_republish_is_disabled_without_a_secret(monkeypatch):
+    c, _h, _a, _m = _setup(monkeypatch, internal_secret="")
+    assert _internal(c, "anything", {"user": "ann", "tenant": "acme"}).status_code == 404
+
+
+def test_internal_republish_refuses_a_wrong_or_missing_secret(monkeypatch):
+    c, _h, app, _ = _setup(monkeypatch, internal_secret="s3cret")
+    assert _internal(c, "nope", {"user": "ann", "tenant": "acme"}).status_code == 403
+    assert _internal(c, None, {"user": "ann", "tenant": "acme"}).status_code == 403
+    assert app.state.media_jobs.for_file("acme", "f1") == []
+
+
+def test_internal_republish_queues_as_the_link_creator_on_read(monkeypatch):
+    mf = CallerMF(write=False)                     # a reader, not an editor
+    c, _h, app, _ = _setup(monkeypatch, mf=mf, internal_secret="s3cret")
+    r = _internal(c, "s3cret", {"user": "ann", "tenant": "acme", "roles": ["users"],
+                                "link_uid": "L1"})
+    assert r.status_code == 202, r.text
+    assert [j["requested_by"] for j in r.json()["jobs"]] == ["ann"] * 3
+    assert "r" in mf.asked and "w" not in mf.asked
+
+
+def test_internal_republish_refuses_a_creator_who_lost_access(monkeypatch):
+    c, _h, app, _ = _setup(monkeypatch, mf=CallerMF(exists=False), internal_secret="s3cret")
+    assert _internal(c, "s3cret", {"user": "ann", "tenant": "acme"}).status_code == 403
+    assert app.state.media_jobs.for_file("acme", "f1") == []
+
+
+def test_internal_republish_needs_a_named_principal(monkeypatch):
+    c, _h, _a, _m = _setup(monkeypatch, internal_secret="s3cret")
+    assert _internal(c, "s3cret", {"tenant": "acme"}).status_code == 400
 
 
 def test_unpublish_requires_write(monkeypatch):
