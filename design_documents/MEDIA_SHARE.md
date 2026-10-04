@@ -1,6 +1,6 @@
 # Media share — publishing audio and video, gated or open
 
-**Status:** Design proposal — for review
+**Status:** Reviewed 2026-10-03 — decisions in §14 (*Resolved 2026-10-03*); implementation begun at MS0–MS2
 **Scope (cross-repo):** **`convert_search_ai`** (the transcode side: a new
 publish-grade media rendition family and the durable job that produces it),
 **`share_service`** (a new link kind, two new access modes, the media door, the
@@ -2104,14 +2104,65 @@ rendition is for. **Eager**, and the lazy variant is not worth keeping as an
 option. It would become one again only if long recordings turned out to be a
 common input, which §2.1 says they are not.
 
-### Still open
+### Resolved (2026-10-03) — review against the platform as it now stands
 
-**Q8 — Is the folder-action trigger in scope?** §4.8 proposes *publish on arrival*
-as a `folder_actions` plug-in — drop a clip in `Marketing/To publish`, get a
-published rendition and optionally a minted link. It is the most literal reading
-of "publishing automation" and it is small (one plug-in against an existing
-entry-point group), but it is a **sixth repo** and it is not required by anything
-else here. Proposed as MS10, explicitly severable.
+The specification was written before the storage-pipeline and tenant-lifecycle
+work landed (core and doors 1.9.37, share/ldap_manager 1.9.42). The review
+reconciled it with what now exists; these supersede anything above that
+disagrees.
+
+**Q8 — The `folder_actions` trigger is out of scope.** Deferred to a later
+project. Publishing happens from the Share tab (and the direct API). CSAI still
+emits `media.published` / `media.publish_failed`, so adding the plug-in later is
+the plug-in and nothing else. MS10 is removed from this feature.
+
+**Q9 — The media origin is a tenant interface, provisioned exactly like
+`-drive`.** *(Supersedes the wildcard-certificate precondition in §6.5 and Q1.)*
+Production issues one certificate per host by HTTP-01 through the ingress role,
+and the deployment console checks each tenant interface's DNS and TLS. So
+`<tenant>-media.<base>` is added as a third entry in the console's
+`AMC_TENANT_INTERFACES`, gets one A record per tenant, and a per-host
+certificate from the existing play — no wildcard, no DNS-01. The per-tenant
+isolation Q1 argued for is unchanged.
+
+**Q10 — No `share_service` media cache in v1.** *(Supersedes §6.6, and the
+cache-fill / warm-on-mint parts of §6.9.)* §3-R16 kept the cache because the core
+could not serve ranges. It now can: `GetFileRequest` carries `offset` /
+`length`, the first frame reports `total_size` and `range_method`, and storage
+format v2 — written for every new version since core 1.9.37 — serves a range
+by an **authenticated seek**. MS4 therefore streams each `Range` from the core.
+The cache returns only if measurement shows a need, with `range_method` as its
+trigger exactly as R16 describes. Dropping it removes the cache's cull, its
+single-flight fill, warm-on-mint, and the whole cache-miss-amplification
+surface; §6.9's byte, concurrency and session controls stay.
+**Precondition for MS4:** confirm a v2 read reports `range_method = "seek"` —
+the post-deploy verification on 2026-10-01 observed `scan` on an 80 MiB v2
+file, which must be explained before MS4 relies on seeks.
+
+**Q11 — The media door honours tenant state.** Not in the original design,
+because the mechanism did not exist. Every public share route now refuses a
+tenant that is not `live` (`share_service` 1.9.42, `public._resolve`); the media
+door must resolve through the same gate, with the same uniform failure. §13
+gains it as a review point.
+
+**Q12 — New tenant tables go inside the guarded DDL block.** `media_jobs`
+(CSAI) and `share_link_audience` / `share_media_playback` (`share_service`) are
+created inside each service's existing `pg_advisory_xact_lock` provisioning
+section (`convert_search_ai/schema.py`), never as a free-standing
+`CREATE TABLE IF NOT EXISTS`: idempotent DDL is not concurrency-safe DDL, and an
+unguarded critical section once produced "intermittent" failures in five
+services.
+
+**Confirmed by the review, against the code on 2026-10-03:** the `metamodel`
+pruning leak (§4.1) is real — absent from `_KNOWN_FMTS`; the pipeline still reads
+the whole source into memory (`pipeline.py:135–138`, §4.2a); and video still
+converts inline in the ingest worker (`ingest.py:126`, §4.2b).
+
+**Transcode trigger, restated (2026-10-03):** the full 720p + 480p conversion
+of the whole video happens on the request to publish — a media share being
+configured — and a wait after creating the link is acceptable. That is §4.3 and
+Q7 as written; the link is still mintable immediately and reports *preparing*
+until the encode finishes (§6.2).
 
 ---
 
@@ -2216,7 +2267,7 @@ else here. Proposed as MS10, explicitly severable.
     including the *"when to use YouTube instead"* guidance the rung-1 item links
     to; compose defaults with `share.media_enabled = false`.
 
-12. **MS10 — `folder_actions`: publish on arrival** *(proposed — §14-Q8)*. The
+12. **MS10 — `folder_actions`: publish on arrival** *(deferred — §14-Q8, 2026-10-03; kept for reference)*. The
     **Publish media** plug-in against the existing `folder_actions.actions`
     entry-point group, plus the `media.published` / `media.publish_failed` events
     CSAI emits for it (§4.8). Severable from everything above and last for that
