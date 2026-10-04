@@ -2283,6 +2283,35 @@ until the encode finishes (§6.2).
    media link requests publication of the new version.
    No public surface yet. **Tests:** `claimed`/`open` refused for kinds 0–2 at
    the database; `access_mode` immutable; an open link needs all three gates.
+   **Built 2026-10-03 (branches, unmerged) — decisions taken while building it,
+   for review:**
+   - *media-refs answers a COUNT* (`{"live_links": n}`), not rendition names: a
+     link follows the newest published version (§6.2 rule 3), so it is bound to
+     the file. CSAI's reaper and `DELETE /documents/{uid}/media` remove published
+     copies only on a positive `0`; unreachable or unintelligible keeps. The
+     internal header is `X-Internal-Auth`, matching CSAI's existing internal route,
+     and the edge now 404s `/<prefix>/v<N>/internal/` as well (it did not match
+     `/share/v1/internal/` before).
+   - *Minting publishes AS THE CREATOR* (their bearer, so CSAI's WRITE check is
+     theirs). A reader with `share_external` can mint a link only to something
+     already published — the service never lends its authority to spend CPU.
+   - *Republish on a new version* goes through a new CSAI route,
+     `POST /internal/documents/{uid}/media`, naming the link's creator and gated
+     on READ as them (re-checked live like a redemption: LDAP roles,
+     admin-stripped). If no live link's creator can still read the file, nothing
+     is published and `share_media_republish_refused` is audited.
+   - *Admins are not admitted to `share_public` by role* (unlike `share_external`):
+     an open link reaches people nobody named, so it needs a recorded decision.
+   - *`kind` is frozen with `access_mode`* by the same trigger: flipping kind is
+     the other way to change what a distributed URL does.
+   - *Media links refuse `max_uses`* (a use per seek would exhaust any cap) and
+     always carry an egress budget (`share.media_default_max_bytes`).
+   - `media.published` now carries `profile`, `output_bytes` and `duration_ms`, so
+     a link moves `pending_media → ready` from the event alone, never backwards; a
+     failed publish only fails a link with nothing playing yet.
+   **Tests:** share_service `test_media_links.py` (43, DB-real) and
+   `test_live_media_links.py` (the running stack end to end); CSAI
+   `test_media_api.py` additions and `test_media_publish_live.py`.
 5. **MS4 — `share_service`: the media door.** The `<tenant>-media.<base>` origin
    and its nginx block, the header set with the all-responses test, the cache
    with its single-flight fill and LRU cull, byte-accurate Range with a correct
