@@ -138,6 +138,10 @@ def test_a_job_publishes_the_rendition_and_records_it():
     assert "v2-media.webm" in x.mf.renditions["vid"]
     assert x.emitted and x.emitted[0][0] == "media.published"
     assert x.emitted[0][1]["renditions"] == ["v2-media.webm"]
+    # share_service describes a link from this event alone (MS3).
+    extra = x.emitted[0][1]["extra"]
+    assert extra["profile"] == "video-720p-vp9" and extra["output_bytes"] > 0
+    assert extra["duration_ms"] == 4321
 
 
 def test_the_job_publishes_the_version_it_names_not_the_current_one():

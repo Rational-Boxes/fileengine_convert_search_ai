@@ -331,7 +331,9 @@ class MediaWorker:
                 etype, tenant=tenant, file_uid=job.file_uid, version=job.source_version,
                 actor=job.requested_by,
                 renditions=[job.rendition_name] if job.rendition_name else [],
-                reason=job.detail if etype == MEDIA_PUBLISH_FAILED else None)
+                reason=job.detail if etype == MEDIA_PUBLISH_FAILED else None,
+                extra={"profile": job.profile, "output_bytes": job.output_bytes,
+                       "duration_ms": job.duration_ms})
         except Exception:
             log.warning("could not announce %s for %s", etype, job.file_uid, exc_info=True)
 

@@ -138,11 +138,17 @@ class EventEmitter:
 
     def publish(self, etype: str, *, tenant: str, file_uid: str, version: str,
                 actor: str, renditions: List[str],
-                reason: Optional[str] = None) -> dict:
-        """Build + XADD one terminal event. Best-effort — never raises."""
+                reason: Optional[str] = None, extra: Optional[dict] = None) -> dict:
+        """Build + XADD one terminal event. Best-effort — never raises.
+
+        ``extra`` adds fields a specific event type carries (media.published
+        names its profile, size and duration, so share_service can describe a
+        link without asking); it never overrides the common envelope."""
         evt = make_conversion_event(etype, tenant=tenant, file_uid=file_uid,
                                     version=version, actor=actor,
                                     renditions=renditions, reason=reason)
+        for k, v in (extra or {}).items():
+            evt.setdefault(k, v)
         try:
             self._client().xadd(self.stream, {"payload": json.dumps(evt)},
                                 maxlen=_MAXLEN, approximate=True)
