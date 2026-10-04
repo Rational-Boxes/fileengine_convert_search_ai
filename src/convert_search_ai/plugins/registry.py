@@ -92,6 +92,28 @@ class PluginRegistry:
         except Exception:
             return False
 
+    def consumes_path(self, mime: str, name: str = "") -> bool:
+        """True when the plugin that would handle ``mime`` works from a path,
+        so the pipeline should not read the source into memory (MS0)."""
+        plugin = self.for_mime(mime, name)
+        return bool(plugin is not None and getattr(plugin, "consumes_path", False))
+
+    def convert_path(self, path: str, mime: str, name: str = "") -> ConversionResult:
+        """:meth:`convert` for a source on disk, for a ``consumes_path`` plugin.
+
+        Renditions only: a path plugin extracts no text (see
+        ``ConversionPlugin.consumes_path``), so no bytes are read here at all.
+        Fail-soft exactly as :meth:`convert` — a plugin that raises produces
+        nothing."""
+        plugin = self.for_mime(mime, name)
+        if plugin is None:
+            return ConversionResult(supported=False)
+        try:
+            renditions = plugin.render_from_path(path, mime, name) or []
+        except Exception:
+            renditions = []
+        return ConversionResult(renditions=renditions, markdown=None, supported=True)
+
     def convert(self, data: bytes, mime: str, name: str = "") -> ConversionResult:
         """Run the matching plugin. Unknown MIME → ``supported=False`` (not an error).
         A plugin that raises is treated as producing nothing (fail-soft)."""

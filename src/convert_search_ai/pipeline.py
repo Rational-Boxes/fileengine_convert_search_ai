@@ -22,13 +22,20 @@ hidden children, and record the document's state. Idempotent on
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import List, Optional
 
 from . import mime as mimelib
+from . import tools
 from ._client import NotFoundError
 from .plugins.registry import PluginRegistry, default_registry
 from .renditions import RenditionWriter
+
+#: How much of a streamed source is sniffed to decide whether a path plugin
+#: claims it. Only that decision: a source no path plugin claims is read whole
+#: and sniffed in full, exactly as before (MS0 — no new behaviour).
+SNIFF_BYTES = 1024 * 1024
 
 log = logging.getLogger("convert_search_ai.pipeline")
 
@@ -56,6 +63,20 @@ class ConversionPipeline:
         self.registry = registry or default_registry(config)
         self.writer = writer or RenditionWriter(mf)
         self.indexer = indexer  # optional: chunk+embed+store into pgvector (M3)
+
+    def _fetch_to(self, file_uid: str, tenant: str, path: str) -> None:
+        """Stream the current version's content to ``path`` in chunks.
+
+        Raises NotFoundError (from the client) if the content is gone. Falls back
+        to the whole-blob read only for a client with no streaming read — a test
+        double, never the real ManagedFiles."""
+        get_stream = getattr(self.mf, "get_stream", None)
+        with open(path, "wb") as out:
+            if get_stream is None:
+                out.write(self.mf.get(file_uid, tenant=tenant).read())
+                return
+            for chunk in get_stream(file_uid, tenant=tenant):
+                out.write(chunk)
 
     def convert(self, file_uid: str, tenant: str, force: bool = False,
                 max_bytes: Optional[int] = None) -> ConvertOutcome:
@@ -131,28 +152,46 @@ class ConversionPipeline:
         if already_done and not force:
             return ConvertOutcome(file_uid, "skipped", [], detail="up-to-date")
 
-        try:
-            blob = self.mf.get(file_uid, tenant=tenant)
-        except NotFoundError:
-            return ConvertOutcome(file_uid, "missing", [], detail="content not found")
-        data = blob.read()
-        mime = mimelib.detect(data, info.name)
+        # STREAMED to a temp file in bounded chunks (MEDIA_SHARE.md §4.2a, MS0),
+        # never read whole into this process first. A plugin that works from a
+        # path (video) gets the path; anything else is read back from the temp
+        # file and converted exactly as before. The temp file is gone on every
+        # exit — `workdir` removes it however this block is left.
+        with tools.workdir() as wd:
+            src = os.path.join(wd, "source")
+            try:
+                self._fetch_to(file_uid, tenant, src)
+            except NotFoundError:
+                return ConvertOutcome(file_uid, "missing", [], detail="content not found")
 
-        self.store.upsert(tenant, file_uid, source_version=version, mime=mime,
-                          name=info.name, status="converting")
+            with open(src, "rb") as f:
+                head = f.read(SNIFF_BYTES)
+            by_head = mimelib.detect(head, info.name)
+            if self.registry.consumes_path(by_head, info.name):
+                data, mime = None, by_head
+            else:
+                with open(src, "rb") as f:
+                    data = f.read()
+                mime = mimelib.detect(data, info.name)
 
-        # `with`: a file-backed rendition owns a temp file that outlives the
-        # converter's workdir on purpose (see plugins.base.Rendition). Nothing
-        # else deletes it, so every exit from here -- including "unsupported"
-        # and any exception below -- has to release them or the disk fills up
-        # one conversion at a time.
-        with self.registry.convert(data, mime, info.name) as result:
-            if not result.supported:
-                self.store.upsert(tenant, file_uid, source_version=version, mime=mime,
-                                  name=info.name, status="unsupported")
-                return ConvertOutcome(file_uid, "unsupported", [], detail=mime, version=version)
+            self.store.upsert(tenant, file_uid, source_version=version, mime=mime,
+                              name=info.name, status="converting")
 
-            written = self.writer.write(file_uid, version, result.renditions, tenant)
+            converted = (self.registry.convert_path(src, mime, info.name) if data is None
+                         else self.registry.convert(data, mime, info.name))
+
+            # `with`: a file-backed rendition owns a temp file that outlives the
+            # converter's workdir on purpose (see plugins.base.Rendition). Nothing
+            # else deletes it, so every exit from here -- including "unsupported"
+            # and any exception below -- has to release them or the disk fills up
+            # one conversion at a time.
+            with converted as result:
+                if not result.supported:
+                    self.store.upsert(tenant, file_uid, source_version=version, mime=mime,
+                                      name=info.name, status="unsupported")
+                    return ConvertOutcome(file_uid, "unsupported", [], detail=mime, version=version)
+
+                written = self.writer.write(file_uid, version, result.renditions, tenant)
 
         # Now that the current version's renditions exist, drop any left over from
         # superseded versions (all formats) so stale previews don't accumulate or
