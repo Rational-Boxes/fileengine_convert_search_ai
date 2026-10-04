@@ -265,3 +265,106 @@ def test_a_poster_over_budget_steps_down_rather_than_failing(landscape):
         first_frame = im.convert("RGB")
         assert first_frame.getpixel((first_frame.width // 2, first_frame.height // 2))[0] > 200
     r.rendition.release()
+
+
+# ── the bitrate ceiling (decided 2026-10-03) ────────────────────────────────
+#
+# Constant quality with no ceiling let busy footage get large: a real 1080p
+# garden clip came out at 8.15 Mb/s at 720p. Constrained quality now caps 720p at
+# 2.5 Mb/s and 480p at 1.2 Mb/s — a talking head stays under the cap anyway.
+
+def _captured(monkeypatch):
+    seen = []
+    real = me._run_ffmpeg
+
+    def spy(cmd, *a, **k):
+        seen.append(list(cmd))
+        return real(cmd, *a, **k)
+    monkeypatch.setattr(me, "_run_ffmpeg", spy)
+    return seen
+
+
+def _arg(cmd, flag):
+    return cmd[cmd.index(flag) + 1] if flag in cmd else None
+
+
+def test_hd_vp9_is_capped(landscape, monkeypatch):
+    seen = _captured(monkeypatch)
+    r = me.encode("video-720p-vp9", landscape, SMALL)
+    assert r.status == "ok", r.detail
+    (cmd,) = seen
+    assert _arg(cmd, "-crf") == "31" and _arg(cmd, "-b:v") == "2500k"
+    r.rendition.release()
+
+
+def test_sd_vp9_is_capped_lower(landscape, monkeypatch):
+    seen = _captured(monkeypatch)
+    r = me.encode("video-480p-vp9", landscape, SMALL)
+    assert r.status == "ok", r.detail
+    assert _arg(seen[0], "-b:v") == "1200k"
+    r.rendition.release()
+
+
+def test_the_fallback_encoders_respect_the_cap(landscape, monkeypatch):
+    seen = _captured(monkeypatch)
+    r = me.encode("video-480p-vp9", landscape, SMALL, encoders={"libopenh264", "aac"})
+    assert r.status == "ok", r.detail
+    assert _arg(seen[0], "-b:v") == "1200k"
+    r.rendition.release()
+
+
+def test_the_cap_is_configurable():
+    from types import SimpleNamespace
+    s = me.MediaSettings.from_config(SimpleNamespace(media_video_max_bitrate="4M",
+                                                     media_sd_max_bitrate="900k"))
+    assert (s.video_max_bitrate, s.sd_max_bitrate) == ("4M", "900k")
+
+
+def test_a_conformant_source_over_the_cap_is_re_encoded_not_copied(tmp_path):
+    # A VP9/Opus WebM that would otherwise be remuxed, but at a bitrate above the
+    # ceiling: copying it would publish a file the cap exists to prevent.
+    src = tmp_path / "fat.webm"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                    "testsrc=size=320x180:rate=25:duration=2", "-f", "lavfi", "-i",
+                    "sine=frequency=440:duration=2", "-c:v", "libvpx-vp9", "-deadline",
+                    "realtime", "-cpu-used", "8", "-b:v", "6M", "-minrate", "6M", "-maxrate", "6M",
+                    "-c:a", "libopus", str(src)], check=True)
+    # The ceiling is set far below what the encoder actually produced (~230 kb/s
+    # for this pattern), so the source is unambiguously over it.
+    tight = me.MediaSettings(video_height=180, sd_height=120, video_max_bitrate="50k")
+    r = me.encode("video-720p-vp9", str(src), tight)
+    assert r.status == "ok", r.detail
+    assert r.encoder != "copy"
+    r.rendition.release()
+
+
+# ── nothing very long is served (decided 2026-10-03) ────────────────────────
+#
+# FileEngine publishes short clips. A long video belongs on YouTube, Vimeo or
+# PeerTube, so it is refused at publish — before any CPU or storage is spent —
+# with a message that says where to put it instead.
+
+def test_a_source_over_the_duration_limit_is_refused_before_encoding(landscape, monkeypatch):
+    seen = _captured(monkeypatch)
+    limited = me.MediaSettings(video_height=180, sd_height=120, max_duration_seconds=1)
+    r = me.encode("video-720p-vp9", landscape, limited)          # a 2 s source
+    assert r.status == "failed" and r.rendition is None
+    assert "YouTube" in r.detail and "PeerTube" in r.detail
+    assert seen == []                                            # no encode was started
+
+
+def test_the_limit_applies_to_audio_too(tmp_path):
+    src = _make(tmp_path / "tone.wav", video=False, seconds=3)
+    r = me.encode("audio-mp3", src, me.MediaSettings(max_duration_seconds=1))
+    assert r.status == "failed" and "too long" in r.detail
+
+
+def test_zero_means_no_limit(landscape):
+    r = me.encode("video-720p-vp9", landscape,
+                  me.MediaSettings(video_height=180, sd_height=120, max_duration_seconds=0))
+    assert r.status == "ok"
+    r.rendition.release()
+
+
+def test_the_default_limit_is_ten_minutes():
+    assert me.MediaSettings().max_duration_seconds == 600

@@ -404,11 +404,17 @@ class Config:
         self.media_max_attempts = int(_env("CSAI_MEDIA_MAX_ATTEMPTS", "3"))
         self.media_max_input_bytes = int(_env("CSAI_MEDIA_MAX_INPUT_BYTES", "0"))
         self.media_max_output_bytes = int(_env("CSAI_MEDIA_MAX_OUTPUT_BYTES", "0"))
+        # Nothing very long is served (2026-10-03): a longer source is refused at
+        # publish, pointing to PeerTube (open source), YouTube or Vimeo. 0 = none.
+        self.media_max_duration_seconds = int(_env("CSAI_MEDIA_MAX_DURATION_SECONDS", "600"))
         self.media_video_height = int(_env("CSAI_MEDIA_VIDEO_HEIGHT", "720"))
         self.media_video_crf = int(_env("CSAI_MEDIA_VIDEO_CRF", "31"))
         self.media_sd_enabled = _bool("CSAI_MEDIA_SD_ENABLED", True)
         self.media_sd_height = int(_env("CSAI_MEDIA_SD_HEIGHT", "480"))
         self.media_sd_crf = int(_env("CSAI_MEDIA_SD_CRF", "33"))
+        # Bitrate ceilings (constrained quality; decided 2026-10-03).
+        self.media_video_max_bitrate = _env("CSAI_MEDIA_VIDEO_MAX_BITRATE", "2500k")
+        self.media_sd_max_bitrate = _env("CSAI_MEDIA_SD_MAX_BITRATE", "1200k")
         self.media_audio_bitrate = _env("CSAI_MEDIA_AUDIO_BITRATE", "128k")
         self.media_mp3_quality = int(_env("CSAI_MEDIA_MP3_QUALITY", "0"))
         self.media_opus_enabled = _bool("CSAI_MEDIA_OPUS_ENABLED", True)

@@ -57,6 +57,11 @@ class MediaSettings:
     sd_enabled: bool = True
     sd_height: int = 480
     sd_crf: int = 33
+    # Constrained quality: CRF sets the quality, these cap the bitrate (decided
+    # 2026-10-03). Uncapped, a real 1080p foliage clip came out at 8.15 Mb/s at
+    # 720p; a talking-head intro stays under these anyway.
+    video_max_bitrate: str = "2500k"
+    sd_max_bitrate: str = "1200k"
     audio_bitrate: str = "128k"      # Opus inside the video
     mp3_quality: int = 0             # LAME -q:a (0 = V0)
     opus_enabled: bool = True
@@ -69,6 +74,11 @@ class MediaSettings:
     threads: int = 0                 # 0 = FFmpeg's choice
     timeout_seconds: int = 21600
     max_output_bytes: int = 0        # 0 = unbounded
+    # NOTHING VERY LONG IS SERVED (decided 2026-10-03). FileEngine publishes
+    # short clips; a long video belongs on a video platform — PeerTube first, as
+    # the open-source option — and is refused here before any CPU or storage is
+    # spent on it. 0 = no limit.
+    max_duration_seconds: int = 600
 
     @classmethod
     def from_config(cls, config) -> "MediaSettings":
@@ -77,12 +87,15 @@ class MediaSettings:
             video_height=g("media_video_height", 720), video_crf=g("media_video_crf", 31),
             sd_enabled=g("media_sd_enabled", True), sd_height=g("media_sd_height", 480),
             sd_crf=g("media_sd_crf", 33), audio_bitrate=g("media_audio_bitrate", "128k"),
+            video_max_bitrate=g("media_video_max_bitrate", "2500k"),
+            sd_max_bitrate=g("media_sd_max_bitrate", "1200k"),
             mp3_quality=g("media_mp3_quality", 0), opus_enabled=g("media_opus_enabled", True),
             opus_bitrate=g("media_opus_bitrate", "96k"), gif_enabled=g("media_gif_enabled", True),
             gif_seconds=g("media_gif_seconds", 3), gif_fps=g("media_gif_fps", 8),
             gif_width=g("media_gif_width", 280), gif_max_bytes=g("media_gif_max_bytes", 2 * 1024 * 1024),
             threads=g("media_ffmpeg_threads", 0), timeout_seconds=g("media_job_timeout_seconds", 21600),
-            max_output_bytes=g("media_max_output_bytes", 0))
+            max_output_bytes=g("media_max_output_bytes", 0),
+            max_duration_seconds=g("media_max_duration_seconds", 600))
 
 
 # ── the vocabulary ──────────────────────────────────────────────────────────
@@ -142,6 +155,7 @@ class Probe:
     vcodec: str = ""
     acodec: str = ""
     format_name: str = ""
+    bit_rate: int = 0                 # whole-file average, bits/s; 0 when unknown
 
     @property
     def has_video(self) -> bool:
@@ -176,6 +190,10 @@ def probe(path: str) -> Optional[Probe]:
         p.duration_ms = int(float((info.get("format") or {}).get("duration") or 0) * 1000)
     except (TypeError, ValueError):
         p.duration_ms = 0
+    try:
+        p.bit_rate = int((info.get("format") or {}).get("bit_rate") or 0)
+    except (TypeError, ValueError):
+        p.bit_rate = 0
     for s in info.get("streams") or []:
         if s.get("codec_type") == "video" and not p.vcodec:
             # An attached cover image (an MP3's artwork) is not a video track.
@@ -219,21 +237,40 @@ def _threads(settings: MediaSettings) -> list:
     return ["-threads", str(settings.threads)] if settings.threads else []
 
 
+def bitrate_bps(value: str) -> int:
+    """'2500k' / '4M' / '1200000' -> bits per second. 0 for anything unparseable."""
+    v = (value or "").strip().lower()
+    mult = 1
+    if v.endswith("k"):
+        mult, v = 1000, v[:-1]
+    elif v.endswith("m"):
+        mult, v = 1000_000, v[:-1]
+    try:
+        return int(float(v) * mult)
+    except ValueError:
+        return 0
+
+
 def _video_cmd(src: str, out: str, encoder: str, ext: str, cap: int, crf: int,
-               settings: MediaSettings, encoders: Set[str]) -> list:
+               settings: MediaSettings, encoders: Set[str], max_bitrate: str = "") -> list:
     cmd = ["ffmpeg", "-y", "-hide_banner", "-nostats", "-progress", "pipe:1",
            "-i", src, "-map", "0:v:0", "-map", "0:a:0?", "-vf", _cap_scale(cap),
            "-pix_fmt", "yuv420p", *_threads(settings)]
+    rate = max_bitrate or "0"
     if encoder == "libvpx-vp9":
-        cmd += ["-c:v", "libvpx-vp9", "-crf", str(crf), "-b:v", "0", "-row-mt", "1",
+        # -crf with a NON-zero -b:v is libvpx's constrained-quality mode: the CRF
+        # decides quality and -b:v is the ceiling. (-b:v 0 would be pure CQ.)
+        cmd += ["-c:v", "libvpx-vp9", "-crf", str(crf), "-b:v", rate, "-row-mt", "1",
                 "-tile-columns", "2", "-deadline", "good", "-cpu-used", "2", "-g", "240"]
     elif encoder == "libvpx":
-        cmd += ["-c:v", "libvpx", "-crf", str(crf - 21 if crf > 21 else 10), "-b:v", "2M",
-                "-deadline", "good", "-cpu-used", "2", "-g", "240"]
+        cmd += ["-c:v", "libvpx", "-crf", str(crf - 21 if crf > 21 else 10),
+                "-b:v", max_bitrate or "2M", "-deadline", "good", "-cpu-used", "2", "-g", "240"]
     elif encoder == "libx264":
         cmd += ["-c:v", "libx264", "-crf", "23", "-preset", "medium", "-g", "240"]
-    else:  # libopenh264
-        cmd += ["-c:v", "libopenh264", "-b:v", "2500k", "-g", "240"]
+        if max_bitrate:
+            cmd += ["-maxrate", max_bitrate, "-bufsize", str(2 * bitrate_bps(max_bitrate))]
+    else:  # libopenh264 — bitrate-driven, so the ceiling IS its target
+        cmd += ["-c:v", "libopenh264", "-b:v", max_bitrate or "2500k", "-g", "240"]
     if ext == "webm":
         if "libopus" in encoders:
             cmd += ["-c:a", "libopus", "-b:a", settings.audio_bitrate]
@@ -244,11 +281,15 @@ def _video_cmd(src: str, out: str, encoder: str, ext: str, cap: int, crf: int,
     return cmd + [out]
 
 
-def _conformant(p: Probe, cap: int) -> bool:
+def _conformant(p: Probe, cap: int, max_bitrate: str = "") -> bool:
     """Already what we would produce: VP9 (+ Opus or no audio) in WebM, within
-    the cap. Re-encoding it would be a worse copy of itself (§4.5)."""
+    the size cap AND the bitrate ceiling. Re-encoding it would be a worse copy
+    of itself (§4.5) — but copying one above the ceiling would publish exactly
+    the file the ceiling exists to prevent, so that one is re-encoded."""
+    limit = bitrate_bps(max_bitrate)
+    within_rate = not limit or (0 < p.bit_rate <= limit)
     return ("webm" in p.format_name and p.vcodec == "vp9"
-            and p.acodec in ("opus", "") and 0 < p.short_edge <= cap)
+            and p.acodec in ("opus", "") and 0 < p.short_edge <= cap and within_rate)
 
 
 def _run_ffmpeg(cmd: list, duration_ms: int, settings: MediaSettings,
@@ -341,6 +382,9 @@ def encode(profile: str, src: str, settings: MediaSettings, *,
     p = probe(src)
     if p is None:
         return EncodeResult("failed", detail="the source could not be read as media")
+    too_long = _too_long(p, settings)
+    if too_long:
+        return EncodeResult("failed", detail=too_long)
 
     with tools.workdir() as d:
         if profile in ("video-720p-vp9", "video-480p-vp9"):
@@ -350,17 +394,35 @@ def encode(profile: str, src: str, settings: MediaSettings, *,
         return _encode_audio(profile, src, d, p, settings, enc, on_progress, should_cancel)
 
 
+def _minutes(ms: int) -> str:
+    m = ms / 60000
+    return f"{m:.0f} minute{'s' if round(m) != 1 else ''}" if m >= 1 else f"{ms // 1000} seconds"
+
+
+def _too_long(p: Probe, settings: MediaSettings) -> str:
+    """The refusal for a source over the duration limit, or "". Written for the
+    person who asked: it says why, and where the video should go instead."""
+    limit = int(settings.max_duration_seconds or 0)
+    if not limit or p.duration_ms <= limit * 1000:
+        return ""
+    return (f"This recording is too long to publish here ({_minutes(p.duration_ms)}; "
+            f"FileEngine publishes clips of up to {_minutes(limit * 1000)}). For longer "
+            f"videos, publish to PeerTube (open source), YouTube or Vimeo and share that "
+            f"link instead.")
+
+
 def _encode_video(profile, src, d, p, settings, enc, on_progress, should_cancel):
     if not p.has_video:
         return EncodeResult("failed", detail="the source has no video track")
     hd = profile == "video-720p-vp9"
     cap = settings.video_height if hd else settings.sd_height
     crf = settings.video_crf if hd else settings.sd_crf
+    max_bitrate = settings.video_max_bitrate if hd else settings.sd_max_bitrate
     if not hd and p.short_edge and p.short_edge <= settings.sd_height:
         # A second identical-size file is pure storage (§4.5).
         return EncodeResult("skipped", detail="the source is already standard definition")
 
-    if _conformant(p, cap):
+    if _conformant(p, cap, max_bitrate):
         out = os.path.join(d, "out.webm")
         status = _run_ffmpeg(["ffmpeg", "-y", "-hide_banner", "-nostats", "-progress", "pipe:1",
                               "-i", src, "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", out],
@@ -376,7 +438,8 @@ def _encode_video(profile, src, d, p, settings, enc, on_progress, should_cancel)
         return EncodeResult("failed", detail="no usable video encoder in this FFmpeg build")
     encoder, ext, mime = target
     out = os.path.join(d, f"out.{ext}")
-    status = _run_ffmpeg(_video_cmd(src, out, encoder, ext, cap, crf, settings, enc),
+    status = _run_ffmpeg(_video_cmd(src, out, encoder, ext, cap, crf, settings, enc,
+                                    max_bitrate),
                          p.duration_ms, settings, on_progress, should_cancel)
     if status == "cancelled":
         return EncodeResult("cancelled", detail="cancelled")

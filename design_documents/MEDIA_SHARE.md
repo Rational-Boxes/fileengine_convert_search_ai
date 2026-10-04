@@ -1860,6 +1860,9 @@ usually does want the file.
 | `CSAI_MEDIA_MAX_ATTEMPTS` | `3` | Requeues before a job is failed for good. |
 | `CSAI_MEDIA_MAX_INPUT_BYTES` | `0` | Refuse sources above this (0 = no limit). |
 | `CSAI_MEDIA_MAX_OUTPUT_BYTES` | `0` | Abandon an encode whose output exceeds this. |
+| `CSAI_MEDIA_MAX_DURATION_SECONDS` | `600` | Refuse to publish a longer source; points to PeerTube / YouTube / Vimeo (Q16). `0` = no limit. |
+| `CSAI_MEDIA_VIDEO_MAX_BITRATE` | `2500k` | Bitrate ceiling at 720p (Q15). |
+| `CSAI_MEDIA_SD_MAX_BITRATE` | `1200k` | Bitrate ceiling at 480p (Q15). |
 | `CSAI_MEDIA_VIDEO_HEIGHT` | `720` | Long-edge cap for the `media` profile. |
 | `CSAI_MEDIA_VIDEO_CRF` | `31` | VP9 constant quality at 720p. |
 | `CSAI_MEDIA_SD_ENABLED` | `true` | Also produce the 480p `media-sd` rendition (§4.5). |
@@ -2191,6 +2194,23 @@ until then. Consequences, all implemented in MS2:
   is what makes it accountable.
 - The orphan reaper (§4.3.1) still covers the case with no newer version: a
   published copy no live link has needed for the grace period.
+
+**Q15 — Bitrates are capped** *(decided 2026-10-03; refines §4.5)*. Constrained
+quality, not pure CQ: CRF decides quality and a ceiling bounds size —
+`CSAI_MEDIA_VIDEO_MAX_BITRATE` 2.5 Mb/s at 720p, `CSAI_MEDIA_SD_MAX_BITRATE`
+1.2 Mb/s at 480p, applied to every encoder in the ladder. A conformant VP9/Opus
+source is remuxed only if it is ALSO under the ceiling. Measured on the real
+clip: 720p 64.7 → 22.1 MB, 480p 31.8 → 11.3 MB, and faster to encode.
+
+**Q16 — Nothing very long is served** *(decided 2026-10-03; tightens §2's
+"not a video platform" from a traffic signal into a publish-time rule)*.
+`CSAI_MEDIA_MAX_DURATION_SECONDS` (default 600) refuses a longer source right
+after it is probed — before any CPU or storage is spent — with a message naming
+where it belongs: **PeerTube (open source) first**, then YouTube or Vimeo. §6.9's
+metering still bounds traffic on what IS published; this keeps the long video
+from being published at all. **Future (not v1):** an embedded *publish to a video
+platform* tool for platforms with an upload API — **PeerTube as the featured
+open-source target** — so a refused long video is one click from the right home.
 
 **Implementation notes from MS1–MS2 (2026-10-03).** `media_jobs.status` adds
 `skipped` (no SD copy of an SD source; no Opus without libopus — correct
