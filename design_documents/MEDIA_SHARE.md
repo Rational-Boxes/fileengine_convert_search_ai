@@ -2415,6 +2415,16 @@ until the encode finishes (§6.2).
    the encode state and progress, the media branch of the Share tab with the
    three access modes and the confirmation, the embed snippets, the audience
    roster and the egress meter.
+   **Built 2026-10-04 (frontend `feat/media-share`, unmerged):** the Share tab's
+   media branch, MediaLinkDetail (roster led by coverage, honest completion
+   labels, retention curve, egress meter), the drawer pointer, and
+   `GET /share/v1/capabilities`. The Web Component and iframe snippets wait for
+   MS8; until MS7 lands, a recipient opening the `/s/` link gets the
+   outside-share landing page, which has no media branch yet. **Streaming is
+   proven in a real browser:** `e2e/media-streaming.mjs` (headless Chromium,
+   throttled) shows playback beginning at ~2% of the file received, for both
+   the drawer's playback ticket and the media door, with a download-then-play
+   control registering 100% first.
 9. **MS7 — frontend: the landing page and the email embed.** The media branch of
    `ShareLandingView.vue` — poster, player, the three gates, the preparing state,
    the optional download — plus the three copyable embed blocks (§9.4), the
