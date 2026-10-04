@@ -2431,6 +2431,15 @@ until the encode finishes (§6.2).
    email HTML first. **Tests:** the email snippet renders with no external CSS
    and degrades to `alt` text plus a visible link when images are blocked; a
    poster fetch is never counted as a view.
+   **Built 2026-10-04 (frontend `feat/media-share`, share_service, unmerged):**
+   MediaLanding + MediaPlayer + the beacon; `allow_download` (default yes for
+   verified) with `GET /media/v1/{link}/download` as the one route allowed an
+   attachment; the outside-share peek names the door (`media_base`) for kind 3
+   and its generic session/content refuse media. **Review point:** in dev the
+   door is proxied onto the SPA origin, so the production CROSS-ORIGIN path
+   (tenant origin → `<tenant>-media`) is covered by the door's CORS unit tests
+   but not yet driven by a browser; it relies on the tenant origin the service
+   computes matching where the landing page is served.
 10. **MS8 — the embed kit.** `<fe-media-share>` in `commercial_embedding` with
    both renderings (§9.2), the self-hosted script on the media origin, the
    iframe snippet, the oEmbed endpoint, and an entry in the host harness.
