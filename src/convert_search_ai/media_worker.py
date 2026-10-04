@@ -443,8 +443,8 @@ def worker_alive(config) -> bool:
 
 
 def main() -> None:
-    """``convert-search-ai-media-worker``."""
-    from .config import Config
+    """``convert-search-ai-media-worker`` / ``python -m convert_search_ai.media_worker``."""
+    from .config import Config, load_dotenv
     from .core_client import agent_client
     from .emit import EventEmitter
     from .media_jobs import PostgresMediaJobStore
@@ -453,6 +453,7 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    load_dotenv()     # as the ingest worker does: run from the service dir, read ./.env
     config = Config()
     if not getattr(config, "media_enabled", True):
         log.warning("CSAI_MEDIA_ENABLED is false — the media worker has nothing to do; exiting")
@@ -463,3 +464,7 @@ def main() -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: worker.stop())
     worker.run_forever()
+
+
+if __name__ == "__main__":
+    main()
