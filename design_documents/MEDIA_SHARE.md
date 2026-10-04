@@ -2448,6 +2448,17 @@ until the encode finishes (§6.2).
    link renders in-page; `postMessage` from a wrong origin is ignored; the
    open-mode viewer token never reaches `localStorage`, an attribute or
    `dataset`; `frame-ancestors` actually refuses a non-allowlisted host.
+   **Built 2026-10-04 (commercial_embedding, share_service, frontend `feature/media-share`,
+   unmerged):** `<fe-media-share>` (pure model + element; closed shadow root),
+   vendored onto the media origin at `/media/v1/embed/` with a byte-equality test;
+   the framed player page `/media/v1/player/{link}`; oEmbed; Share-tab snippets.
+   **Spec reconciliation:** §13.1 says the media origin serves only media types,
+   but §9.2 frames a player PAGE on that origin. Resolved as exactly two
+   path-scoped exceptions owned by us — `/embed/` (js/css, the only place a
+   literal `ACAO: *` survives) and `/player/` (html under `script-src 'self'`,
+   no inline script, `frame-ancestors` = the link's list) — everything else under
+   `/media/v1/` stays media/JSON only. `['*']` embed origins are open-only and echo
+   the caller's Origin. Proven in a browser by `frontend/e2e/media-embed.mjs` (20).
 11. **MS9 — ops & docs.** Audit codes; a rules-engine alert on
     **`share_media_parked`** directly (the adjudicated overload signal) plus a
     burst rule on `share_media_throttled`; a Prometheus alert on
