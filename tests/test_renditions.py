@@ -199,3 +199,15 @@ def test_the_published_fmts_are_all_known_fmts():
     from convert_search_ai.renditions import PUBLISHED_FMTS, _KNOWN_FMTS
     assert PUBLISHED_FMTS <= _KNOWN_FMTS
     assert {fmt for fmt, _e, _m in PROFILE_OUTPUT.values()} == PUBLISHED_FMTS
+
+
+def test_the_audience_sidecars_never_parse_as_renditions():
+    """MEDIA_SHARE.md §8.1: share_service's audience CSVs live beside the
+    renditions. Were either name to parse, version pruning would delete PII
+    files it does not own — or worse, keep stale ones as 'current'."""
+    import uuid as _uuid
+    from convert_search_ai.renditions import _KNOWN_FMTS, parse_rendition_name
+    assert parse_rendition_name("audience.csv") is None
+    for _ in range(50):
+        assert parse_rendition_name(f"audience-{_uuid.uuid4()}.csv") is None
+    assert "audience" not in _KNOWN_FMTS

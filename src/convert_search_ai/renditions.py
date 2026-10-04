@@ -59,6 +59,15 @@ _KNOWN_FMTS = frozenset({
 #: version pruning: a media link pins the cut published when it was minted, and a
 #: new upload must not delete what every live link and embed is serving (§6.2).
 #: Their lifetime is the share's, not the source version's.
+# RESERVED sibling namespace — NOT renditions (MEDIA_SHARE.md §8.1).
+# share_service writes the audience sidecars as hidden children of a shared
+# media file: ``audience.csv`` (the rollup) and ``audience-<link_uid>.csv``.
+# parse_rendition_name returns None for both — the first has no '-', the second
+# ends in a UUID group — so prune_old_versions and the reaper leave them alone.
+# That holds only while no fmt is ever named "audience" or after a UUID group;
+# tests/test_renditions.py asserts it.
+AUDIENCE_SIDECAR_PREFIX = "audience"
+
 PUBLISHED_FMTS = frozenset({"media", "media_sd", "audio", "audio_opus", "emailposter"})
 
 #: RESERVED sibling namespace, never a rendition: `audience-<link_uid>.csv` and
