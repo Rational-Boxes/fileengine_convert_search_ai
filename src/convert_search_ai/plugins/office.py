@@ -57,6 +57,9 @@ class OfficePlugin(ConversionPlugin):
     def supports(self, mime: str) -> bool:
         return mime in _EXT
 
+    def ready(self, mime: str) -> bool:
+        return self._binary() is not None
+
     def _binary(self) -> str | None:
         for b in ("soffice", "libreoffice"):
             if tools.have(b):

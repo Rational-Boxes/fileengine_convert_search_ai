@@ -131,6 +131,64 @@ class PluginRegistry:
         return ConversionResult(renditions=renditions, markdown=markdown, supported=True)
 
 
+def candidate_names() -> List[str]:
+    """One sample filename per extension the MIME detector knows by name.
+
+    The curated maps (the conventions sniffing cannot see) plus everything
+    `mimetypes` knows — exactly the two sources :func:`mime.detect` consults
+    when it has only a name, so nothing it could resolve is missed."""
+    import mimetypes
+
+    from .. import mime as mimelib
+
+    mimetypes.init()
+    exts = set(mimetypes.types_map) | set(mimetypes.common_types)
+    exts |= set(mimelib._EXT_TEXT) | set(mimelib._EXT_3D)
+    return sorted("x" + e for e in exts if e.startswith("."))
+
+
+def conversion_formats(registry: PluginRegistry) -> List[dict]:
+    """What this deployment can convert, by extension, grouped by plugin.
+
+    DERIVED from the registry rather than declared beside it: each candidate
+    name is resolved the way the pipeline resolves a file it knows only by name
+    (`mime.detect` with no bytes) and handed to the same dispatch
+    (:meth:`PluginRegistry.for_mime`). A plugin added, removed or narrowed is
+    reflected here without anyone remembering to update a list — the SPA's own
+    copy of such a list is what this replaces.
+
+    It is a promise about a NAME. The bytes stay the authority: a ``.txt`` that
+    is really a binary sniffs as something else at conversion time, and the
+    ``/convert`` answer for that file is what counts.
+
+    Per plugin: ``preview`` — it renders, and the tools it needs to render are
+    present (a format whose tool is missing is reported, not hidden, so an
+    operator can see why); ``text`` — it extracts searchable text."""
+    from .. import mime as mimelib
+
+    groups: dict = {}
+    for name in candidate_names():
+        mime = mimelib.detect(b"", name)
+        plugin = registry.for_mime(mime, name)
+        if plugin is None:
+            continue
+        try:
+            renders = bool(plugin.renders())
+            ready = renders and bool(plugin.ready(mime))
+            text = bool(plugin.extracts_text())
+        except Exception:
+            continue
+        ext = name[1:].lstrip(".")
+        key = (plugin.name, ready, text)
+        g = groups.setdefault(key, {"plugin": plugin.name, "preview": ready, "text": text,
+                                    "renders": renders, "extensions": []})
+        g["extensions"].append(ext)
+    out = list(groups.values())
+    for g in out:
+        g["extensions"].sort()
+    return sorted(out, key=lambda g: (g["plugin"], not g["preview"]))
+
+
 def default_registry(config=None) -> PluginRegistry:
     """The standard plugin set. Specific types first; the text catch-all last.
 

@@ -16,9 +16,9 @@
 """Plain-text / Markdown / structured-text → Markdown (no external tools)."""
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Optional
 
-from .base import ConversionPlugin, Rendition
+from .base import ConversionPlugin
 
 _EXACT = {
     "text/markdown", "text/x-markdown", "text/plain", "text/csv",
@@ -36,9 +36,6 @@ class TextMarkdownPlugin(ConversionPlugin):
 
     def supports(self, mime: str) -> bool:
         return mime.startswith("text/") or mime in _EXACT
-
-    def render(self, data: bytes, mime: str, name: str) -> List[Rendition]:
-        return []
 
     def extract(self, data: bytes, mime: str, name: str) -> Optional[str]:
         if not data:

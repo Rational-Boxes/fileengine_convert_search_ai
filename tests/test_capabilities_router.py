@@ -145,3 +145,13 @@ def test_never_reports_a_secret(monkeypatch):
     blob = json.dumps(body)
     for secret in ("CHAT-SECRET", "EMBED-SECRET", "SIGN-SECRET", "JWT-SECRET"):
         assert secret not in blob, f"{secret} leaked into the capabilities document"
+
+
+def test_conversion_reports_the_registry_formats(monkeypatch):
+    conv = _caps(monkeypatch)["conversion"]
+    assert conv["available"] is True
+    by_ext = {e: g for g in conv["formats"] for e in g["extensions"]}
+    assert by_ext["docx"]["plugin"] == "office"
+    assert "exe" not in by_ext
+    for g in conv["formats"]:
+        assert set(g) == {"plugin", "preview", "text", "renders", "extensions"}

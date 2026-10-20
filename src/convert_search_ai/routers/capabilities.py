@@ -172,6 +172,28 @@ def _media(config: Config) -> dict:
             "fmts": sorted({fmt for fmt, _e, _m in PROFILE_OUTPUT.values()})}
 
 
+def _conversion(request: Request) -> dict:
+    """Which formats this deployment can convert, derived from the plugin
+    registry the pipeline itself dispatches with (see
+    ``plugins.registry.conversion_formats``).
+
+    The SPA used to offer "Generate preview" on every file — an executable, an
+    archive — and the answer was always the same empty frame. With this it
+    offers conversion only where a plugin claims the format and can render it,
+    and a download everywhere else.
+
+    Computed once per process: it walks every extension the detector knows, and
+    neither the registry nor the installed tools change while it runs. Tool
+    presence is read in THIS process, which shares the worker's image — the same
+    assumption the media section makes."""
+    cached = getattr(request.app.state, "conversion_formats", None)
+    if cached is None:
+        from ..plugins.registry import conversion_formats, default_registry
+        cached = conversion_formats(default_registry(_cfg(request)))
+        request.app.state.conversion_formats = cached
+    return {"available": True, "formats": cached}
+
+
 @router.get("/capabilities")
 def capabilities(request: Request) -> dict:
     """The deployment's feature configuration, as one document.
@@ -189,4 +211,5 @@ def capabilities(request: Request) -> dict:
         "web_search": _web_search(config),
         "search": _search(config),
         "media": _media(config),
+        "conversion": _conversion(request),
     }
