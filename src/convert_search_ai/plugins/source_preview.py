@@ -53,7 +53,9 @@ _SOURCE_MIMES = frozenset({
     "application/javascript", "application/x-javascript", "application/ecmascript",
     "application/typescript", "application/x-typescript",
     "application/x-sh", "application/x-shellscript", "application/x-csh",
-    "application/x-python", "application/x-python-code",
+    # Not application/x-python-code: that is what `mimetypes` calls a .pyc —
+    # compiled bytecode, which this plugin would "preview" as garbage.
+    "application/x-python",
     "application/x-perl", "application/x-ruby",
     "application/x-php", "application/x-httpd-php",
     "application/x-yaml", "application/yaml", "application/toml",

@@ -203,3 +203,25 @@ class ConversionPlugin(ABC):
         actually failed.
         """
         return type(self).extract is not ConversionPlugin.extract
+
+    def renders(self) -> bool:
+        """Whether this plugin produces presentation renditions (a preview, a
+        thumbnail, a PDF, a 3D model) for the types it supports.
+
+        Derived exactly like :meth:`extracts_text`, and for the same reason: a
+        declared flag is one more thing a new converter could forget. The SPA
+        reads it to decide whether "Generate preview" means anything for a file —
+        a text-only plugin indexes the file but leaves nothing to look at."""
+        return (type(self).render is not ConversionPlugin.render
+                or type(self).render_from_path is not ConversionPlugin.render_from_path)
+
+    def ready(self, mime: str) -> bool:
+        """Whether the external tools this plugin needs to RENDER ``mime`` are
+        present in this process's environment.
+
+        A plugin degrades to producing nothing when its tool is missing, which is
+        right for the pipeline and wrong for the SPA: an Office deployment with no
+        LibreOffice would offer "Generate preview" on every .docx and then show
+        nothing. Plugins that shell out override this; the default (pure-Python
+        rendering, or no rendering at all) is True."""
+        return True

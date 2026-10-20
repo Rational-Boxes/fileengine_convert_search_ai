@@ -82,6 +82,10 @@ class HtmlPlugin(ConversionPlugin):
     def supports(self, mime: str) -> bool:
         return mime in _MIMES
 
+    def ready(self, mime: str) -> bool:
+        # Chromium first, LibreOffice as the fallback — either will do.
+        return tools.have(self.chromium) or any(tools.have(b) for b in ("soffice", "libreoffice"))
+
     # --- geometry-free renditions ---------------------------------------- #
 
     def render(self, data: bytes, mime: str, name: str) -> List[Rendition]:

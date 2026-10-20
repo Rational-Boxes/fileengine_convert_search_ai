@@ -45,6 +45,9 @@ class VideoPlugin(ConversionPlugin):
     def supports(self, mime: str) -> bool:
         return mime.startswith("video/")
 
+    def ready(self, mime: str) -> bool:
+        return tools.have("ffmpeg")
+
     def render(self, data: bytes, mime: str, name: str) -> List[Rendition]:
         """Bytes in — for callers that already hold them. Writes them to a temp
         file and does exactly what :meth:`render_from_path` does."""

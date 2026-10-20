@@ -35,6 +35,9 @@ class ImagePlugin(ConversionPlugin):
     def supports(self, mime: str) -> bool:
         return mime.startswith("image/")
 
+    def ready(self, mime: str) -> bool:
+        return self._binary() is not None
+
     def _binary(self) -> str | None:
         if tools.have("magick"):
             return "magick"

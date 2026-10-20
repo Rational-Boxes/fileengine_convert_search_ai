@@ -770,6 +770,14 @@ class Xeokit3DPlugin(ConversionPlugin):
     def supports(self, mime: str) -> bool:
         return mime in self._MIMES
 
+    def ready(self, mime: str) -> bool:
+        # Every route ends at convert2xkt. The OpenCASCADE formats (STEP, IGES,
+        # BREP, OBJ, VRML) also need DRAWEXE to get there; IFC always has the
+        # bundled web-ifc fallback, so the optional IFC tools are not required.
+        if not self.enabled or self.extract_only or not tools.have(self.convert2xkt):
+            return False
+        return mime not in _OCCT_SPECS or tools.have(self.drawexe)
+
     # --- searchable text -------------------------------------------------- #
 
     def extract(self, data: bytes, mime: str, name: str) -> Optional[str]:
