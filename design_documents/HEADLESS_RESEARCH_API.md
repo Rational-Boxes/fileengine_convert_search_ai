@@ -106,8 +106,11 @@ image pass in this work.
   never included.
 - `files`: explicit document ids, which may sit in different folders (the
   documents a model element already links to). Order is kept, duplicates are
-  dropped, and an id that does not exist or cannot be read is reported as
-  `skipped` with its reason, never silently dropped: the caller named it.
+  dropped, and an id the caller cannot use is reported as `skipped:
+  not found or not readable`, never silently dropped: the caller named it.
+  One reason for both, so the route cannot be used to probe which ids exist.
+  Check existence explicitly as well as READ: the core's `CheckPermission`
+  answers true for an id that does not exist.
 
 The schema describes the values; the service wraps each one with evidence, so
 the caller never has to ask for it:
