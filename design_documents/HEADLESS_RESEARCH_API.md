@@ -98,9 +98,19 @@ image pass in this work.
 }
 ```
 
-Either `folder_uid` (+ optional `match`) or an explicit `files` list. The
-schema describes the values; the service wraps each one with evidence, so the
-caller never has to ask for it:
+**Target: a folder or a list of document ids, both supported** (owner,
+2026-10-29). Exactly one per request; both or neither is a 400.
+
+- `folder_uid`: every file in the folder (`recursive` for subfolders),
+  optionally narrowed by `match`. Renditions and other hidden children are
+  never included.
+- `files`: explicit document ids, which may sit in different folders (the
+  documents a model element already links to). Order is kept, duplicates are
+  dropped, and an id that does not exist or cannot be read is reported as
+  `skipped` with its reason, never silently dropped: the caller named it.
+
+The schema describes the values; the service wraps each one with evidence, so
+the caller never has to ask for it:
 
 ```json
 { "fire_rating": { "value": "EI 60", "unit": null,
