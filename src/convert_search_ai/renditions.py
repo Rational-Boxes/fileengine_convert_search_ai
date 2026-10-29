@@ -52,6 +52,10 @@ _KNOWN_FMTS = frozenset({
     # Must be here: a 1 GB `media` rendition that the pruner cannot parse is a
     # storage incident on the first re-upload, not an untidy leftover.
     "media", "media_sd", "audio", "audio_opus", "emailposter",
+    # The headless extraction cache (HEADLESS_RESEARCH_API.md §3.7): one JSON
+    # sidecar per source version. Known, so a superseded version's cache is
+    # pruned with its other renditions; the run records keep the history.
+    "extract",
 })
 
 #: Published media (MEDIA_SHARE.md §4.1). Recognised — so the orphan reaper

@@ -35,6 +35,11 @@ class Identity:
     roles: List[str] = field(default_factory=list)
     tenant: str = "default"
     authenticated: bool = False
+    # Set when the bearer is a session minted from a generated key:secret at the
+    # REST door (claims skid / skname): which key, and the name its owner gave
+    # it. Headless runs are attributed to, rate-limited by and listed under it.
+    client_key_id: str = ""
+    client_label: str = ""
 
 
 class _ServerUnreachable(Exception):

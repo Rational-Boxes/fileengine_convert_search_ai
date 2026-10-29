@@ -93,26 +93,31 @@ class Retriever:
 
     def _resolve_scope_file_uids(self, mf, tenant: str, folder_uids: List[str],
                                  *, max_folders: int = 2000) -> set:
-        """Expand the selected folder UIDs to the set of document (file) UIDs they
-        contain, recursively including subfolders. Walked one level at a time via
-        ``mf.dir()`` as the caller — so folders/files the user can't read are simply
-        absent. Bounded by ``max_folders`` to cap the traversal for very large trees."""
-        files: set = set()
-        seen: set = set()
-        stack = [u for u in (folder_uids or []) if u]
-        while stack and len(seen) < max_folders:
-            fuid = stack.pop()
-            if fuid in seen:
-                continue
-            seen.add(fuid)
-            try:
-                entries = mf.dir(fuid, tenant=tenant) or []
-            except Exception:
-                continue  # unreadable/missing folder → skip (fail-safe)
-            for e in entries:
-                if getattr(e, "is_container", False):
-                    if e.uid not in seen:
-                        stack.append(e.uid)
-                elif getattr(e, "uid", None):
-                    files.add(e.uid)
-        return files
+        return resolve_scope_file_uids(mf, tenant, folder_uids, max_folders=max_folders)
+
+
+def resolve_scope_file_uids(mf, tenant: str, folder_uids: List[str],
+                            *, max_folders: int = 2000) -> set:
+    """Expand the selected folder UIDs to the set of document (file) UIDs they
+    contain, recursively including subfolders. Walked one level at a time via
+    ``mf.dir()`` as the caller — so folders/files the user can't read are simply
+    absent. Bounded by ``max_folders`` to cap the traversal for very large trees."""
+    files: set = set()
+    seen: set = set()
+    stack = [u for u in (folder_uids or []) if u]
+    while stack and len(seen) < max_folders:
+        fuid = stack.pop()
+        if fuid in seen:
+            continue
+        seen.add(fuid)
+        try:
+            entries = mf.dir(fuid, tenant=tenant) or []
+        except Exception:
+            continue  # unreadable/missing folder → skip (fail-safe)
+        for e in entries:
+            if getattr(e, "is_container", False):
+                if e.uid not in seen:
+                    stack.append(e.uid)
+            elif getattr(e, "uid", None):
+                files.add(e.uid)
+    return files

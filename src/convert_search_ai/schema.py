@@ -236,6 +236,33 @@ CREATE INDEX IF NOT EXISTS media_jobs_queue
     WHERE status IN ('queued', 'running');
 CREATE INDEX IF NOT EXISTS media_jobs_file
     ON "{schema}".media_jobs (file_uid, source_version);
+
+-- Headless runs (HEADLESS_RESEARCH_API.md §3.5/§3.6). A run is a conversation
+-- with origin 'headless', attributed to the generated key it came from; the
+-- research sidebar lists interactive conversations only. Per-file extraction
+-- results live in their own rows keyed by file_uid, NOT as free text in a
+-- message, so erasure of a source file can remove that file's values and quotes
+-- from every run and leave a tombstone (erased, erasure_id).
+ALTER TABLE "{schema}".conversations ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'interactive';
+ALTER TABLE "{schema}".conversations ADD COLUMN IF NOT EXISTS client_key_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE "{schema}".conversations ADD COLUMN IF NOT EXISTS client_label TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_conversations_origin
+    ON "{schema}".conversations (user_id, origin, client_key_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS "{schema}".headless_results (
+    id              BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    conversation_id TEXT        NOT NULL REFERENCES "{schema}".conversations (id) ON DELETE CASCADE,
+    file_uid        TEXT        NOT NULL,
+    version         TEXT        NOT NULL DEFAULT '',
+    name            TEXT        NOT NULL DEFAULT '',
+    result          JSONB,
+    erased          BOOLEAN     NOT NULL DEFAULT FALSE,
+    erasure_id      TEXT        NOT NULL DEFAULT '',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_headless_results_run
+    ON "{schema}".headless_results (conversation_id, id);
+CREATE INDEX IF NOT EXISTS idx_headless_results_file
+    ON "{schema}".headless_results (file_uid);
 '''
 
 

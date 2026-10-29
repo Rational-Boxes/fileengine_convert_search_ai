@@ -244,12 +244,16 @@ class McpTool(Tool):
         integ = self._integ
         user = getattr(ctx.identity, "user", "")
         tenant = getattr(ctx.identity, "tenant", "")
+        # Headless runs (HEADLESS_RESEARCH_API.md §3.9): the approval and the call
+        # are attributed to the application (generated key) as well as the user.
+        key = {"client_key_id": getattr(ctx.identity, "client_key_id", "") or ""}
+        key = key if key["client_key_id"] else {}
 
         # (a0) Role gate (defense-in-depth): a barred user should never have this tool
         # in their toolset (tools_for filters it), but re-check at call time so a stale
         # cache or any other path can't run an integration the user isn't permitted.
         if not role_permitted(integ, ctx.identity):
-            audit.record(action="mcp_tool", user=user, tenant=tenant, result="denied",
+            audit.record(action="mcp_tool", user=user, tenant=tenant, **key, result="denied",
                          integration=integ.slug, tool=self._tool_name, reason="role")
             return ToolOutput(text="(you are not permitted to use this integration)")
 
@@ -257,7 +261,7 @@ class McpTool(Tool):
         consent = getattr(ctx, "consent", None)
         if not callable(consent):
             log.warning("MCP tool %s called with no consent channel; denying", self.name)
-            audit.record(action="mcp_consent", user=user, tenant=tenant, result="denied",
+            audit.record(action="mcp_consent", user=user, tenant=tenant, **key, result="denied",
                          integration=integ.slug, tool=self._tool_name, reason="no_channel")
             return ToolOutput(text="(this action requires your approval, which was not available)")
         req = ConsentRequest(integration=integ.name, slug=integ.slug, tool=self._tool_name,
@@ -267,7 +271,7 @@ class McpTool(Tool):
         except Exception:
             log.warning("MCP consent channel failed for %s", self.name, exc_info=True)
             approved = False
-        audit.record(action="mcp_consent", user=user, tenant=tenant,
+        audit.record(action="mcp_consent", user=user, tenant=tenant, **key,
                      result="ok" if approved else "denied",
                      integration=integ.slug, tool=self._tool_name)
         if not approved:
@@ -281,7 +285,7 @@ class McpTool(Tool):
                              headers=headers, timeout_s=timeout_s,
                              tool_name=self._tool_name, args=args)
         except McpConnectionError as e:
-            audit.record(action="mcp_tool", user=user, tenant=tenant, result="error",
+            audit.record(action="mcp_tool", user=user, tenant=tenant, **key, result="error",
                          integration=integ.slug, tool=self._tool_name)
             log.info("MCP tool %s failed: %s", self.name, e)
             return ToolOutput(text=f"(the '{integ.name}' tool could not be reached: {e})")
@@ -289,7 +293,7 @@ class McpTool(Tool):
         truncated = len(text) > cap
         if truncated:
             text = text[:cap] + "\n…(truncated)"
-        audit.record(action="mcp_tool", user=user, tenant=tenant, result="ok",
+        audit.record(action="mcp_tool", user=user, tenant=tenant, **key, result="ok",
                      integration=integ.slug, tool=self._tool_name, truncated=truncated)
         # Leave a bibliographic note: a successful MCP call is a cited source in the
         # turn, alongside document and web citations (chat.py assigns its [n] marker).

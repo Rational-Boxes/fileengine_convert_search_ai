@@ -83,7 +83,9 @@ class BridgeTokenVerifier:
             user, roles = got
             return Identity(user=user, roles=roles,
                             tenant=tenant or claims.get("tenant", "default"),
-                            authenticated=True)
+                            authenticated=True,
+                            client_key_id=str(claims.get("skid") or ""),
+                            client_label=str(claims.get("skname") or ""))
         # No shared secret: fall back to bridge introspection (cached).
         key = (token, tenant)
         now = time.time()

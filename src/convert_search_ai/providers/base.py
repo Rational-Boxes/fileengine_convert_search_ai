@@ -16,9 +16,37 @@
 """Embedding + chat + web-search provider interfaces."""
 from __future__ import annotations
 
+import contextlib
+import contextvars
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Iterator, List, Optional
+from typing import Callable, Iterator, List, Optional
+
+
+# Token accounting for the headless per-key budget. A provider reports what each
+# completion cost by calling report_usage(); whoever is counting wraps the call
+# in collect_usage(sink). A context variable rather than a parameter, so no
+# provider signature (or test double) changes, and concurrent requests sharing
+# one provider instance never see each other's numbers.
+_usage_sink: "contextvars.ContextVar[Optional[Callable[[int, int], None]]]" = \
+    contextvars.ContextVar("csai_usage_sink", default=None)
+
+
+def report_usage(input_tokens: int, output_tokens: int) -> None:
+    """Called by a provider after each model call with the tokens it reports."""
+    sink = _usage_sink.get()
+    if sink is not None:
+        sink(int(input_tokens or 0), int(output_tokens or 0))
+
+
+@contextlib.contextmanager
+def collect_usage(sink: Callable[[int, int], None]):
+    """Route report_usage() calls made inside the block to ``sink``."""
+    token = _usage_sink.set(sink)
+    try:
+        yield
+    finally:
+        _usage_sink.reset(token)
 
 
 class EmbeddingProvider(ABC):
@@ -57,6 +85,12 @@ class ChatProvider(ABC):
         tools and just streams text."""
         for delta in self.stream(messages, system=system):
             yield {"type": "text", "text": delta}
+
+    def complete_json(self, messages: List[dict], *, system: Optional[str] = None) -> str:
+        """One whole completion that should be a JSON object (headless extraction).
+        Providers with a JSON mode use it; the default asks by prompt alone and
+        collects the stream. The caller parses and validates either way."""
+        return "".join(self.stream(messages, system=system))
 
 
 @dataclass

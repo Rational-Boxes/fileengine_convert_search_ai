@@ -60,7 +60,9 @@ def make_chat_provider(config) -> ChatProvider:
             _OLLAMA_DEFAULT_BASE_URL if name == "ollama" else None)
         return OpenAICompatibleChatProvider(
             model=model, base_url=base_url,
-            api_key=getattr(config, "chat_api_key", "") or None, max_tokens=max_tokens)
+            api_key=getattr(config, "chat_api_key", "") or None, max_tokens=max_tokens,
+            stream_usage=bool(getattr(config, "chat_stream_usage", True)),
+            json_mode=bool(getattr(config, "chat_json_mode", True)))
     if name in ("echo", "fake"):
         from .chat import EchoChatProvider
         return EchoChatProvider()

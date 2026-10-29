@@ -17,6 +17,7 @@ dependencies = [
     "Pygments>=2.17",     # source/text language detection + syntax highlighting
     "reportlab>=4.0",     # first-page colour-coded PDF for the text preview
     "Markdown>=3.4",      # chat create_document: render the model's Markdown report to HTML
+    "jsonschema>=4.18",   # headless extraction: validate the caller's schema and each value
 ]
 # The FileEngine Python client (`fileengine`, from ../python_interface) is reused
 # at runtime for gRPC core access (permission checks + rendition writes), exactly

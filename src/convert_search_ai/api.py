@@ -53,7 +53,8 @@ from . import __version__, audit
 from .app_links import resolve_app_url
 from .config import Config
 from .guards import GuardError
-from .http_auth import extract_tenant, resolve_identity
+from .http_auth import (GeneratedKeyPresented, extract_tenant, resolve_identity,
+                        resolve_identity_or_none)
 from .ldap_auth import Identity, authenticate
 
 router = APIRouter()
@@ -87,12 +88,20 @@ def _identity(request: Request) -> Identity:
     config: Config = request.app.state.config
     headers = {k.lower(): v for k, v in request.headers.items()}
     tenant = extract_tenant(headers, headers.get("host", ""), config.tenant)
-    ident = resolve_identity(headers.get("authorization", ""), tenant, config,
-                             request.app.state.token_store,
-                             getattr(request.app.state, "bridge_verifier", None))
+    try:
+        ident = resolve_identity(headers.get("authorization", ""), tenant, config,
+                                 request.app.state.token_store,
+                                 getattr(request.app.state, "bridge_verifier", None))
+    except GeneratedKeyPresented:
+        raise HTTPException(status_code=401, detail=KEY_AT_BRIDGE)
     if ident is None:
         raise HTTPException(status_code=401, detail="authentication required")
     return ident
+
+
+#: What a client that sent its generated key straight here is told.
+KEY_AT_BRIDGE = ("generated keys sign in at the REST door: POST /api/v1/auth/token with "
+                 "the key as Basic credentials, then send the bearer it returns here")
 
 
 def _ingestor(app):
@@ -138,28 +147,70 @@ def whoami(identity: Identity = Depends(_identity)) -> dict:
 
 
 # ------------------------------- search ------------------------------------
+def _key_limits(request: Request, identity: Identity):
+    """Per-key rate limiting for a session minted from a generated key — the
+    desktop application's calls (HEADLESS_RESEARCH_API.md §3.8, §3.10). A
+    person's own session in the web application is not limited here. Returns
+    (headers, None) or (None, the 429/503 response)."""
+    if not getattr(identity, "client_key_id", ""):
+        return {}, None
+    from .headless import usage as usage_mod
+    from .headless.routes import _admit
+    st, err = _admit(request.app, identity, spends_tokens=False)
+    if err is not None:
+        return None, err
+    return usage_mod.headers(st), None
+
+
 @router.post("/search")
-def search(request: Request, body: dict = Body(...), identity: Identity = Depends(_identity)) -> dict:
+def search(request: Request, body: dict = Body(...), identity: Identity = Depends(_identity)):
+    """Ranked full-text search (fuzzy on names), filtered per hit by READ.
+    Optional ``folder_uids`` confines it to those folders and their subfolders;
+    ``offset`` pages through the hits."""
+    headers, err = _key_limits(request, identity)
+    if err is not None:
+        return err
+    folders = body.get("folder_uids") or []
+    if not isinstance(folders, list) or not all(isinstance(f, str) for f in folders):
+        raise HTTPException(status_code=400, detail="folder_uids must be a list of folder ids")
+    try:
+        offset = int(body.get("offset", 0) or 0)
+        limit = int(body.get("limit", 20))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="limit and offset must be integers")
+    # The paging and scope keywords are passed only when used, so a search
+    # service that predates them keeps working.
+    extra = {}
+    if offset:
+        extra["offset"] = offset
+    if folders:
+        extra["folder_uids"] = folders
     try:
         hits = request.app.state.search.search(
-            identity, body.get("query", ""),
-            limit=int(body.get("limit", 20)), fuzzy=bool(body.get("fuzzy", True)))
+            identity, body.get("query", ""), limit=limit, fuzzy=bool(body.get("fuzzy", True)),
+            **extra)
     except GuardError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"query": (body.get("query") or "").strip(), "tenant": identity.tenant,
-            "hits": [{"file_uid": h.file_uid, "name": h.name, "snippet": h.snippet, "score": h.score}
-                     for h in hits]}
+    out = {"query": (body.get("query") or "").strip(), "tenant": identity.tenant,
+           "offset": offset,
+           "hits": [{"file_uid": h.file_uid, "name": h.name, "snippet": h.snippet, "score": h.score}
+                    for h in hits]}
+    return JSONResponse(content=out, headers=headers)
 
 
 @router.get("/documents/{file_uid}/text")
-def document_text(file_uid: str, request: Request, identity: Identity = Depends(_identity)) -> dict:
+def document_text(file_uid: str, request: Request, identity: Identity = Depends(_identity)):
+    headers, err = _key_limits(request, identity)
+    if err is not None:
+        return err
     try:
         text, truncated = request.app.state.search.get_text(identity, file_uid)
     except PermissionError:
         raise HTTPException(status_code=403, detail="not permitted")
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="no extracted text for this file")
-    return {"file_uid": file_uid, "tenant": identity.tenant, "text": text, "truncated": truncated}
+    return JSONResponse(content={"file_uid": file_uid, "tenant": identity.tenant, "text": text,
+                                 "truncated": truncated}, headers=headers)
 
 
 # ------------------------------ internal API ---------------------------------
@@ -282,6 +333,16 @@ def get_conversation(conversation_id: str, request: Request,
 @router.delete("/conversations/{conversation_id}")
 def delete_conversation(conversation_id: str, request: Request,
                         identity: Identity = Depends(_identity)) -> dict:
+    # Headless runs are kept (HEADLESS_RESEARCH_API.md §3.6): the record of what
+    # an automated client did as the user is not deletable from here.
+    from .headless.routes import _svc
+    try:
+        headless = _svc(request.app).runs.is_headless(identity.tenant, identity.user,
+                                                      conversation_id)
+    except Exception:
+        headless = False
+    if headless:
+        raise HTTPException(status_code=409, detail="headless runs are kept and cannot be deleted")
     if not request.app.state.conversations.delete(identity.tenant, identity.user, conversation_id):
         raise HTTPException(status_code=404, detail="conversation not found")
     return {"deleted": conversation_id}
@@ -311,7 +372,7 @@ async def chat(ws: WebSocket) -> None:
     tenant = ws.query_params.get("tenant") or extract_tenant(headers, headers.get("host", ""), config.tenant)
 
     identity = await run_in_threadpool(
-        resolve_identity, auth, tenant, config, ws.app.state.token_store,
+        resolve_identity_or_none, auth, tenant, config, ws.app.state.token_store,
         getattr(ws.app.state, "bridge_verifier", None))
     await ws.accept()
     if identity is None:

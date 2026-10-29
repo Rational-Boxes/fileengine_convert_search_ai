@@ -40,9 +40,15 @@ class ConversationStore:
 
     def list(self, tenant: str, user: str, *, limit: int = 200) -> List[dict]:
         with self._conn(tenant, readonly=True) as conn, conn.cursor() as cur:
+            # Interactive only: headless runs (HEADLESS_RESEARCH_API.md §3.5) are
+            # listed per application, never among the user's research sessions.
+            # Read through to_jsonb so a table that predates the column still
+            # lists (this path is read-only, so the self-heal ALTER never runs).
             cur.execute(
-                "SELECT id, title, updated_at FROM conversations "
-                "WHERE user_id = %s ORDER BY updated_at DESC LIMIT %s",
+                "SELECT id, title, updated_at FROM conversations c "
+                "WHERE user_id = %s "
+                "AND coalesce(to_jsonb(c) ->> 'origin', 'interactive') = 'interactive' "
+                "ORDER BY updated_at DESC LIMIT %s",
                 (user, int(limit)))
             return [{"id": r[0], "title": r[1], "updated_at": r[2].isoformat()}
                     for r in cur.fetchall()]
@@ -90,8 +96,11 @@ class ConversationStore:
             return cur.rowcount > 0
 
     def owns(self, tenant: str, user: str, conversation_id: str) -> bool:
+        """The user's own INTERACTIVE conversation. A headless run is not
+        continued as a chat (§3.5): a chat turn naming one starts a new chat."""
         with self._conn(tenant, readonly=True) as conn, conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM conversations WHERE id = %s AND user_id = %s",
+            cur.execute("SELECT 1 FROM conversations c WHERE id = %s AND user_id = %s "
+                        "AND coalesce(to_jsonb(c) ->> 'origin', 'interactive') = 'interactive'",
                         (conversation_id, user))
             return cur.fetchone() is not None
 

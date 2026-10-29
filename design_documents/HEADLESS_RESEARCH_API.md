@@ -1,7 +1,8 @@
 # Headless research API (desktop applications)
 
-Status: **investigation** (branch `research/headless-research-api`, opened 2026-10-29).
-Nothing here is implemented yet.
+Status: **implemented** on branch `feat/headless-api` (2026-10-29), from the
+specification agreed on `research/headless-research-api`. §7 records what
+implementation changed or measured.
 
 ## 1. Goal
 
@@ -117,9 +118,11 @@ the caller never has to ask for it:
 
 ```json
 { "fire_rating": { "value": "EI 60", "unit": null,
-                   "evidence": { "quote": "Fire resistance: EI 60", "page": 3 },
+                   "evidence": { "quote": "Fire resistance | EI 60", "offset": 412 },
                    "found": true } }
 ```
+
+`offset` is where the quote sits in the stored Markdown (§7).
 
 SSE events:
 
@@ -545,3 +548,46 @@ then extract from the hits by id (§3.1, `files`).
   whether headless run records redact stored evidence quotes, and the erasure
   gap for stored chat messages (§3.6 finding). Not decided in this work;
   headless storage will follow whatever is decided for chats.
+
+## 7. Implementation notes (2026-10-29)
+
+**Changed from the specification**
+
+- Evidence carries the quote's character `offset` in the stored Markdown
+  instead of a page number. The offset is computed by csai and can be checked
+  (`GET /documents/{uid}/text`); a page number reported by the model cannot.
+- A field the model still omits after the one repair round trip counts as
+  `found: false`, not as an invalid result. Measured on the production model: a
+  document with none of the fields often answers `{}` even when asked again;
+  treating that as invalid would re-ask and re-bill on every request, since
+  invalid results are not cached. Wrong types and unreadable replies stay
+  invalid (`valid: false`, `problems`), and are not cached.
+- Quote matching tolerates whitespace, case and the Markdown table and emphasis
+  characters a model drops when quoting a table row.
+
+**Measured on DeepSeek V4 Flash (DeepInfra), dev stack, `tests/test_e2e_headless.sh`**
+
+Fixture: a door datasheet and an FSC certificate as PDFs with tables, and a
+note stating none of the values; six fields. Over six runs: every asserted
+value correct, every quote found at its offset, **zero values dropped for
+missing evidence**, nothing invented for the note. About 2,000 tokens and
+12-22 s per run of three documents; the repeat request is served from the
+sidecar cache with zero tokens. `response_format: json_object` and
+`stream_options.include_usage` are both accepted.
+
+**Edge.** The production `/csai/` location already has `proxy_buffering off`
+(it carries the chat WebSocket); SSE keep-alives every 10 s keep well inside
+nginx's 60 s read timeout. No ingress change.
+
+**Where things are**
+
+| piece | file |
+|---|---|
+| routes | `src/convert_search_ai/headless/routes.py` |
+| extraction | `headless/extract.py` |
+| usage limits | `headless/usage.py` (Redis; `CSAI_HEADLESS_*`) |
+| sidecar cache | `headless/cache.py` (`<version>-extract.json`, fmt `extract`) |
+| run records | `headless/runs.py` (`conversations.origin`, `headless_results`) |
+| MCP approvals | `headless/consent_relay.py` |
+| SSE | `headless/sse.py` |
+| key label | ldap_manager verify/status `label`; http_bridge `skname` claim |

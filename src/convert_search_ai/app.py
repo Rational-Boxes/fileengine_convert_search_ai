@@ -168,6 +168,9 @@ def build_app(config: Config | None = None, *, search: SearchService | None = No
     app.include_router(mcp_admin_router)
     from .routers.onlyoffice import router as onlyoffice_router
     app.include_router(onlyoffice_router)
+    # The headless API for desktop applications (HEADLESS_RESEARCH_API.md).
+    from .headless.routes import router as headless_router
+    app.include_router(headless_router)
 
     # What this deployment offers, so the SPA can hide controls for features it
     # does not have rather than surfacing whichever endpoint is missing.

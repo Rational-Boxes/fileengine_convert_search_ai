@@ -35,6 +35,13 @@ class DocStatus:
 
 
 @dataclass
+class TextRow:
+    content_md: Optional[str]
+    source_version: str
+    status: str
+
+
+@dataclass
 class DocRow:
     """One document as the reconcile sweep sees it — enough to decide whether it
     needs re-converting without fetching its content."""
@@ -62,6 +69,16 @@ class DocumentStore:
             )
             row = cur.fetchone()
             return DocStatus(row[0], row[1]) if row else None
+
+    def get_text_row(self, tenant: str, file_uid: str) -> Optional["TextRow"]:
+        """The stored Markdown with the version it was extracted from and the row's
+        status — what headless extraction reads (it never re-converts)."""
+        with self._conn(tenant, readonly=True) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT content_md, source_version, status FROM documents WHERE file_uid = %s",
+                (file_uid,))
+            row = cur.fetchone()
+            return TextRow(row[0], row[1] or "", row[2] or "") if row else None
 
     def list_documents(self, tenant: str, *, statuses: Optional[Sequence[str]] = None,
                        limit: Optional[int] = None) -> List[DocRow]:
@@ -160,6 +177,19 @@ class DocumentStore:
             # the text, the vectors and the generated FTS columns with it.
             cur.execute("DELETE FROM documents WHERE file_uid = %s", (file_uid,))
 
+            # Headless extraction runs hold values and quotes read from the file
+            # (HEADLESS_RESEARCH_API.md §3.6). Keep the row — the record that the
+            # run read this file — and destroy what it read. Guarded: a tenant
+            # provisioned before headless runs has no such table, and erasure
+            # there must not fail for it.
+            headless = 0
+            cur.execute("SELECT to_regclass('headless_results') IS NOT NULL")
+            if cur.fetchone()[0]:
+                cur.execute(
+                    "UPDATE headless_results SET result = NULL, erased = TRUE, erasure_id = %s "
+                    "WHERE file_uid = %s AND NOT erased", (erasure_id, file_uid))
+                headless = cur.rowcount
+
             # The tombstone goes in the SAME transaction as the destruction. Split
             # across two, a crash between them leaves the data gone and the uid
             # un-tombstoned, so the next conversion re-indexes the content the
@@ -169,7 +199,8 @@ class DocumentStore:
                 "ON CONFLICT (file_uid) DO NOTHING",
                 (file_uid, erasure_id))
             conn.commit()
-        return {"chunks": chunks, "extracted_text": bool(had_text)}
+        return {"chunks": chunks, "extracted_text": bool(had_text),
+                "headless_results": headless}
 
     def is_erased(self, tenant: str, file_uid: str) -> bool:
         """Has this uid been erased? Checked before writing any derived data."""

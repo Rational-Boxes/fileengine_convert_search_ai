@@ -91,6 +91,11 @@ def build_record(prov: dict, *, report_uid: str, report_version: str) -> dict:
         },
         "chatted_by": prov.get("user", ""),
         "tenant": prov.get("tenant", ""),
+        # A report written by a headless run (HEADLESS_RESEARCH_API.md §3.6)
+        # names the application (generated key) that asked for it.
+        "origin": prov.get("origin", "interactive"),
+        "client_key_id": prov.get("client_key_id", ""),
+        "client_label": prov.get("client_label", ""),
         "conversation_id": prov.get("conversation_id"),
         "provider": prov.get("provider", ""),
         "model": prov.get("model", ""),

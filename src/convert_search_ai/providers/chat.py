@@ -21,7 +21,18 @@ import json
 import os
 from typing import Iterator, List, Optional
 
-from .base import ChatProvider
+from .base import ChatProvider, report_usage
+
+
+def _report_anthropic(message) -> None:
+    u = getattr(message, "usage", None)
+    if u is not None:
+        report_usage(getattr(u, "input_tokens", 0), getattr(u, "output_tokens", 0))
+
+
+def _report_openai(usage) -> None:
+    if usage is not None:
+        report_usage(getattr(usage, "prompt_tokens", 0), getattr(usage, "completion_tokens", 0))
 
 
 def _import(module: str, extra: str, *, is_default: bool = False):
@@ -67,6 +78,17 @@ class AnthropicChatProvider(ChatProvider):
         with client.messages.stream(**kwargs) as stream:
             for text in stream.text_stream:
                 yield text
+            _report_anthropic(stream.get_final_message())
+
+    def complete_json(self, messages: List[dict], *, system: Optional[str] = None) -> str:
+        anthropic = _import('anthropic', 'anthropic', is_default=True)
+        client = anthropic.Anthropic(api_key=self._key)
+        kwargs = dict(model=self.model_id, max_tokens=self.max_tokens, messages=messages)
+        if system:
+            kwargs["system"] = system
+        msg = client.messages.create(**kwargs)
+        _report_anthropic(msg)
+        return "".join(getattr(b, "text", "") for b in msg.content)
 
     def run_tools(self, messages, *, system=None, tools=None, execute=None,
                   max_iterations=4) -> Iterator[dict]:
@@ -84,6 +106,7 @@ class AnthropicChatProvider(ChatProvider):
                 for text in stream.text_stream:
                     yield {"type": "text", "text": text}
                 final = stream.get_final_message()
+            _report_anthropic(final)
             tool_uses = [b for b in final.content if getattr(b, "type", None) == "tool_use"]
             if not tool_uses:
                 return
@@ -102,6 +125,7 @@ class AnthropicChatProvider(ChatProvider):
         with client.messages.stream(**kwargs) as stream:
             for text in stream.text_stream:
                 yield {"type": "text", "text": text}
+            _report_anthropic(stream.get_final_message())
 
 
 class OpenAICompatibleChatProvider(ChatProvider):
@@ -112,10 +136,17 @@ class OpenAICompatibleChatProvider(ChatProvider):
     supports_tools = True
 
     def __init__(self, model: str, base_url: str | None = None, api_key: str | None = None,
-                 max_tokens: int = 1024):
+                 max_tokens: int = 1024, stream_usage: bool = True, json_mode: bool = True):
         self.model_id = model
         self.base_url = base_url or None
         self.max_tokens = max_tokens
+        # Ask streams to end with a usage chunk (stream_options.include_usage) —
+        # the headless token budget depends on it. Off for a server that rejects
+        # the option (CSAI_CHAT_STREAM_USAGE=0).
+        self.stream_usage = stream_usage
+        # response_format {"type": "json_object"} for complete_json; off for a
+        # server that rejects it (CSAI_CHAT_JSON_MODE=0).
+        self.json_mode = json_mode
         # Many local servers ignore the key but the SDK requires a non-empty one.
         self._key = api_key or os.environ.get("OPENAI_API_KEY") or "not-needed"
 
@@ -127,13 +158,34 @@ class OpenAICompatibleChatProvider(ChatProvider):
         client = self._client()
         msgs = ([{"role": "system", "content": system}] if system else []) + list(messages)
         completion = client.chat.completions.create(
-            model=self.model_id, messages=msgs, max_tokens=self.max_tokens, stream=True)
-        for chunk in completion:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+            model=self.model_id, messages=msgs, max_tokens=self.max_tokens, stream=True,
+            **self._usage_opt())
+        try:
+            for chunk in completion:
+                _report_openai(getattr(chunk, "usage", None))
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    yield delta
+        finally:
+            # A consumer that stops reading (a headless client went away) closes
+            # the generator; close the HTTP stream too, or the provider keeps
+            # generating — and billing — to the end.
+            _close(completion)
+
+    def _usage_opt(self) -> dict:
+        return {"stream_options": {"include_usage": True}} if self.stream_usage else {}
+
+    def complete_json(self, messages: List[dict], *, system: Optional[str] = None) -> str:
+        client = self._client()
+        msgs = ([{"role": "system", "content": system}] if system else []) + list(messages)
+        kwargs = dict(model=self.model_id, messages=msgs, max_tokens=self.max_tokens)
+        if self.json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        resp = client.chat.completions.create(**kwargs)
+        _report_openai(getattr(resp, "usage", None))
+        return (resp.choices[0].message.content or "") if resp.choices else ""
 
     def run_tools(self, messages, *, system=None, tools=None, execute=None,
                   max_iterations=4) -> Iterator[dict]:
@@ -145,9 +197,10 @@ class OpenAICompatibleChatProvider(ChatProvider):
         for _ in range(max(1, max_iterations)):
             completion = client.chat.completions.create(
                 model=self.model_id, messages=msgs, tools=oa_tools,
-                max_tokens=self.max_tokens, stream=True)
+                max_tokens=self.max_tokens, stream=True, **self._usage_opt())
             text_acc, calls = "", {}  # tc.index -> {id, name, args}
-            for chunk in completion:
+            for chunk in _closing(completion):
+                _report_openai(getattr(chunk, "usage", None))
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
@@ -179,10 +232,29 @@ class OpenAICompatibleChatProvider(ChatProvider):
                 msgs.append({"role": "tool", "tool_call_id": s["id"], "content": text})
         # Iterations exhausted — force a final, tool-free answer.
         completion = client.chat.completions.create(
-            model=self.model_id, messages=msgs, max_tokens=self.max_tokens, stream=True)
-        for chunk in completion:
+            model=self.model_id, messages=msgs, max_tokens=self.max_tokens, stream=True,
+            **self._usage_opt())
+        for chunk in _closing(completion):
+            _report_openai(getattr(chunk, "usage", None))
             if chunk.choices and getattr(chunk.choices[0].delta, "content", None):
                 yield {"type": "text", "text": chunk.choices[0].delta.content}
+
+
+def _close(completion) -> None:
+    close = getattr(completion, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
+def _closing(completion):
+    """Iterate a streamed completion, closing it if the consumer stops early."""
+    try:
+        yield from completion
+    finally:
+        _close(completion)
 
 
 class EchoChatProvider(ChatProvider):
