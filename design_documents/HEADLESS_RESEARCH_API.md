@@ -344,16 +344,85 @@ saved are visible.
 **Check in the web application:** the SPA lists renditions it recognises; it
 must treat `extract` as non-previewable, like `chatlog`.
 
-### 3.8 Common behaviour
+### 3.8 Rate limits per API key, with usage status
+
+Decided (owner, 2026-10-29): limits are **per API key**, and every response
+carries **usage status** so the desktop application can warn its user before
+they hit a wall.
+
+**Limits** (deployment defaults by environment; per-key overrides by a tenant
+admin are a later option):
+
+| limit | counts | default (to tune) |
+|---|---|---|
+| requests | each call to a headless route | 60 / minute |
+| model tokens | input + output tokens the provider reports | 2,000,000 / day |
+| concurrent runs | open extraction or research streams | 2 |
+| files per run | files in one extraction | 200 |
+
+Cache hits (§3.7) count as requests but use **no tokens**, so they never eat
+into the budget.
+
+**States.** For each limit: `ok`, `warning` (at or above 80%), `exceeded`.
+
+**Status metadata**, in three places, all saying the same thing:
+
+1. Headers on every response:
+   `RateLimit-Policy` and `RateLimit` (IETF draft form) for the request limit,
+   plus `X-Usage-State: ok|warning|exceeded`.
+2. SSE `usage` event, sent first and last in every stream (and when the state
+   changes mid-run):
+   ```json
+   { "state": "warning",
+     "limits": {
+       "requests": { "used": 41, "limit": 60, "resets_at": "..." },
+       "tokens":   { "used": 1650000, "limit": 2000000, "resets_at": "..." },
+       "concurrent": { "used": 1, "limit": 2 } },
+     "cache": { "hits": 12, "tokens_saved_estimate": 84000 },
+     "message": "This key has used 82% of today's token budget." }
+   ```
+   `message` is plain text the application can show as is.
+3. `GET /csai/v1/usage`: the same object on demand, for a status panel.
+
+**Exceeded.**
+
+- Before a request starts: `429` with `Retry-After` and the usage object as
+  the body (`kind: "rate_limited"`, which limit, when it resets).
+- During an extraction: the token budget is checked between files. When it
+  runs out, the remaining files come back `skipped: budget`, a final `usage`
+  event says `exceeded`, and `done` reports the counts. Results already
+  produced are kept and cached; no file is left half-extracted.
+
+**Accounting.**
+
+- Counters live in Redis (already in the stack), keyed by tenant and key id,
+  so every csai instance shares them.
+- Tokens come from the provider's reported usage (OpenAI-compatible streams
+  need `stream_options: {include_usage: true}`; §5).
+- If Redis is unreachable, headless requests are refused with `503`, not let
+  through uncounted: the limit exists to bound cost, and headless use is
+  optional.
+- A session without a key (a person's own sign-in using the headless routes)
+  gets a per-user bucket with the same defaults.
+
+**Accountability.** A refused request is audited (`action=rate_limited`,
+which limit, key id). Daily token use per key is recorded in the audit so a
+tenant admin can see which application spent what.
+
+**Web application.** The Applications fold (§3.5) shows each key's usage and
+state beside its runs, so the user sees the same warning the desktop
+application does.
+
+### 3.9 Common behaviour
 
 - MCP tools omitted by default (headless cannot answer a consent prompt).
-- Larger headless input cap; rate limit and token budget (§4).
+- Larger headless input cap; rate limits per §3.8.
 - Audit and provenance per §3.6.
 - `X-Accel-Buffering: no` on SSE; check the `/csai/` proxy read timeout.
 
 ## 4. Open decisions (owner)
 
-1. Rate limits and budget: per user, per API key, or both?
+1. ~~Rate limits and budget~~: resolved by §3.8 (per API key, with usage status).
 2. A separate `ai` scope on generated credentials (research access without
    full REST access), now or later? Today `api` covers both.
 3. ~~Cache extractions?~~ Resolved by §3.7 (the file's sidecar).
@@ -369,6 +438,9 @@ must treat `extract` as non-previewable, like `chatlog`.
 - [ ] Same for the Anthropic provider (tool-forced output as the schema route).
 - [ ] Long documents: page through the extracted text per file, or retrieve
       within the one file first? Measure cost per datasheet.
+- [ ] Token usage from the providers: DeepInfra streaming with
+      `stream_options.include_usage`, the tool loop, and Anthropic's `usage`.
+      The token budget is only as good as these numbers.
 - [ ] Cancellation: close the provider stream from the worker thread when the
       SSE client goes away (OpenAI SDK `completion.close()`).
 - [ ] nginx: does the `/csai/` location buffer or time out SSE today?
