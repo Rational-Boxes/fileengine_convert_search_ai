@@ -161,9 +161,41 @@ The existing chat (answer mode) over SSE, for a desktop "ask about these
 documents" panel. Same body as a `WS /chat` frame, plus `persist` (default
 false). Lowest priority of the three.
 
-### 3.4 Common behaviour
+### 3.4 Authentication: shadows the REST door
 
-- Sign in with the REST door's bearer, including API-key sessions.
+Decided (owner, 2026-10-29): the headless routes authenticate exactly as the
+REST door does, with the **same generated key:secret**. There is no second
+credential and no csai-specific sign-in:
+
+1. The desktop application exchanges its key at the bridge:
+   `POST /api/v1/auth/token` with Basic `fesk_…:fesks_…` returns a session
+   bearer, issued only for a key that holds the `api` scope.
+2. It sends that bearer to csai (`Authorization: Bearer …`), exactly as to the
+   REST door.
+3. It renews it at the bridge (`POST /api/v1/auth/refresh`); the bridge asks
+   ldap_manager whether the key is still live, so revoking or rotating the key
+   ends csai access at the next refresh, as it does for REST.
+
+csai already verifies bridge tokens locally (HS256, shared secret), binds them
+to their tenant, and checks the jti revocation list, so a signed-out session is
+refused here too. What this work adds:
+
+- Basic `fesk_…` sent straight to csai is refused with a pointer to the bridge's
+  token route, instead of being tried as an LDAP bind (today it would just fail
+  as a wrong password).
+- The audit record carries the key id (`skid`) from the token.
+- End-to-end test: key → bridge token → `/csai/v1/extract` works; refreshed
+  token works; signed-out token is refused; a key without the `api` scope never
+  gets a token.
+- Authentication is checked when a request starts. A long extraction may
+  stream past the token's expiry, as a long REST download does; each new
+  request needs a live token.
+
+If keys later need research access without full REST access, a separate `ai`
+scope would be checked here from a claim the bridge adds (§4, decision 2).
+
+### 3.5 Common behaviour
+
 - MCP tools omitted by default (headless cannot answer a consent prompt).
 - Larger headless input cap; rate limit and token budget (§4).
 - Audit records route, mode, file count, and the API key id (`skid`).
