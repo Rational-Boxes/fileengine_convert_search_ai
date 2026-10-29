@@ -5,12 +5,18 @@ Nothing here is implemented yet.
 
 ## 1. Goal
 
-Desktop applications (Reviera first) drive the research chat without a
-person in a browser. In headless mode the chat must:
+Desktop applications (Reviera first) drive the research tooling without a
+person in a browser. In headless mode it must:
 
-- return **structured JSON** that a program can consume, as the main mode;
-- still be able to produce a **drafted document**;
-- **stream** its progress and answer (SSE), with a non-streaming option for
+- do **focused, structured fact extraction** from the documents in a specific
+  folder. This is the strongest case and the main mode. Reviera pulls given
+  values (manufacturer, model, dimensions, fire rating, EPD figures,
+  certificate numbers and expiry dates, ...) from datasheets and
+  sustainability certificates to populate model metadata;
+- still produce **reports**, by the **existing technique** (owner,
+  2026-10-29): the report always lives in FileEngine, so its provenance
+  sidecar is kept; the desktop application downloads the file;
+- **stream** progress and results (SSE), with a non-streaming option for
   simple callers.
 
 Desktop apps sign in with generated credentials: API key → `/v1/auth/token` →
@@ -46,80 +52,112 @@ Production model: `openai-compatible` → DeepInfra, `deepseek-ai/DeepSeek-V4-Fl
 
 ## 3. Proposed shape
 
-A new route over the same `ChatService`; `WS /chat` is unchanged for the SPA.
+New routes over the existing services; `WS /chat` is unchanged for the SPA.
+Every route answers `text/event-stream` (default) or `application/json`
+(wait, return the final result only).
 
-```
-POST /csai/v1/research
-Accept: text/event-stream      (default — streamed)
-Accept: application/json       (wait, return the result only)
-```
+### 3.1 Extraction — `POST /csai/v1/extract` (the main mode)
+
+Extraction is not chat. RAG top-k retrieval across the tenant is the wrong
+tool: a value buried in one table of one datasheet is easy to miss, and a
+value from the wrong product's datasheet is worse than none. Extraction works
+**per document**: each file in scope is read whole (its extracted Markdown,
+paged when long) and asked the same schema, independently.
 
 ```json
 {
-  "message": "...",
-  "mode": "json | document | answer",
-  "schema": { "...": "JSON Schema (json mode)" },
-  "document": { "format": "markdown",
-                "save_to": { "folder_uid": "...", "filename": "..." } },
-  "scope_folders": ["<uid>"],
-  "web_search": false,
-  "k": 8,
-  "conversation_id": null,
-  "persist": false,
-  "tools": { "mcp": "deny" }
+  "folder_uid": "<uid>",
+  "recursive": false,
+  "files": ["<uid>"],
+  "match": { "extensions": [".pdf"], "name": "*datasheet*" },
+  "schema": { "...": "JSON Schema of the values wanted" },
+  "instructions": "optional guidance (units, which product, ...)"
 }
 ```
 
-SSE events, reusing the engine's names:
+Either `folder_uid` (+ optional `match`) or an explicit `files` list. The
+schema describes the values; the service wraps each one with evidence, so the
+caller never has to ask for it:
+
+```json
+{ "fire_rating": { "value": "EI 60", "unit": null,
+                   "evidence": { "quote": "Fire resistance: EI 60", "page": 3 },
+                   "found": true } }
+```
+
+SSE events:
 
 | event | data |
 |---|---|
-| `token` | streamed text (in json mode, the raw JSON as it is generated: progress only) |
-| `tool_call` / `tool_result` | progress |
-| `result` | the authoritative outcome (below) |
-| `error` | `{error, kind}`; HTTP status is used where the failure precedes the stream |
-| `done` | end |
+| `plan` | the files in scope (uid, name, version), so a client can show progress |
+| `item` | one file's result: `{file_uid, name, version, data, valid, skipped?}` |
+| `error` | `{file_uid?, error, kind}`. A per-file error does not end the run |
+| `done` | summary: counts of extracted, not found, skipped, failed |
 
-`result` by mode:
+Rules:
 
-- **json**: `{data, valid, citations}`. Parsed, validated against `schema`,
-  with one repair attempt on failure. Citations are structured
-  (`file_uid`, `title`, `url`, `kind`), not markers in text.
-- **document**: `{title, markdown, citations, saved?: {uid, path}}`. The draft
-  is always returned; it is also saved through the existing
-  `save_report_document` if `save_to` is given.
-- **answer**: the prose answer plus structured citations.
+- **Absent means `found: false`, never a guess.** Each value needs a
+  supporting quote from that document. A value without one is dropped, and
+  the drop is counted.
+- **Validated** against the schema, with one repair attempt per file.
+- **Version-stamped.** Each `item` names the version it was read from, so
+  Reviera can tell when a datasheet has been revised since a value was taken.
+- Only files the caller can READ; unreadable ones are skipped silently,
+  exactly as search does.
+- No web search and no MCP tools: the answer comes from the documents only.
+- Cancelling (client disconnect) stops after the current file.
+- Results are not written anywhere by the service. Reviera decides what
+  becomes model metadata.
 
-Behaviour:
+### 3.2 Reports — the existing technique
 
-- Headless modes get their own system instructions (JSON only, matching the
-  schema; no prose, no `(file <uid>)` link convention).
-- MCP tools are omitted by default (`tools.mcp: "deny"`). A tenant-admin
-  pre-approved list is a possible later option.
-- Client disconnect cancels generation.
-- `persist: false` by default, so automated calls do not fill the sidebar.
-- Separate, larger headless input cap.
-- Rate limit and token budget (see §4).
-- Audit records mode, headless, and the API key id (`skid`) when present.
-- `X-Accel-Buffering: no` on SSE responses; check the `/csai/` proxy read
-  timeout covers a long answer.
+Reports use today's pinned-destination report mode unchanged: the model writes
+`[[SAVE_REPORT ...]]`, the service saves a `.docx` with its provenance sidecar
+into the pinned folder, and emits `report_saved {uid, name, path}`. The desktop
+application then downloads the file through the REST door
+(`GET /v1/files/{uid}/content`). The SSE route only needs to carry the same
+events; the client relies on `report_saved`, not on the streamed tokens (which
+include the markers and a server-written confirmation line).
+
+### 3.3 Questions — `POST /csai/v1/research`
+
+The existing chat (answer mode) over SSE, for a desktop "ask about these
+documents" panel. Same body as a `WS /chat` frame, plus `persist` (default
+false). Lowest priority of the three.
+
+### 3.4 Common behaviour
+
+- Sign in with the REST door's bearer, including API-key sessions.
+- MCP tools omitted by default (headless cannot answer a consent prompt).
+- Larger headless input cap; rate limit and token budget (§4).
+- Audit records route, mode, file count, and the API key id (`skid`).
+- `X-Accel-Buffering: no` on SSE; check the `/csai/` proxy read timeout.
 
 ## 4. Open decisions (owner)
 
 1. Rate limits and budget: per user, per API key, or both?
 2. A separate `ai` scope on generated credentials (research access without
    full REST access), now or later? Today `api` covers both.
-3. Should headless json mode allow web search by default, or only on request?
+3. Cache extractions? Keyed by (file, version, schema hash), a repeat request
+   for an unchanged datasheet would cost nothing. Where would the cache live:
+   csai's own table, or FileEngine metadata on the source file?
 
 ## 5. Investigation tasks
 
+- [ ] Text quality of the real inputs. Gather a sample of datasheets and
+      sustainability certificates (EPDs, FSC/PEFC, Declare, ...) and check the
+      extracted Markdown: are spec tables intact? Scanned certificates need
+      OCR. Confirm which PDF backend the production image actually runs
+      (docling is gated by `INSTALL_DOCLING`) and whether OCR is on.
 - [ ] Measure DeepSeek V4 Flash on DeepInfra: does `response_format`
-      `json_object` / `json_schema` work, through streaming and through the
-      tool loop? How often is the output invalid without enforcement?
+      `json_object` / `json_schema` work? How often is output invalid without
+      enforcement, and how often does it invent a value that is not in the
+      document (the evidence rule catches these: measure how many)?
 - [ ] Same for the Anthropic provider (tool-forced output as the schema route).
-- [ ] Cancellation: can the provider stream be closed from the worker thread
-      when the SSE client goes away (OpenAI SDK `completion.close()`)?
+- [ ] Long documents: page through the extracted text per file, or retrieve
+      within the one file first? Measure cost per datasheet.
+- [ ] Cancellation: close the provider stream from the worker thread when the
+      SSE client goes away (OpenAI SDK `completion.close()`).
 - [ ] nginx: does the `/csai/` location buffer or time out SSE today?
-- [ ] Citation shape for json mode: where they live in `data` versus beside it.
-- [ ] Prototype the route and an end-to-end test driven by an API-key session
-      token, as a desktop client would.
+- [ ] Prototype `/v1/extract` and an end-to-end test driven by an API-key
+      session token over a fixture folder of datasheets, as Reviera would.
