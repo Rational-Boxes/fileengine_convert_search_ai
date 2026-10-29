@@ -191,8 +191,9 @@ refused here too. What this work adds:
   stream past the token's expiry, as a long REST download does; each new
   request needs a live token.
 
-If keys later need research access without full REST access, a separate `ai`
-scope would be checked here from a claim the bridge adds (§4, decision 2).
+**One scope.** Decided (owner, 2026-10-29): csai's advanced functionality is
+the same API scope as the filesystem primitives. A key with `api` reaches the
+REST door and every headless csai route; there is no separate `ai` scope.
 
 ### 3.5 Review in the web application
 
@@ -471,7 +472,38 @@ also cited, as in the browser (`kind: "mcp"`).
 **Limits.** A run waiting for an answer keeps its concurrency slot (§3.8) but
 spends no tokens.
 
-### 3.10 Common behaviour
+### 3.10 Search and document text, as the MCP door has them
+
+Decided (owner, 2026-10-29): desktop applications get the same fuzzy, ranked
+search the MCP door bridges, and the document text that goes with it.
+
+These already exist on the public surface and already accept the key session
+bearer; the MCP door reaches the same code through `/internal/search` only
+because it holds no bearer csai accepts:
+
+| desktop call | MCP tool | behaviour |
+|---|---|---|
+| `POST /csai/search` `{query, limit, fuzzy}` | `search` | full text over every indexed document's Markdown (inside .docx, .pptx, .xlsx, PDF), near-spellings with `fuzzy`, best first; hits `{file_uid, name, snippet, score}`; filtered per hit by READ, so an unreadable file is neither returned nor disclosed |
+| `GET /csai/documents/{uid}/text` | `read_text` | the document's extracted Markdown, READ-gated |
+
+What this work adds so they match the headless routes:
+
+- **Rate limits and usage status** (§3.8) apply: a search is a request and
+  uses no tokens; the usage headers come back on it too.
+- **Audit** carries the key id and label (§3.6). Query text stays out of the
+  audit, as today.
+- **Folder scope**, optional: `folder_uids` (with subfolders) narrows search
+  to, say, a project's documentation folder. Retrieval already supports this
+  (`scope_folder_uids`); search does not yet. The MCP door's subtree
+  allow-list does the same job on its side.
+- **Paging** for long hit lists (`offset`), within the existing result cap.
+- **OpenAPI** description alongside the headless routes, so a desktop client
+  is written against a contract.
+
+The obvious desktop flow is then: search a folder for candidate datasheets,
+then extract from the hits by id (§3.1, `files`).
+
+### 3.11 Common behaviour
 
 - MCP tools: per §3.9 (`deny` by default; `ask` for research and reports).
 - Larger headless input cap; rate limits per §3.8.
@@ -481,8 +513,7 @@ spends no tokens.
 ## 4. Open decisions (owner)
 
 1. ~~Rate limits and budget~~: resolved by §3.8 (per API key, with usage status).
-2. A separate `ai` scope on generated credentials (research access without
-   full REST access), now or later? Today `api` covers both.
+2. ~~A separate `ai` scope~~: resolved by §3.4 (no; `api` covers csai).
 3. ~~Cache extractions?~~ Resolved by §3.7 (the file's sidecar).
 4. ~~Retention for headless runs~~: resolved by §3.6 (kept; not deletable;
    erasure reaches them).
