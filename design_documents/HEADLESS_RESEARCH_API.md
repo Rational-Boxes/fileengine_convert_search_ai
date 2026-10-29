@@ -285,7 +285,67 @@ deletes the file's `documents` and `chunks` rows and records it in
 quote the file are untouched. That is an existing gap, separate from this work;
 the headless storage above is shaped so it does not repeat it.
 
-### 3.7 Common behaviour
+### 3.7 Extraction cache: a sidecar on the source file
+
+Decided (owner, 2026-10-29): extracted values are cached **in a sidecar of the
+source file**, so the same question about the same version of the same
+document is never paid for twice.
+
+**Shape.** One hidden child per source version, by the existing rendition
+convention: `<version>-extract.json` (`rendition_name(version, "extract",
+"json")`; `extract` joins `_KNOWN_FMTS`). Inside, one entry per question:
+
+```json
+{ "schema": "fileengine.extract_cache.v1",
+  "file_uid": "...", "version": "20261029_120000.123",
+  "entries": {
+    "<key>": { "schema_hash": "...", "instructions_hash": "...",
+               "model": "...", "provider": "...", "prompt_version": "extract.v1",
+               "created_at": "...", "created_by": "<owner>", "client_key_id": "...",
+               "data": { "...": "values with evidence and found, as returned" } } } }
+```
+
+`key` = hash of (schema, instructions, model, prompt version). A different
+model or a revised prompt is a different question and does not hit an old
+answer.
+
+**Lookup.** Before calling the model for a file: read its current version's
+sidecar; on a key hit, return the entry as the `item` with `cached: true` and
+its original `model` and `created_at`. No model call, no tokens. On a miss,
+extract, then add the entry. `"cache": "use"` (default) or `"refresh"`
+(re-extract and replace that entry, for when an answer looks wrong).
+
+**Why this place.** It follows the file:
+
+- version-keyed: a revised datasheet is a new version with no sidecar yet, so
+  stale values are never served; superseded versions' sidecars are pruned by
+  the existing `prune_old_versions`, as other renditions are (the history of
+  what was extracted stays in the headless run records, §3.5);
+- access follows the file's ACL: anyone who can READ the datasheet can reuse
+  what was read from it, and no one else;
+- lifetime follows the file: it is a hidden child, so erasure of the source
+  file takes it too (verify that `EraseFile` destroys hidden children with the
+  file, §5);
+- one user's run warms the cache for every other user and application in the
+  tenant reading the same document with the same question.
+
+**Writing.** As csai's own service identity through `RenditionWriter`, as
+renditions are written, so a caller with only READ still gets their result
+cached. Read access is still checked as the caller before any lookup.
+Concurrent runs adding entries to the same sidecar may race; the loser's entry
+is simply missing and is recomputed next time (no wrong answer, just a repeat
+cost). Each write is a new version of the sidecar, so earlier entries are
+retained in its history.
+
+**Accountability.** A cache hit is still a run: it is audited
+(`extract_item`, `cached=true`) and stored in the run record like any other
+result; only the model call is skipped. The audit counts hits, so the tokens
+saved are visible.
+
+**Check in the web application:** the SPA lists renditions it recognises; it
+must treat `extract` as non-previewable, like `chatlog`.
+
+### 3.8 Common behaviour
 
 - MCP tools omitted by default (headless cannot answer a consent prompt).
 - Larger headless input cap; rate limit and token budget (§4).
@@ -297,9 +357,7 @@ the headless storage above is shaped so it does not repeat it.
 1. Rate limits and budget: per user, per API key, or both?
 2. A separate `ai` scope on generated credentials (research access without
    full REST access), now or later? Today `api` covers both.
-3. Cache extractions? Keyed by (file, version, schema hash), a repeat request
-   for an unchanged datasheet would cost nothing. Where would the cache live:
-   csai's own table, or FileEngine metadata on the source file?
+3. ~~Cache extractions?~~ Resolved by §3.7 (the file's sidecar).
 4. ~~Retention for headless runs~~: resolved by §3.6 (kept; not deletable;
    erasure reaches them).
 
@@ -315,5 +373,7 @@ the headless storage above is shaped so it does not repeat it.
 - [ ] Cancellation: close the provider stream from the worker thread when the
       SSE client goes away (OpenAI SDK `completion.close()`).
 - [ ] nginx: does the `/csai/` location buffer or time out SSE today?
+- [ ] Confirm `EraseFile` destroys a file's hidden children (the extraction
+      cache sidecar) along with it.
 - [ ] Prototype `/v1/extract` and an end-to-end test driven by an API-key
       session token over a fixture folder of datasheets, as Reviera would.
