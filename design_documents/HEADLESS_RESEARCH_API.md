@@ -263,9 +263,8 @@ possible about shape and outcome, never about content.
 - Extraction runs: the stored run is the provenance record, holding the same
   facts the chatlog holds: who (owner and key), model and provider, the prompt
   version, the request (target, schema, instructions), each file's version
-  read, and each value with its evidence quote. PII is redacted in stored
-  quotes, as in the chatlog transcript; the live response to the caller is not
-  redacted.
+  read, and each value with its evidence quote. Whether stored quotes are
+  PII-redacted is **parked** (§6).
 
 **Retention: kept.** Data is retained by default, so headless runs are kept;
 there is no expiry. Unlike a chat, a headless run is **not deletable from the
@@ -377,3 +376,11 @@ must treat `extract` as non-previewable, like `chatlog`.
       cache sidecar) along with it.
 - [ ] Prototype `/v1/extract` and an end-to-end test driven by an API-key
       session token over a fixture folder of datasheets, as Reviera would.
+
+## 6. Parked
+
+- **PII in chat transcripts** (owner, 2026-10-29: to be looked into later).
+  Covers the chatlog sidecar's regex redaction (`provenance.redact_pii`),
+  whether headless run records redact stored evidence quotes, and the erasure
+  gap for stored chat messages (§3.6 finding). Not decided in this work;
+  headless storage will follow whatever is decided for chats.
