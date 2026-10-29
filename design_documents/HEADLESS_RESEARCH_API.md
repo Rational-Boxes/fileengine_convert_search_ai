@@ -44,7 +44,7 @@ session bearer, renewed while the key is live (http_bridge 1.9.66).
 | 3 | A report is only produced into FileEngine (as `.docx`) when a folder and filename are pinned. The draft cannot be returned to the caller. | `_save_marked_reports`, `llm_tools.save_report_document` |
 | 4 | MCP tool calls block on an interactive `tool_consent` reply (120 s timeout, then deny). A headless caller would stall on every external tool. | `consent.py`, `_stream_answer.read_control` |
 | 5 | No per-user or per-key rate limit or token budget. `CSAI_MAX_QUERY_CHARS` = 1000 is too small for headless prompts that carry instructions or data. | `config.py`, `guards.py` |
-| 6 | Every turn is persisted to the user's conversation list. | `_begin_turn` / `_end_turn` |
+| 6 | Every turn is persisted to the user's one conversation list; there is no notion of which client made it, so automated runs would mix into the user's research sessions. | `_begin_turn` / `_end_turn`, `conversations` table |
 
 Production model: `openai-compatible` → DeepInfra, `deepseek-ai/DeepSeek-V4-Flash`
 (scripts `roles/convert_search_ai/defaults/main.yml`). Whether it honours
@@ -158,8 +158,8 @@ include the markers and a server-written confirmation line).
 ### 3.3 Questions — `POST /csai/v1/research`
 
 The existing chat (answer mode) over SSE, for a desktop "ask about these
-documents" panel. Same body as a `WS /chat` frame, plus `persist` (default
-false). Lowest priority of the three.
+documents" panel. Same body as a `WS /chat` frame. Lowest priority of the
+three.
 
 ### 3.4 Authentication: shadows the REST door
 
@@ -194,7 +194,45 @@ refused here too. What this work adds:
 If keys later need research access without full REST access, a separate `ai`
 scope would be checked here from a claim the bridge adds (§4, decision 2).
 
-### 3.5 Common behaviour
+### 3.5 Review in the web application
+
+Decided (owner, 2026-10-29): headless runs are **kept**, and are reviewable in
+the web application, but **out of the user's research sessions**: under a
+folded list per headless application.
+
+**What is an application.** The generated key the desktop application signed
+in with. One key, one fold, labelled with the key's name as the user gave it on
+the credentials card ("Reviera — office laptop"). A user with two desktop
+installs, each with its own key, sees two folds.
+
+**Storage** (additive, same per-tenant tables):
+
+- `conversations` gains `origin` (`interactive` default | `headless`),
+  `client_key_id` (`skid`) and `client_label`.
+- An extraction run is stored as one conversation: the request (target,
+  schema, instructions) as the first message, then one message per file
+  `item` with its JSON result, evidence and version stamp, then the summary.
+  A report run or a question is stored as today's turns.
+- `GET /conversations` keeps returning **interactive only** by default, so the
+  research sidebar is unchanged; `?origin=headless` returns headless runs
+  grouped by `client_key_id`, with label, run count and last run.
+
+**The label.** csai sees only the key id in the token. The bridge adds the
+key's name as a claim (`skname`) when it issues a key session, and csai stores
+it with each run. The fold shows the latest label; a revoked or deleted key
+keeps its fold under its last name, marked revoked, so its history stays
+reviewable.
+
+**Web application** (frontend): the research sidebar gets an *Applications*
+section, collapsed by default, one fold per key. Opening a run shows it
+read-only: request, per-file results as a table (value, evidence quote,
+document link, version), and any report as its saved-file link. A headless run
+is not continued as a chat.
+
+**Ownership.** A key session acts as its owner, so runs belong to that user,
+like their chats; nobody else sees them.
+
+### 3.6 Common behaviour
 
 - MCP tools omitted by default (headless cannot answer a consent prompt).
 - Larger headless input cap; rate limit and token budget (§4).
@@ -209,6 +247,10 @@ scope would be checked here from a claim the bridge adds (§4, decision 2).
 3. Cache extractions? Keyed by (file, version, schema hash), a repeat request
    for an unchanged datasheet would cost nothing. Where would the cache live:
    csai's own table, or FileEngine metadata on the source file?
+4. Retention for headless runs: an application extracting on every model
+   save could store thousands of runs. Keep all, keep N per application, or
+   expire after a period? Runs hold quotes from documents, so erasure of a
+   source file must reach them as it does chats.
 
 ## 5. Investigation tasks
 
