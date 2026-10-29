@@ -81,6 +81,12 @@ version (`Stat`):
   certificate with no text layer): `skipped` with the reason, never an empty
   "nothing found".
 
+**Markdown is the input, by decision** (owner, 2026-10-29): extraction reads
+`content_md` and nothing else until advanced multimodal model support exists.
+A file with no usable text (a scan with no text layer) is reported as
+`skipped: no text` so the caller knows to check it by hand; there is no OCR or
+image pass in this work.
+
 ```json
 {
   "folder_uid": "<uid>",
@@ -161,11 +167,6 @@ false). Lowest priority of the three.
 
 ## 5. Investigation tasks
 
-- [ ] Scanned inputs only: table structure is kept in `content_md` (owner,
-      2026-10-29), so the open text question is documents with no text
-      layer (scanned certificates). Count how many production `documents`
-      rows of PDFs have NULL or near-empty `content_md`, and confirm whether
-      the production image's PDF backend does OCR.
 - [ ] Measure DeepSeek V4 Flash on DeepInfra: does `response_format`
       `json_object` / `json_schema` work? How often is output invalid without
       enforcement, and how often does it invent a value that is not in the
