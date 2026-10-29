@@ -413,9 +413,67 @@ tenant admin can see which application spent what.
 state beside its runs, so the user sees the same warning the desktop
 application does.
 
-### 3.9 Common behaviour
+### 3.9 MCP tool approval in the desktop application
 
-- MCP tools omitted by default (headless cannot answer a consent prompt).
+Proposed (owner, 2026-10-29): the stream carries the MCP authorization request
+down to the desktop application, which asks its user, as the browser does
+today. This replaces "MCP tools omitted", which assumed no one could answer.
+
+**Down the stream.** When the model calls an `mcp__<integration>__<tool>` tool,
+the existing `ConsentBroker` pauses the worker and the stream emits:
+
+```json
+event: tool_consent_request
+data: { "id": "<random, single-use>", "run_id": "...",
+        "integration": "Jira", "tool": "create_issue",
+        "args": { "...": "what the model wants to send" },
+        "expires_at": "..." }
+```
+
+**Back up a second call.** SSE only goes one way, so the answer is a separate
+request, authenticated like the run:
+
+```
+POST /csai/v1/runs/{run_id}/consent
+{ "id": "...", "decision": true, "remember": false }
+```
+
+While waiting, the stream sends keep-alive comments so neither nginx nor the
+client times out. No answer by `expires_at` (the existing
+`CSAI_MCP_CONSENT_TIMEOUT_MS`, 120 s) means **deny**, as today; so does the
+client disconnecting.
+
+**What changes from the browser path.**
+
+- **Unguessable ids.** Over the socket, ids are sequential (`consent-1`,
+  `consent-2`) because only that socket can answer. Over HTTP the id is
+  random and single-use, and only accepted from the **same user and the same
+  key** that started the run; anything else is `404`, so a run cannot be
+  approved by another session.
+- **"Remember" is per run.** The browser remembers for the life of the socket;
+  headless remembers for the run, and never beyond it.
+- **Any csai instance can receive the answer.** The run's worker may sit on a
+  different instance from the one the POST lands on, so the answer is relayed
+  over Redis (`csai:consent:<run_id>`) to the broker that is waiting.
+
+**Where it applies.**
+
+- `research` (questions) and report runs: MCP tools on request,
+  `tools.mcp: "ask"`; the default stays `"deny"`, so an application that has no
+  approval dialog never stalls.
+- `extract`: never. Extraction answers from the documents only (§3.1).
+
+**Accountability.** The existing `mcp_consent` and `mcp_tool` audit records
+apply unchanged, with the key id and label added: who approved, from which
+application, which integration and tool, and the outcome. The tool call is
+also cited, as in the browser (`kind: "mcp"`).
+
+**Limits.** A run waiting for an answer keeps its concurrency slot (§3.8) but
+spends no tokens.
+
+### 3.10 Common behaviour
+
+- MCP tools: per §3.9 (`deny` by default; `ask` for research and reports).
 - Larger headless input cap; rate limits per §3.8.
 - Audit and provenance per §3.6.
 - `X-Accel-Buffering: no` on SSE; check the `/csai/` proxy read timeout.
