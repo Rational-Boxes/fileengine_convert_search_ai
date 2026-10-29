@@ -64,6 +64,23 @@ value from the wrong product's datasheet is worse than none. Extraction works
 **per document**: each file in scope is read whole (its extracted Markdown,
 paged when long) and asked the same schema, independently.
 
+**Source text.** Each file is read from csai's own stored Markdown,
+`documents.content_md`: the whole document, extracted at index time with its
+table structure kept as Markdown tables. Nothing is converted again at
+request time. `documents.source_version` is the FileEngine version that text
+came from, and becomes the result's version stamp.
+
+**Stale or missing text.** Indexing is asynchronous, so the stored text can
+lag the file. Before reading, compare `source_version` with the file's current
+version (`Stat`):
+
+- current: extract;
+- behind, or `status` pending: re-index that file first (the ingest path
+  already exists), then extract; the `item` is late, not wrong;
+- `status` failed, or no text (`content_md` NULL; for example a scanned
+  certificate with no text layer): `skipped` with the reason, never an empty
+  "nothing found".
+
 ```json
 {
   "folder_uid": "<uid>",
@@ -144,11 +161,11 @@ false). Lowest priority of the three.
 
 ## 5. Investigation tasks
 
-- [ ] Text quality of the real inputs. Gather a sample of datasheets and
-      sustainability certificates (EPDs, FSC/PEFC, Declare, ...) and check the
-      extracted Markdown: are spec tables intact? Scanned certificates need
-      OCR. Confirm which PDF backend the production image actually runs
-      (docling is gated by `INSTALL_DOCLING`) and whether OCR is on.
+- [ ] Scanned inputs only: table structure is kept in `content_md` (owner,
+      2026-10-29), so the open text question is documents with no text
+      layer (scanned certificates). Count how many production `documents`
+      rows of PDFs have NULL or near-empty `content_md`, and confirm whether
+      the production image's PDF backend does OCR.
 - [ ] Measure DeepSeek V4 Flash on DeepInfra: does `response_format`
       `json_object` / `json_schema` work? How often is output invalid without
       enforcement, and how often does it invent a value that is not in the
