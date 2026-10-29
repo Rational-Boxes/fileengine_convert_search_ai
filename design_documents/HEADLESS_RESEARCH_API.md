@@ -232,11 +232,64 @@ is not continued as a chat.
 **Ownership.** A key session acts as its owner, so runs belong to that user,
 like their chats; nobody else sees them.
 
-### 3.6 Common behaviour
+### 3.6 Accountability: the platform's conventions, unchanged
+
+Decided (owner, 2026-10-29): headless use follows the existing conventions;
+it does not get looser rules because no one is watching.
+
+**Attribution.** Every run is attributed to the key's owner *and* the key:
+`user`, `tenant`, `client_key_id` (`skid`), `client_label` (`skname`). Core
+calls are made as the owner, as for a chat. A report written from a headless
+run carries `revised_by` = the owner in the core and the key in its sidecar.
+
+**Audit** (`audit.record`, the secret-free access log): as detailed as
+possible about shape and outcome, never about content.
+
+- per run: `action=extract` (or `research`), result, key id and label, target
+  kind (folder uid, or count of ids), file count, schema hash and field
+  names, model and provider, counts (extracted, not found, dropped for no
+  evidence, skipped, failed), duration;
+- per file: `action=extract_item`, `file_uid`, the version read, result, and
+  per-file counts;
+- never: values, evidence quotes, file names, the caller's instructions, or
+  tokens. Files are referenced by uid only (the redaction line: identifiable
+  information from file content or file names stays out of the audit).
+
+**Provenance.**
+
+- Reports: the existing chatlog sidecar, unchanged, plus `origin: headless`,
+  the key id and label. The sidecar is still a hidden child of the report, so
+  it lives and dies with it.
+- Extraction runs: the stored run is the provenance record, holding the same
+  facts the chatlog holds: who (owner and key), model and provider, the prompt
+  version, the request (target, schema, instructions), each file's version
+  read, and each value with its evidence quote. PII is redacted in stored
+  quotes, as in the chatlog transcript; the live response to the caller is not
+  redacted.
+
+**Retention: kept.** Data is retained by default, so headless runs are kept;
+there is no expiry. Unlike a chat, a headless run is **not deletable from the
+web application**: it is the record of what an automated client did as the
+user. (Resolves §4 decision 4, which is withdrawn.)
+
+**Erasure reaches runs.** Erasure is the one sanctioned way content leaves.
+Per-file results are stored keyed by `file_uid` (a `headless_results` table,
+not free text in a message), so when a source file is erased, csai's erasure
+handler removes that file's values and quotes from every run and leaves a
+tombstone (`file_uid`, `erased`, `erasure_id`): the record that the run read
+the file survives, its content does not.
+
+**Finding: interactive chats are not reached by erasure today.** `Store.erase`
+deletes the file's `documents` and `chunks` rows and records it in
+`erased_documents`, but stored chat messages (`conversation_messages`) that
+quote the file are untouched. That is an existing gap, separate from this work;
+the headless storage above is shaped so it does not repeat it.
+
+### 3.7 Common behaviour
 
 - MCP tools omitted by default (headless cannot answer a consent prompt).
 - Larger headless input cap; rate limit and token budget (§4).
-- Audit records route, mode, file count, and the API key id (`skid`).
+- Audit and provenance per §3.6.
 - `X-Accel-Buffering: no` on SSE; check the `/csai/` proxy read timeout.
 
 ## 4. Open decisions (owner)
@@ -247,10 +300,8 @@ like their chats; nobody else sees them.
 3. Cache extractions? Keyed by (file, version, schema hash), a repeat request
    for an unchanged datasheet would cost nothing. Where would the cache live:
    csai's own table, or FileEngine metadata on the source file?
-4. Retention for headless runs: an application extracting on every model
-   save could store thousands of runs. Keep all, keep N per application, or
-   expire after a period? Runs hold quotes from documents, so erasure of a
-   source file must reach them as it does chats.
+4. ~~Retention for headless runs~~: resolved by §3.6 (kept; not deletable;
+   erasure reaches them).
 
 ## 5. Investigation tasks
 
