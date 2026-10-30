@@ -53,6 +53,7 @@ from . import __version__, audit
 from .app_links import resolve_app_url
 from .config import Config
 from .guards import GuardError
+from .bridge_auth import AuthUnavailable
 from .http_auth import (GeneratedKeyPresented, extract_tenant, resolve_identity,
                         resolve_identity_or_none)
 from .ldap_auth import Identity, authenticate
@@ -371,9 +372,15 @@ async def chat(ws: WebSocket) -> None:
         auth = "Bearer " + ws.query_params["token"]
     tenant = ws.query_params.get("tenant") or extract_tenant(headers, headers.get("host", ""), config.tenant)
 
-    identity = await run_in_threadpool(
-        resolve_identity_or_none, auth, tenant, config, ws.app.state.token_store,
-        getattr(ws.app.state, "bridge_verifier", None))
+    try:
+        identity = await run_in_threadpool(
+            resolve_identity_or_none, auth, tenant, config, ws.app.state.token_store,
+            getattr(ws.app.state, "bridge_verifier", None))
+    except AuthUnavailable:
+        await ws.accept()
+        await ws.send_json({"type": "error", "error": "authentication unavailable; retry shortly"})
+        await ws.close(code=1013)        # try again later
+        return
     await ws.accept()
     if identity is None:
         await ws.send_json({"type": "error", "error": "authentication required"})

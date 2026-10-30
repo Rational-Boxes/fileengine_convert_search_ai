@@ -40,6 +40,12 @@ from .jwt_verify import identity_from_claims, verify_hs256
 from . import token_revocation
 
 
+class AuthUnavailable(Exception):
+    """The token's signature checks out but whether it was signed out cannot be
+    established (the denylist is unreachable and revocation fails closed). Not a
+    bad credential: the caller should be told to retry, not to sign in again."""
+
+
 class BridgeTokenVerifier:
     """Validates http_bridge bearer tokens via the bridge's introspection
     endpoint, with a small TTL cache. Disabled (always returns ``None``) when no
@@ -75,7 +81,10 @@ class BridgeTokenVerifier:
             # stateless JWT cannot say so — the signature and exp still check out.
             # Ask the shared denylist, or a signed-out token goes on working here
             # after the bridge itself has begun refusing it.
-            if not token_revocation.permits(str(claims.get("jti") or "")):
+            v = token_revocation.verdict(str(claims.get("jti") or ""))
+            if v == token_revocation.UNAVAILABLE:
+                raise AuthUnavailable()
+            if v != token_revocation.PERMIT:
                 return None
             got = identity_from_claims(claims, tenant)
             if got is None:

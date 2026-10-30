@@ -350,6 +350,7 @@ class Extractor:
         self.cache = cache
         self.convert = convert
         self.meter = meter
+        self.truncated = False
 
     # --- targets
     def resolve(self, identity, req: ExtractRequest) -> List[Target]:
@@ -380,7 +381,9 @@ class Extractor:
         cap = int(getattr(self.config, "headless_files_per_run", 200))
         out: List[Target] = []
         queue = [(req.folder_uid or "", 0)]
-        while queue and len(out) < cap:
+        # Look for one document past the cap, so the plan can say the folder had
+        # more than one run reads (rather than cutting it short silently).
+        while queue and len(out) <= cap:
             uid, depth = queue.pop(0)
             try:
                 entries = mf.dir(uid, tenant=identity.tenant) or []
@@ -404,9 +407,10 @@ class Extractor:
                 except Exception:
                     continue
                 out.append(Target(e.uid, info.name, info.version))
-                if len(out) >= cap:
+                if len(out) > cap:
                     break
-        return out
+        self.truncated = len(out) > cap
+        return out[:cap]
 
     @staticmethod
     def _matches(req: ExtractRequest, name: str) -> bool:
@@ -519,15 +523,23 @@ class Extractor:
     def run(self, identity, req: ExtractRequest, emit: Callable[[str, dict], None],
             cancelled: Callable[[], bool] = lambda: False,
             on_item: Optional[Callable[[dict], None]] = None) -> dict:
+        self.truncated = False
         targets = self.resolve(identity, req)
-        emit("plan", {"files": [{"file_uid": t.file_uid, "name": t.name, "version": t.version}
-                                for t in targets if not t.skipped],
-                      "skipped": [{"file_uid": t.file_uid, "reason": t.skipped}
-                                  for t in targets if t.skipped]})
+        plan = {"files": [{"file_uid": t.file_uid, "name": t.name, "version": t.version}
+                          for t in targets if not t.skipped],
+                "skipped": [{"file_uid": t.file_uid, "reason": t.skipped}
+                            for t in targets if t.skipped],
+                "truncated": self.truncated}
+        if self.truncated:
+            # The folder holds more matching documents than one run reads; the
+            # caller narrows the request (match, a subfolder) or names ids.
+            plan["limit"] = int(getattr(self.config, "headless_files_per_run", 200))
+        emit("plan", plan)
         summary = {"files": len(targets), "extracted": 0, "cached": 0, "skipped": 0,
                    "failed": 0, "found": 0, "not_found": 0, "dropped_no_evidence": 0,
-                   "tokens": 0, "cancelled": False}
+                   "tokens": 0, "cancelled": False, "truncated": self.truncated}
         budget_out = False
+        state = self._usage_state(identity)
         for t in targets:
             if cancelled():
                 summary["cancelled"] = True
@@ -553,7 +565,26 @@ class Extractor:
             if on_item is not None:
                 on_item(item)
             emit("error" if "error" in item else "item", item)
+            if int(item.get("tokens") or 0) > 0 and state is not None:
+                # Tell the caller when this run moves the key into warning or
+                # exceeded, not only at the end (§3.8).
+                st = self._usage_status(identity)
+                if st is not None and st.get("state") != state:
+                    state = st.get("state")
+                    emit("usage", st)
         return summary
+
+    def _usage_status(self, identity) -> Optional[dict]:
+        if self.meter is None:
+            return None
+        try:
+            return self.meter.status(identity)
+        except Exception:
+            return None
+
+    def _usage_state(self, identity) -> Optional[str]:
+        st = self._usage_status(identity)
+        return st.get("state") if st else None
 
     @staticmethod
     def _tally(summary: dict, item: dict) -> None:

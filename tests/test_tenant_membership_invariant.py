@@ -272,8 +272,8 @@ def test_bridge_verifier_refuses_a_foreign_tenant(monkeypatch):
         sig = _b64(hmac.new(secret.encode(), h + b"." + p, hashlib.sha256).digest())
         return (h + b"." + p + b"." + sig).decode()
 
-    monkeypatch.setattr(token_revocation, "permits", lambda jti: True)
-    monkeypatch.setattr(bridge_auth.token_revocation, "permits", lambda jti: True)
+    monkeypatch.setattr(token_revocation, "verdict", lambda jti: token_revocation.PERMIT)
+    monkeypatch.setattr(bridge_auth.token_revocation, "verdict", lambda jti: token_revocation.PERMIT)
 
     tok = _mint({"sub": "alice", "tenant": "alpha", "jti": "j1",
                  "roles": {"alpha": ["users"]}, "exp": int(time.time()) + 3600})

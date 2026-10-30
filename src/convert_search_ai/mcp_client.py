@@ -36,7 +36,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 from . import audit
@@ -67,6 +67,7 @@ class ConsentRequest:
     tool: str           # server-native tool name
     tool_full: str      # namespaced (mcp__slug__tool) — the consent/remember key
     args_summary: str   # short, human-readable preview of the arguments
+    args: dict = field(default_factory=dict)   # what the tool would be sent, in full
 
 
 # --------------------------------------------------------------------------- #
@@ -265,7 +266,8 @@ class McpTool(Tool):
                          integration=integ.slug, tool=self._tool_name, reason="no_channel")
             return ToolOutput(text="(this action requires your approval, which was not available)")
         req = ConsentRequest(integration=integ.name, slug=integ.slug, tool=self._tool_name,
-                             tool_full=self.name, args_summary=_args_summary(args))
+                             tool_full=self.name, args_summary=_args_summary(args),
+                             args=dict(args or {}))
         try:
             approved = bool(consent(req))
         except Exception:

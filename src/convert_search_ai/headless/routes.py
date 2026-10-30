@@ -33,7 +33,7 @@ from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .. import audit
@@ -42,7 +42,7 @@ from ..ldap_auth import Identity
 from ..providers.base import collect_usage
 from . import usage as usage_mod
 from .extract import ExtractRequestError, Extractor, parse_request
-from .sse import SSE_HEADERS, EventRun, wants_json
+from .sse import SSE_HEADERS, EventRun, EventStreamResponse, wants_json
 
 log = logging.getLogger("convert_search_ai.headless")
 
@@ -164,8 +164,7 @@ def _respond(request: Request, run: EventRun, status: dict, shape):
             return JSONResponse(content=shape(events, result), headers=headers)
         return whole()
     run.start()
-    return StreamingResponse(run.sse(), media_type="text/event-stream",
-                             headers={**SSE_HEADERS, **headers})
+    return EventStreamResponse(run, headers={**SSE_HEADERS, **headers})
 
 
 def _final_usage(meter, identity, fallback: dict) -> dict:
@@ -354,14 +353,15 @@ async def research(request: Request, body: ResearchBody,
                 spent[0] += i + o
 
             broker = None
+            consent_timeout = max(1.0, getattr(config, "mcp_consent_timeout_ms", 120000) / 1000.0)
             if ask:
                 def emit_consent(ev):
-                    s.relay.register(ev["id"], broker, identity, run_id or "")
+                    s.relay.register(ev["id"], broker, identity, run_id or "",
+                                     ttl_s=consent_timeout)
                     emit("tool_consent_request", {k: v for k, v in ev.items() if k != "type"}
                          | {"run_id": run_id})
-                broker = ConsentBroker(
-                    emit_consent, new_id=lambda: secrets.token_urlsafe(18),
-                    timeout_s=max(1.0, getattr(config, "mcp_consent_timeout_ms", 120000) / 1000.0))
+                broker = ConsentBroker(emit_consent, new_id=lambda: secrets.token_urlsafe(18),
+                                       timeout_s=consent_timeout)
             parts, citations, report = [], [], None
             with s.relay.listen(identity, run_id or ""), collect_usage(sink):
                 gen = chat.answer(identity, message=body.message,

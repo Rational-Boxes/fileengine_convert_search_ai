@@ -30,6 +30,7 @@ re-prompted within the conversation.
 from __future__ import annotations
 
 import threading
+import time
 from typing import Callable, Optional, Set
 
 
@@ -71,7 +72,10 @@ class ConsentBroker:
             "tool": getattr(req, "tool", ""),
             "tool_full": tool_full,
             "args_summary": getattr(req, "args_summary", ""),
+            "args": getattr(req, "args", None) or {},
             "expires_in": int(self._timeout),
+            "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                        time.gmtime(time.time() + self._timeout)),
         })
         got = slot["event"].wait(self._timeout)
         with self._lock:

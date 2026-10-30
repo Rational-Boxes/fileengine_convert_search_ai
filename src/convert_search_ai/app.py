@@ -88,6 +88,18 @@ def build_app(config: Config | None = None, *, search: SearchService | None = No
     _log_ai_config(config)
     app = FastAPI(title="convert_search_ai", version=__version__)
 
+    # A signed session whose sign-out status cannot be checked (Redis down) is
+    # refused, but as "unavailable, retry", not 401: a client that reads 401 as
+    # "your session is invalid" would throw away a perfectly good credential.
+    from fastapi.responses import JSONResponse
+    from .bridge_auth import AuthUnavailable
+
+    @app.exception_handler(AuthUnavailable)
+    async def _auth_unavailable(request, exc):
+        return JSONResponse(status_code=503, headers={"Retry-After": "5"}, content={
+            "kind": "auth_unavailable",
+            "detail": "the session cannot be checked right now; retry shortly"})
+
     # Capture the caller's IP into a request-scoped contextvar so per-user core
     # calls forward it (core audit source_addr). Trusted-proxy aware (§3): honors
     # FILEENGINE_TRUSTED_PROXIES exactly like the C++ bridges.

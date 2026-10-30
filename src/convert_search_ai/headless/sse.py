@@ -35,6 +35,7 @@ import threading
 from typing import Callable, List, Optional, Tuple
 
 import anyio
+from starlette.responses import StreamingResponse
 
 _END = object()
 
@@ -108,6 +109,25 @@ class EventRun:
         events: List[Tuple[str, dict]] = []
         self.result = self._producer(lambda e, d: events.append((e, d)), self.cancelled) or {}
         return events, self.result
+
+
+class EventStreamResponse(StreamingResponse):
+    """The SSE response for an :class:`EventRun`. The run is cancelled as soon as
+    the response ends for any reason — the client hung up (the send failed, or
+    the request was cancelled) or the stream finished — rather than whenever the
+    abandoned body generator happens to be finalised, which can be long after the
+    client left (measured: a hang-up after 2 s was noticed only when the model
+    finished 20 s later)."""
+
+    def __init__(self, run: EventRun, *, headers=None):
+        super().__init__(run.sse(), media_type="text/event-stream", headers=headers)
+        self._run = run
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._run.cancel()
 
 
 def wants_json(accept: str) -> bool:
