@@ -178,8 +178,12 @@ class ChatService:
                report_target: Optional[dict] = None,
                scope_folder_uids: Optional[List[str]] = None,
                app_url: str = "",
-               consent=None) -> Iterator[dict]:
-        msg = guards.check_query(message, self.config.max_query_chars)
+               consent=None,
+               allow_mcp: bool = True,
+               max_chars: Optional[int] = None) -> Iterator[dict]:
+        # max_chars: the headless routes carry instructions in the message, so they
+        # pass their own (larger) cap; the interactive chat keeps max_query_chars.
+        msg = guards.check_query(message, max_chars or self.config.max_query_chars)
         k = guards.cap_k(k, self.config.max_chat_k)
         # scope_folder_uids (optional) confines RAG to the chosen folders + subfolders;
         # None/empty searches all documents the user can read (the default).
@@ -189,7 +193,8 @@ class ChatService:
         # Report mode is a focused "write the report now" task — offer NO tools so
         # the model can't wander off "gathering information" and answer briefly
         # instead of writing (the destination is already fixed by the user).
-        tools = [] if report_target is not None else self._select_tools(identity, web_search)
+        tools = [] if report_target is not None else self._select_tools(
+            identity, web_search, allow_mcp=allow_mcp)
         messages = list(history or []) + [{"role": "user", "content": msg}]
         system = self._build_system(system_prompt, chunks, tools=tools, report_target=report_target)
         doc_citations = self._doc_citations(chunks)
@@ -277,6 +282,9 @@ class ChatService:
         return {
             "user": getattr(identity, "user", ""),
             "tenant": getattr(identity, "tenant", ""),
+            "origin": "headless" if getattr(identity, "client_key_id", "") else "interactive",
+            "client_key_id": getattr(identity, "client_key_id", ""),
+            "client_label": getattr(identity, "client_label", ""),
             "model": getattr(self.config, "chat_model", ""),
             "provider": getattr(self.config, "chat_provider", ""),
             "system_prompt": system_prompt or "",
@@ -338,7 +346,7 @@ class ChatService:
             # Only the first marked block is the report; ignore any extras in report mode.
             break
 
-    def _select_tools(self, identity, web_search: Optional[bool]):
+    def _select_tools(self, identity, web_search: Optional[bool], *, allow_mcp: bool = True):
         """Decide which tools to offer this turn. Requires provider tool support.
         Web tools need the global enable + per-message opt-in (or the configured
         default); the folder-exploration tool is offered whenever the document
@@ -351,7 +359,9 @@ class ChatService:
             include_web = (self.config.web_search_default if web_search is None
                            else bool(web_search))
         mcp_tools = []
-        if self._mcp is not None and getattr(self.config, "mcp_enabled", False):
+        # allow_mcp=False: a headless caller that cannot answer an approval prompt
+        # (tools.mcp "deny", the default) is never offered an external tool.
+        if allow_mcp and self._mcp is not None and getattr(self.config, "mcp_enabled", False):
             try:
                 mcp_tools = self._mcp.tools_for(identity)
             except Exception:  # fail open — MCP problems never break the chat

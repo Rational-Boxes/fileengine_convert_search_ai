@@ -30,12 +30,14 @@ re-prompted within the conversation.
 from __future__ import annotations
 
 import threading
+import time
 from typing import Callable, Optional, Set
 
 
 class ConsentBroker:
     def __init__(self, emit: Callable[[dict], None], *, timeout_s: float,
-                 remembered: Optional[Set[str]] = None):
+                 remembered: Optional[Set[str]] = None,
+                 new_id: Optional[Callable[[], str]] = None):
         # emit: a thread-safe callable that pushes an event to the client (ordered
         # with the answer's token stream). timeout_s: wait bound before default-deny.
         self._emit = emit
@@ -45,6 +47,10 @@ class ConsentBroker:
         self._pending: dict = {}   # id -> {"event", "decision", "remember"}
         self._n = 0
         self._closed = False
+        # Over the socket, sequential ids are fine: only that socket can answer.
+        # The headless path is answered by a separate HTTP call, so it passes a
+        # random, single-use id factory (HEADLESS_RESEARCH_API.md §3.9).
+        self._new_id = new_id
 
     # -- called from the TOOL (worker) thread -------------------------------
     def request(self, req) -> bool:
@@ -57,7 +63,7 @@ class ConsentBroker:
             if self._closed:
                 return False
             self._n += 1
-            rid = f"consent-{self._n}"
+            rid = self._new_id() if self._new_id else f"consent-{self._n}"
             slot = {"event": threading.Event(), "decision": False, "remember": False}
             self._pending[rid] = slot
         self._emit({
@@ -66,6 +72,10 @@ class ConsentBroker:
             "tool": getattr(req, "tool", ""),
             "tool_full": tool_full,
             "args_summary": getattr(req, "args_summary", ""),
+            "args": getattr(req, "args", None) or {},
+            "expires_in": int(self._timeout),
+            "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                        time.gmtime(time.time() + self._timeout)),
         })
         got = slot["event"].wait(self._timeout)
         with self._lock:

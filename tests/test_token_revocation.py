@@ -166,3 +166,16 @@ def test_from_env_reads_the_enable_flag(monkeypatch, raw, expected):
     # silently disable revocation.
     monkeypatch.setenv("AUTH_REVOCATION_ENABLED", raw)
     assert RevocationChecker.from_env(lookup=FakeDenylist()).enabled is expected
+
+
+def test_verdict_tells_unavailable_apart_from_revoked():
+    # So a door can answer 503 (retry) for an unreachable denylist and keep 401
+    # for a token that really was signed out.
+    fake = FakeDenylist()
+    fake.revoked.add("jti-1")
+    c = make(fake)
+    assert c.verdict("jti-1") == "revoked"
+    assert c.verdict("jti-2") == "permit"
+    fake.reachable = False
+    assert c.verdict("jti-2") == "unavailable"
+    assert make(fake, fail_open=True).verdict("jti-2") == "permit"

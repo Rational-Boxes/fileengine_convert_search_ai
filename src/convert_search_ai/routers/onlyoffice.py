@@ -40,7 +40,7 @@ from fastapi.responses import JSONResponse, Response
 from .. import audit, onlyoffice as oo
 from ..config import Config
 from ..crypto import sign_scoped_token, verify_scoped_token
-from ..http_auth import extract_tenant, resolve_identity
+from ..http_auth import extract_tenant, resolve_identity_or_none
 from ..ldap_auth import Identity
 
 log = logging.getLogger("convert_search_ai.onlyoffice")
@@ -66,7 +66,7 @@ def _identity(request: Request) -> Identity:
     config = _cfg(request)
     headers = {k.lower(): v for k, v in request.headers.items()}
     tenant = extract_tenant(headers, headers.get("host", ""), config.tenant)
-    ident = resolve_identity(headers.get("authorization", ""), tenant, config,
+    ident = resolve_identity_or_none(headers.get("authorization", ""), tenant, config,
                              request.app.state.token_store,
                              getattr(request.app.state, "bridge_verifier", None))
     if ident is None:

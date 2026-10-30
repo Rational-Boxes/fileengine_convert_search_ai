@@ -79,6 +79,14 @@ def extract_tenant(headers: dict, host: str, default: str) -> str:
     return default
 
 
+class GeneratedKeyPresented(Exception):
+    """A generated ``fesk_…`` key was sent here as Basic credentials. Keys sign in
+    at the REST door only (POST /api/v1/auth/token) and csai accepts the session
+    bearer that returns — the same credential, the same session, one place that
+    checks the key. Raised so the caller can say so instead of answering as if a
+    password were wrong."""
+
+
 def resolve_identity(auth_header: str, tenant: str, config, store: TokenStore,
                      bridge=None) -> Optional[Identity]:
     """Resolve an Authorization header to an authenticated Identity scoped to
@@ -107,6 +115,8 @@ def resolve_identity(auth_header: str, tenant: str, config, store: TokenStore,
     basic = decode_basic(auth_header)
     if basic is None:
         return None
+    if basic[0].startswith("fesk_"):
+        raise GeneratedKeyPresented()
     # Resolve roles FOR the requested tenant rather than stamping the tenant on
     # afterwards: `replace(identity, tenant=tenant)` kept whatever roles the bind
     # found across the whole directory, so an administrator of one tenant became
@@ -115,3 +125,13 @@ def resolve_identity(auth_header: str, tenant: str, config, store: TokenStore,
     if not identity.authenticated:
         return None
     return identity
+
+
+def resolve_identity_or_none(*args, **kwargs) -> Optional[Identity]:
+    """:func:`resolve_identity`, with a generated key presented here treated as no
+    credential — for the surfaces that answer a plain 401 (the routers, the chat
+    socket). The main API says where keys sign in instead."""
+    try:
+        return resolve_identity(*args, **kwargs)
+    except GeneratedKeyPresented:
+        return None

@@ -66,6 +66,7 @@ ranked AS (
   FROM documents d, q
   WHERE d.status IN ('converted', 'indexed')
     AND (d.fts @@ q.tsq OR (%(fuzzy)s AND d.name %% %(q)s))
+    AND (%(all_files)s OR d.file_uid = ANY(%(file_uids)s))
   ORDER BY score DESC
   LIMIT %(fetch)s
 )
@@ -97,9 +98,14 @@ class DocumentSearchRepo:
         from .db import connect_for_tenant
         return connect_for_tenant(self.config, tenant, readonly=True)
 
-    def query(self, tenant: str, q: str, *, fetch: int, fuzzy: bool) -> List[dict]:
+    def query(self, tenant: str, q: str, *, fetch: int, fuzzy: bool,
+              file_uids: Optional[List[str]] = None) -> List[dict]:
+        """``file_uids`` (optional) confines the search to those documents — a
+        folder scope already expanded, as the caller, to what they can see."""
         with self._conn(tenant) as conn, conn.cursor() as cur:
-            cur.execute(_SEARCH_SQL, {"q": q, "hl": _HEADLINE_OPTS, "fuzzy": fuzzy, "fetch": fetch})
+            cur.execute(_SEARCH_SQL, {"q": q, "hl": _HEADLINE_OPTS, "fuzzy": fuzzy, "fetch": fetch,
+                                      "all_files": file_uids is None,
+                                      "file_uids": list(file_uids or [])})
             cols = [c[0] for c in cur.description]
             return [dict(zip(cols, row)) for row in cur.fetchall()]
 
@@ -124,26 +130,46 @@ class SearchService:
         from .core_client import client_for
         return client_for(identity, self.config)
 
-    def search(self, identity, query: str, *, limit: int = 20, fuzzy: bool = True) -> List[Hit]:
+    def search(self, identity, query: str, *, limit: int = 20, fuzzy: bool = True,
+               offset: int = 0, folder_uids: Optional[List[str]] = None) -> List[Hit]:
         """Run a permission-gated search. Raises ``guards.GuardError`` for an empty
-        or over-long query."""
+        or over-long query.
+
+        ``folder_uids`` (optional) confines it to those folders and their
+        subfolders, walked as the caller; ``offset`` pages through the readable
+        hits (the result cap bounds offset + limit)."""
         q = guards.check_query(query, self.config.max_query_chars)
         limit = guards.cap_limit(limit, self.config.max_results)
-        # Over-fetch so the permission filter can't shrink the page below `limit`.
-        rows = self.repo.query(identity.tenant, q, fetch=max(limit * 5, limit), fuzzy=fuzzy)
+        offset = max(0, min(int(offset or 0), max(0, self.config.max_results - limit)))
         mf = self._client(identity)
         try:
-            hits: List[Hit] = []
+            file_uids = None
+            if folder_uids:
+                from .retrieval import resolve_scope_file_uids
+                file_uids = sorted(resolve_scope_file_uids(mf, identity.tenant, folder_uids))
+                if not file_uids:
+                    audit.record(action="search", user=identity.user, tenant=identity.tenant,
+                                 result="ok", candidates=0, hits=0, scoped=True,
+                                 client_key_id=getattr(identity, "client_key_id", ""))
+                    return []
+            want = offset + limit
+            # Over-fetch so the permission filter can't shrink the page below `limit`.
+            rows = self.repo.query(identity.tenant, q, fetch=max(want * 5, want), fuzzy=fuzzy,
+                                   **({"file_uids": file_uids} if file_uids is not None else {}))
+            readable: List[Hit] = []
             for r in rows:
                 if self.gate.can_read(mf, identity, r["file_uid"]):
-                    hits.append(Hit(r["file_uid"], r.get("name") or "",
-                                    r.get("snippet") or "", float(r.get("score") or 0.0)))
-                    if len(hits) >= limit:
+                    readable.append(Hit(r["file_uid"], r.get("name") or "",
+                                        r.get("snippet") or "", float(r.get("score") or 0.0)))
+                    if len(readable) >= want:
                         break
+            hits = readable[offset:offset + limit]
         finally:
             _safe_close(mf)
+        extra = {"client_key_id": identity.client_key_id} if getattr(identity, "client_key_id", "") else {}
         audit.record(action="search", user=identity.user, tenant=identity.tenant,
-                     result="ok", candidates=len(rows), hits=len(hits))
+                     result="ok", candidates=len(rows), hits=len(hits),
+                     scoped=bool(folder_uids), offset=offset, **extra)
         return hits
 
     def get_text(self, identity, file_uid: str):

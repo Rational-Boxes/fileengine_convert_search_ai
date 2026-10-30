@@ -280,6 +280,28 @@ class Config:
         # streamed inline (wrapped in SAVE_REPORT markers), so a small cap truncates
         # the report before its closing marker. 1024 was far too low for reports.
         self.chat_max_tokens = int(_env("CSAI_CHAT_MAX_TOKENS", "8192"))
+        # OpenAI-compatible servers only. stream_usage asks each stream for a final
+        # usage chunk (the headless token budget counts it); json_mode sends
+        # response_format json_object for extraction. Turn either off for a server
+        # that rejects the option.
+        self.chat_stream_usage = _bool("CSAI_CHAT_STREAM_USAGE", True)
+        self.chat_json_mode = _bool("CSAI_CHAT_JSON_MODE", True)
+
+        # --- Headless API (design_documents/HEADLESS_RESEARCH_API.md) ---
+        # Per-API-key limits (§3.8); a session without a key gets the same limits
+        # per user. `warn_ratio` is where a limit's state turns to "warning".
+        self.headless_requests_per_minute = int(_env("CSAI_HEADLESS_REQUESTS_PER_MINUTE", "60"))
+        self.headless_tokens_per_day = int(_env("CSAI_HEADLESS_TOKENS_PER_DAY", "2000000"))
+        self.headless_concurrent_runs = int(_env("CSAI_HEADLESS_CONCURRENT_RUNS", "2"))
+        self.headless_files_per_run = int(_env("CSAI_HEADLESS_FILES_PER_RUN", "200"))
+        self.headless_warn_ratio = float(_env("CSAI_HEADLESS_WARN_RATIO", "0.8"))
+        # A headless request carries instructions and a schema, so its input cap is
+        # separate from (and larger than) the interactive query cap.
+        self.headless_max_input_chars = int(_env("CSAI_HEADLESS_MAX_INPUT_CHARS", "20000"))
+        # How much of one document goes to the model per call during extraction;
+        # a longer document is read in consecutive windows.
+        self.headless_extract_window_chars = int(_env("CSAI_HEADLESS_EXTRACT_WINDOW_CHARS", "60000"))
+        self.headless_max_schema_fields = int(_env("CSAI_HEADLESS_MAX_SCHEMA_FIELDS", "60"))
 
         # --- Web search tool (WEB_SEARCH_TOOL_PLAN; OFF by default) ---
         # The chat web_search tool. `enabled` is the master switch (off by default —

@@ -33,7 +33,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from .. import audit
 from ..config import Config
-from ..http_auth import extract_tenant, resolve_identity
+from ..http_auth import extract_tenant, resolve_identity_or_none
 from ..ldap_auth import Identity
 
 log = logging.getLogger("convert_search_ai.mcp_admin")
@@ -50,7 +50,7 @@ def _resolve(request: Request) -> Identity:
     config: Config = request.app.state.config
     headers = {k.lower(): v for k, v in request.headers.items()}
     tenant = extract_tenant(headers, headers.get("host", ""), config.tenant)
-    ident = resolve_identity(headers.get("authorization", ""), tenant, config,
+    ident = resolve_identity_or_none(headers.get("authorization", ""), tenant, config,
                              request.app.state.token_store,
                              getattr(request.app.state, "bridge_verifier", None))
     if ident is None:

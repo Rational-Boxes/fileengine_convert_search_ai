@@ -67,6 +67,9 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+PERMIT, REVOKED, UNAVAILABLE = "permit", "revoked", "unavailable"
+
+
 class RevocationChecker:
     """Is a bridge token bearing this ``jti`` still honoured?
 
@@ -122,12 +125,20 @@ class RevocationChecker:
         A token with no ``jti`` cannot be revoked and is permitted — refusing
         those would break every credential the bridge issues without one.
         """
+        return self.verdict(jti) == PERMIT
+
+    def verdict(self, jti: str) -> str:
+        """:meth:`permits`, with the reason for a refusal: ``PERMIT``,
+        ``REVOKED``, or ``UNAVAILABLE`` (the denylist could not be asked and the
+        policy is fail-closed). A caller can then answer "try again later" for
+        the last instead of "your credential is bad"."""
         if not self.enabled or not jti:
-            return True
+            return PERMIT
         revoked = self._check(jti)
         if revoked is None:
-            return self.fail_open  # unknown: refuse unless told otherwise
-        return not revoked
+            # unknown: refuse unless told otherwise
+            return PERMIT if self.fail_open else UNAVAILABLE
+        return REVOKED if revoked else PERMIT
 
     def _check(self, jti: str) -> Optional[bool]:
         now = time.time()
@@ -218,6 +229,11 @@ def default_checker() -> RevocationChecker:
 def permits(jti: str) -> bool:
     """Convenience wrapper over the process-wide checker."""
     return default_checker().permits(jti)
+
+
+def verdict(jti: str) -> str:
+    """Convenience wrapper over the process-wide checker."""
+    return default_checker().verdict(jti)
 
 
 def reset_default() -> None:
