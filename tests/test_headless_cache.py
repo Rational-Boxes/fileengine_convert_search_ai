@@ -70,4 +70,4 @@ def test_a_broken_store_misses_rather_than_fails():
             raise RuntimeError("core down")
     c = ExtractionCache(lambda: Broken())
     assert c.get("doc", "v1", "t", "k") is None
-    assert c.put("doc", "v1", "t", "k", {}) is False
+    assert c.put("doc", "v1", "t", "k", {}) == ""          # falsy: nothing written

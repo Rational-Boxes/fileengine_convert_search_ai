@@ -312,6 +312,14 @@ class Config:
         # Marked-up extraction PDFs (§5): PyMuPDF holds the whole PDF in memory,
         # so a larger one is reported as too_large instead of read.
         self.extract_markup_max_mb = int(_env("CSAI_EXTRACT_MARKUP_MAX_MB", "100"))
+        # Extraction jobs for folder automation (§6.1): worker threads in the
+        # app (0 = this instance runs none), who may enqueue, and how a job over
+        # the tenant's automation budget waits.
+        self.extract_job_workers = int(_env("CSAI_EXTRACT_JOB_WORKERS", "1"))
+        self.extract_job_roles = [r.strip() for r in _env(
+            "CSAI_EXTRACT_JOB_ROLES", "file_services").split(",") if r.strip()]
+        self.extract_job_budget_retry_s = int(_env("CSAI_EXTRACT_JOB_BUDGET_RETRY_S", "900"))
+        self.extract_job_budget_wait_s = int(_env("CSAI_EXTRACT_JOB_BUDGET_WAIT_S", "172800"))
         # Applications publish their own definitions with no person approving
         # (§4.5), so their volume is bounded.
         self.prompt_set_app_max_sets = int(_env("CSAI_PROMPT_SET_APP_MAX_SETS", "50"))

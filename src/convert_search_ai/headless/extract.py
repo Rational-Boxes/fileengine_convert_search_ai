@@ -89,6 +89,10 @@ class ExtractRequest:
     markup: bool = False
     markup_fields: List[dict] = field(default_factory=list)
     markup_colours: dict = field(default_factory=dict)
+    #: Who asked, for the extraction events (§6.0): headless | automation.
+    source: str = "headless"
+    job_id: str = ""
+    run_id: str = ""
 
     @property
     def fields(self) -> List[str]:
@@ -354,7 +358,7 @@ class Extractor:
     test's PDF is held instead of stored."""
 
     def __init__(self, config, *, client_for, gate, store, chat, cache=None, markup=None,
-                 test_markups=None,
+                 test_markups=None, events=None,
                  convert: Optional[Callable[[str, str], object]] = None, meter=None):
         self.config = config
         self.client_for = client_for
@@ -364,6 +368,7 @@ class Extractor:
         self.cache = cache
         self.markup = markup
         self.test_markups = test_markups
+        self.events = events
         self.convert = convert
         self.meter = meter
         self.truncated = False
@@ -496,19 +501,66 @@ class Extractor:
                 "cached": False, "model": model, "tokens": spent[0]}
         if not valid:
             item["problems"] = problems_left[:10]
-        elif self.cache is not None and req.write_cache:
+        sidecar = ""
+        if valid and self.cache is not None and req.write_cache:
             import datetime as _dt
-            self.cache.put(t.file_uid, t.version, identity.tenant, key, {
+            ps_ref = ({"id": req.prompt_set.get("id"), "revision": req.prompt_set.get("revision")}
+                      if req.prompt_set else None)
+            sidecar = self.cache.put(t.file_uid, t.version, identity.tenant, key, {
                 "schema_hash": fingerprint(req.schema),
                 "instructions_hash": fingerprint(req.instructions),
                 "model": model, "provider": getattr(self.config, "chat_provider", ""),
                 "prompt_version": PROMPT_VERSION,
                 "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
                 "created_by": identity.user, "client_key_id": identity.client_key_id,
-                "tokens": spent[0], "data": data})
+                "tokens": spent[0], "data": data,
+                # What the values mean, for a consumer of the sidecar (§6.0):
+                # the prompt set it came from, or the raw schema itself.
+                "prompt_set": ps_ref, "schema": None if ps_ref else req.schema,
+                "model_choice": req.model_choice, "source": req.source})
         if valid:
             self._mark_up(identity, req, t, text, item, key)
+        if sidecar and isinstance(sidecar, str):
+            self._announce(identity, req, t, item, key, sidecar)
         return item
+
+    def _announce(self, identity, req, t, item, key, sidecar_uid) -> None:
+        """``extraction.complete`` for a newly written entry (§6.0)."""
+        if self.events is None:
+            return
+        from ..renditions import rendition_name
+        from . import events as ev
+        c = item.get("counts") or {}
+        self.events.emit(ev.make_event(
+            ev.COMPLETE, tenant=identity.tenant, file_uid=t.file_uid, version=t.version,
+            actor=identity.client_key_id or identity.user, source=req.source,
+            prompt_set=req.prompt_set, model=req.model_choice,
+            counts={"fields": len(req.fields), "found": c.get("found", 0),
+                    "not_found": c.get("not_found", 0),
+                    "dropped": c.get("dropped_no_evidence", 0)},
+            payload={"name": rendition_name(t.version, "extract", "json"),
+                     "uid": sidecar_uid, "entry": key},
+            markup=item.get("markup"), job_id=req.job_id, run_id=req.run_id))
+
+    def _announce_failure(self, identity, req, item) -> None:
+        """``extraction.failed`` for a file attempted that produced no entry."""
+        if self.events is None or not req.write_cache:
+            return
+        skipped = item.get("skipped") or ""
+        if "error" in item or item.get("valid") is False:
+            reason = "model_error"
+        elif skipped == "budget":
+            reason = "budget"
+        elif skipped in ("no text", "text not yet indexed for this version"):
+            reason = "no_text"
+        else:
+            return          # not found, not readable, not a document: not an attempt
+        from . import events as ev
+        self.events.emit(ev.make_event(
+            ev.FAILED, tenant=identity.tenant, file_uid=item.get("file_uid", ""),
+            version=item.get("version", ""), actor=identity.client_key_id or identity.user,
+            source=req.source, prompt_set=req.prompt_set, model=req.model_choice,
+            reason=reason, job_id=req.job_id, run_id=req.run_id))
 
     def _mark_up(self, identity, req: ExtractRequest, t, text: str, item: dict, key: str,
                  reuse: bool = False) -> None:
@@ -649,6 +701,8 @@ class Extractor:
                     item = {"file_uid": t.file_uid, "name": t.name, "version": t.version,
                             "error": str(e)[:300]}
             self._tally(summary, item)
+            if "error" in item or item.get("skipped") or item.get("valid") is False:
+                self._announce_failure(identity, req, item)
             audit.record(action="extract_item", user=identity.user, tenant=identity.tenant,
                          result=_result(item), file_uid=t.file_uid, version=t.version,
                          client_key_id=identity.client_key_id,

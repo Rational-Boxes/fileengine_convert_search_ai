@@ -82,7 +82,8 @@ def _log_ai_config(config: Config) -> None:
 def build_app(config: Config | None = None, *, search: SearchService | None = None,
               chat: ChatService | None = None, token_store: TokenStore | None = None,
               conversations: ConversationStore | None = None,
-              enable_event_invalidation: bool = False) -> FastAPI:
+              enable_event_invalidation: bool = False,
+              enable_extract_jobs: bool = False) -> FastAPI:
     config = config or Config()
     audit.configure(config.audit_log_file)
     _log_ai_config(config)
@@ -190,6 +191,11 @@ def build_app(config: Config | None = None, *, search: SearchService | None = No
     from .headless.promptset_routes import router as promptset_router
     app.state.extract_models = ModelRegistry.from_config(config)
     app.include_router(promptset_router)
+    if enable_extract_jobs and int(getattr(config, "extract_job_workers", 0)) > 0:
+        # Folder automation's extraction jobs (EXTRACTION_PROMPT_SETS.md §6.1).
+        from .headless.jobs import JobQueue, JobWorker
+        app.state.extract_job_worker = JobWorker(app, JobQueue(config))
+        app.state.extract_job_worker.start(int(config.extract_job_workers))
 
     # What this deployment offers, so the SPA can hide controls for features it
     # does not have rather than surfacing whichever endpoint is missing.
@@ -212,7 +218,7 @@ def create_app() -> FastAPI:
     ``main``, otherwise CSAI_* settings (e.g. CSAI_CHAT_PROVIDER) won't be read and
     the chat provider falls back to its ``anthropic`` default."""
     load_dotenv()
-    return build_app(Config(), enable_event_invalidation=True)
+    return build_app(Config(), enable_event_invalidation=True, enable_extract_jobs=True)
 
 
 def main() -> None:

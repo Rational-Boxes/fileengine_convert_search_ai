@@ -93,9 +93,26 @@ class ExtractionCache:
         finally:
             self._close(mf)
 
-    def put(self, file_uid: str, version: str, tenant: str, key: str, entry: dict) -> bool:
-        """Add or replace one entry. Best-effort: a failed write costs a repeat
-        extraction later, never a wrong answer, so it is logged, not raised."""
+    def entries(self, file_uid: str, version: str, tenant: str) -> dict:
+        """Every entry in a version's sidecar ({} when there is none)."""
+        mf = self._open()
+        try:
+            uid = self._find(mf, file_uid, version, tenant)
+            if uid is None:
+                return {}
+            e = self._read(mf, uid, tenant).get("entries") or {}
+            return e if isinstance(e, dict) else {}
+        except Exception:
+            log.warning("extract cache read failed for %s@%s", file_uid, version, exc_info=True)
+            return {}
+        finally:
+            self._close(mf)
+
+    def put(self, file_uid: str, version: str, tenant: str, key: str, entry: dict) -> str:
+        """Add or replace one entry; returns the sidecar's uid ("" on failure,
+        so the result is still truthy-tested as before). Best-effort: a failed
+        write costs a repeat extraction later, never a wrong answer, so it is
+        logged, not raised."""
         mf = self._open()
         try:
             uid = self._find(mf, file_uid, version, tenant)
@@ -107,9 +124,9 @@ class ExtractionCache:
             if uid is None:
                 uid = mf.touch(file_uid, sidecar_name(version), tenant=tenant)
             mf.put_stream(uid, [body], tenant=tenant)
-            return True
+            return uid
         except Exception:
             log.warning("extract cache write failed for %s@%s", file_uid, version, exc_info=True)
-            return False
+            return ""
         finally:
             self._close(mf)
