@@ -211,6 +211,7 @@ def default_registry(config=None) -> PluginRegistry:
     preview_px = getattr(config, "doc_preview_px", DEFAULT_PREVIEW_PX) if config is not None else DEFAULT_PREVIEW_PX
     code_style = getattr(config, "code_preview_style", "default") if config is not None else "default"
     code_max = getattr(config, "code_preview_max_lines", 0) if config is not None else 0
+    code_pages = getattr(config, "code_preview_max_pages", 300) if config is not None else 300
     return PluginRegistry([
         PdfPlugin(backends=backends, thumbnail_px=thumb_px, preview_px=preview_px),
         OfficePlugin(pdf_backends=backends, thumbnail_px=thumb_px, preview_px=preview_px),
@@ -231,6 +232,7 @@ def default_registry(config=None) -> PluginRegistry:
         # Source/text preview (colour-coded full-document PDF + first-page PNGs).
         # Registered ahead of the plain-text catch-all so text & source files get
         # previews; the text plugin remains as the final fail-soft text extractor.
-        SourcePreviewPlugin(style=code_style, max_lines=code_max, thumbnail_px=thumb_px, preview_px=preview_px),
+        SourcePreviewPlugin(style=code_style, max_lines=code_max, thumbnail_px=thumb_px, preview_px=preview_px,
+                            max_pages=code_pages),
         TextMarkdownPlugin(),
     ])

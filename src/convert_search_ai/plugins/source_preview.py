@@ -105,12 +105,24 @@ def _style_font(tok_style) -> str:
     return "Courier"
 
 
-def render_code_pdf(text: str, lexer, style_name: str, title: str, max_lines: int = 0) -> bytes:
+class _PageCapReached(Exception):
+    """Internal: the preview hit ``max_pages`` and stops rendering."""
+
+
+def render_code_pdf(text: str, lexer, style_name: str, title: str, max_lines: int = 0,
+                    max_pages: int = 0) -> bytes:
     """A syntax-highlighted PDF of the **entire** file, paginated across as many
     pages as the content needs: a muted ``title · Language`` header + rule on each
     page, then the colour-coded source. Long lines wrap to the next row so nothing
     is lost. ``max_lines`` > 0 caps very large files as a safety valve; ``0`` (the
-    default) renders the whole document."""
+    default) renders the whole document.
+
+    ``max_pages`` > 0 caps the OUTPUT, which ``max_lines`` cannot: a file with
+    no line breaks is one source line however large it is. A 12 MiB file of one
+    repeated letter wrapped to ~150,000 rows — thousands of pages, rendered in
+    the ingest worker while every other document waited. Past the cap the
+    preview ends with a line saying so; the text itself is still extracted and
+    indexed separately."""
     from io import BytesIO
 
     from pygments import lex
@@ -137,7 +149,7 @@ def render_code_pdf(text: str, lexer, style_name: str, title: str, max_lines: in
     black = HexColor("#000000")
     # "·" (U+00B7) is within Latin-1, so Courier renders it (unlike an em dash).
     header = _sanitize(f"{title}  ·  {lexer.name}")[:max_cols]
-    state = {"y": 0.0, "row": 0}
+    state = {"y": 0.0, "row": 0, "pages": 1}
 
     def start_page() -> None:
         top = _PAGE_H - _MARGIN
@@ -155,12 +167,30 @@ def render_code_pdf(text: str, lexer, style_name: str, title: str, max_lines: in
         state["row"] += 1
         state["y"] -= _LEADING
         if state["row"] >= code_rows:   # page full → next page
+            if max_pages and state["pages"] >= max_pages:
+                raise _PageCapReached
             c.showPage()
+            state["pages"] += 1
             start_page()
 
     start_page()
     col = 0
-    for ttype, value in lex(text, lexer):
+    try:
+        _draw_tokens(c, lex(text, lexer), style, black, max_cols, newline, state)
+    except _PageCapReached:
+        c.setFont("Courier-Bold", _FONT_SIZE)
+        c.setFillColor(HexColor("#aa0000"))
+        c.drawString(_MARGIN, state["y"], _sanitize(
+            f"[preview truncated after {max_pages} pages]")[:max_cols])
+    c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
+def _draw_tokens(c, tokens, style, black, max_cols, newline, state) -> None:
+    from reportlab.lib.colors import HexColor
+    col = 0
+    for ttype, value in tokens:
         ts = style.style_for_token(ttype)
         hexcol = ts.get("color")
         color = HexColor("#" + hexcol) if hexcol else black
@@ -169,7 +199,11 @@ def render_code_pdf(text: str, lexer, style_name: str, title: str, max_lines: in
         c.setFont(font, _FONT_SIZE)
         segments = value.split("\n")
         for i, seg in enumerate(segments):
-            while seg:                  # wrap long lines instead of clipping them
+            # Walk the segment by OFFSET. Re-slicing the remainder each row copied
+            # the rest of the line every time — quadratic in the line length, and
+            # 37 s of a 43 s render for a 12 MiB single-line file.
+            pos, end = 0, len(seg)
+            while pos < end:            # wrap long lines instead of clipping them
                 space = max_cols - col
                 if space <= 0:
                     newline()
@@ -178,19 +212,16 @@ def render_code_pdf(text: str, lexer, style_name: str, title: str, max_lines: in
                     c.setFillColor(color)
                     c.setFont(font, _FONT_SIZE)
                     space = max_cols
-                chunk = seg[:space]
+                chunk = seg[pos:pos + space]
                 if chunk.strip():
                     c.drawString(_MARGIN + col * _CHAR_W, state["y"], _sanitize(chunk))
                 col += len(chunk)
-                seg = seg[len(chunk):]
+                pos += len(chunk)
             if i < len(segments) - 1:   # a newline terminated this segment
                 newline()
                 col = 0
                 c.setFillColor(color)
                 c.setFont(font, _FONT_SIZE)
-    c.showPage()
-    c.save()
-    return buf.getvalue()
 
 
 class SourcePreviewPlugin(ConversionPlugin):
@@ -204,10 +235,13 @@ class SourcePreviewPlugin(ConversionPlugin):
         max_lines: int = 0,
         thumbnail_px: int = DEFAULT_THUMBNAIL_PX,
         preview_px: int = DEFAULT_PREVIEW_PX,
+        max_pages: int = 300,
     ):
         self.style = style
         # Max source lines rendered into the PDF; 0 = the entire file.
         self.max_lines = max_lines
+        # Max PDF pages rendered; 0 = no limit (see render_code_pdf).
+        self.max_pages = max_pages
         self.thumbnail_px = thumbnail_px
         self.preview_px = preview_px
 
@@ -247,7 +281,8 @@ class SourcePreviewPlugin(ConversionPlugin):
         if not text.strip():
             return []
         lexer = _detect_lexer(text, mime, name)
-        pdf = render_code_pdf(text, lexer, self.style, name or "text", self.max_lines)
+        pdf = render_code_pdf(text, lexer, self.style, name or "text", self.max_lines,
+                              self.max_pages)
         if not pdf:
             return []
         out = [Rendition(fmt="pdf", ext="pdf", data=pdf, mime="application/pdf")]

@@ -471,6 +471,10 @@ class Config:
         # markdown-fallback PDF. 0 = the entire file; set a positive cap only as a
         # safety valve for pathologically large files.
         self.code_preview_max_lines = int(_env("CSAI_CODE_PREVIEW_MAX_LINES", "0"))
+        # Pages, not lines: a file with no line breaks is ONE line however big,
+        # and wrapped a 12 MiB one to thousands of pages in the ingest worker.
+        # 300 pages is ~20,000 rows of source. 0 = no limit.
+        self.code_preview_max_pages = max(0, int(_env("CSAI_CODE_PREVIEW_MAX_PAGES", "300")))
 
         # --- 3D / BIM conversion + indexing (XEOKIT3D_PLUGIN design doc) ---
         # Convert open 3D/AEC formats (IFC, glTF/GLB, CityJSON, LAS/LAZ, STL, PLY)
