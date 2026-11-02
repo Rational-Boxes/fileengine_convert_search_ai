@@ -143,7 +143,7 @@ records the revision it used.
   "revision": 3, "status": "published",          // draft | published | retired
   "applies_to": {"classifier_set_id": "…", "labels": ["door_datasheet"]},  // optional
   "instructions": "If several door types are listed, use the one named in the file name.",
-  "model": "deepseek-v4-flash",                  // id from CSAI_EXTRACT_MODELS (§4.4); null = default
+  "model": "deepseek-v4-flash",                  // PREFERRED id (§4.4); falls back to the default; null = default
   "fields": [
     {"name": "fire_rating", "label": "Fire rating", "type": "enum",
      "enum": ["EI 30", "EI 60", "EI 90", "EI 120"], "required": true,
@@ -192,9 +192,9 @@ A "Prompt sets" admin panel next to Classifier sets:
 - a generated-schema view (read-only) and the exact prompt the model will see
   for a chosen document, so nothing is hidden;
 - a **model** dropdown filled from the configured list (§4.4), showing the
-  deployment default first; a set whose model has been removed from the list
-  is flagged "model no longer available" and cannot be published until one is
-  chosen;
+  deployment default first. A set whose preferred model is not (or no longer)
+  in the list shows "not available here: runs use the default model
+  (<label>)"; it can still be published;
 - a **Test** panel, the same operation as the classifier editor's (owner,
   2026-11-02): **paste text** into a box *or* **choose a stored file**
   (the same `NodeBrowser` picker, kept across runs and set switches, so
@@ -272,10 +272,17 @@ CSAI_EXTRACT_DEFAULT_MODEL=deepseek-v4-flash
   id.
 - The cache key already includes the model, so the same question asked of a
   different model is a different cache entry.
-- A request naming an id not in the list is a 400. A prompt set or
-  automation binding whose model has since been removed fails with
-  `model_unavailable` (not retryable) and a notice to the binding's folder,
-  instead of quietly falling back to another model.
+- **A requested model is a preference with a fallback** (owner,
+  2026-11-02). An application (or a prompt set, or an imported file) may name
+  the model it wants; if that id is not in this deployment's list, the run
+  uses `CSAI_EXTRACT_DEFAULT_MODEL`. Nothing fails or is refused because of a
+  model choice. The fallback is never hidden: every place a model is
+  reported carries
+  `{"requested": "claude-sonnet", "used": "deepseek-v4-flash", "fallback": true}`
+  (SSE `plan` and summary, run record, `extraction.complete`, the webhook's
+  `extracted` key, the builder and the Applications view).
+- The cache key uses the model **actually used**, so a fallback run never
+  serves a later run that does get the preferred model, and vice versa.
 - Ansible: `csai_extract_models` (list, rendered to JSON) and
   `csai_extract_default_model` in the `convert_search_ai` role; per-entry key
   variables come from `.deploy-secrets.env` like `CSAI_CHAT_API_KEY`.
@@ -311,16 +318,18 @@ tokens).
   (§4.1): a desktop app selects a set by id. Without `revision` the current
   published revision is used. With it, that revision is used if it was ever
   published, so a desktop integration can pin what it has validated. `schema`
-  and `instructions` may not be sent together with `prompt_set` (400).
+  and `instructions` may not be sent together with `prompt_set` (400). A
+  raw-schema request may carry `model` as a preference, with the same
+  fallback (§4.4).
   `model` may not be overridden from the desktop; the set's model is part of
   what was developed and published in the builder.
 - The SSE `plan` event and the summary carry `prompt_set {id, name,
   revision, current_revision}`. A desktop app that pinned an old revision can
   therefore tell the user a newer one exists without polling.
 - Refusals: unknown id or a draft-only set → 404 (no existence probe); a
-  **retired** set → 410 `{"kind": "prompt_set_retired", "replaced_by": id?}`;
-  a set whose model was removed from the list → 409
-  `{"kind": "model_unavailable"}`.
+  **retired** set → 410 `{"kind": "prompt_set_retired", "replaced_by": id?}`.
+  A set whose preferred model is not available runs on the default model
+  (§4.4), reported as a fallback.
 - Raw schemas stay supported (`schema` + `instructions`) for applications that
   need ad-hoc questions. Every extraction that writes values emits
   `extraction.complete` (§6.0); a raw-schema one has `prompt_set: null`.
@@ -378,10 +387,16 @@ integration and its definitions ship together.
   (`CSAI_PROMPT_SET_APP_MAX_SETS`, `CSAI_PROMPT_SET_APP_REVISIONS_PER_DAY`);
   the normal field, size and model validation; every publish audited with the
   key and user.
-- **Strict, not remapped.** Unlike a file import, an application relies on
-  exactly what it sends, so a model id not in `CSAI_EXTRACT_MODELS` is `422
-  model_unavailable`, and an unknown classifier set or label in `applies_to`
-  is `422`. Validation is otherwise the editor's (§4.1).
+- **Model is a suggestion.** The application names the model it would like;
+  the definition is stored with that preference, and runs fall back to the
+  deployment default where it is not configured (§4.4). The response says so
+  (`"model": {"requested": …, "used": …, "fallback": true}` and a
+  `model_fallback` warning), so the application can tell its user; the
+  publish itself succeeds. When the deployment later adds that model, runs
+  start using it with no republish.
+- An unknown classifier set or label in `applies_to` is dropped with a warning
+  (the set still publishes; it just applies to fewer document types).
+  Validation is otherwise the editor's (§4.1).
 - **Provenance and editor control.** Each revision records `managed_by
   {client_key_id, label, user}`. The builder lists application-managed sets
   separately ("Published by application Reviera"), and an editor can, at any
@@ -465,8 +480,9 @@ run data. Field order is preserved.
   "(imported)") or `revision` (a new draft revision of the existing set with
   that name, so an updated shared definition can replace an older one with
   its history kept).
-- Model: kept if its id is in this deployment's `CSAI_EXTRACT_MODELS` (§4.4);
-  otherwise the draft gets the default model and a warning.
+- Model: kept as the set's preference. If its id is not in this deployment's
+  `CSAI_EXTRACT_MODELS`, runs fall back to the default (§4.4) and the import
+  reports a `model_fallback` warning.
 - `applies_to`: the classifier set is matched by name in this tenant; labels
   that do not exist there are dropped with a warning.
 - The response lists what was created and every warning, and the builder
@@ -568,7 +584,8 @@ cache sidecar: an automation job, a desktop/headless `/v1/extract` (prompt set
 were already announced when they were written). Not for builder test runs
 (they store nothing). A run over many files emits one event per file.
 `extraction.failed` is emitted for a file that was attempted and produced no
-entry (`reason`: `no_text` | `model_error` | `budget` | `model_unavailable`).
+entry (`reason`: `no_text` | `model_error` | `budget`). A model choice is
+never a failure reason: an unavailable preferred model falls back (§4.4).
 
 **Envelope.** The same shape as `conversion.complete` (`emit.py`), plus the
 extraction block:
@@ -582,7 +599,7 @@ extraction block:
   "values_present": true,
   "counts": {"fields": 5, "found": 4, "not_found": 1, "dropped": 0},
   "prompt_set": {"id": "ps_7f3c…", "name": "Door datasheet", "revision": 3},
-  "model": "deepseek-v4-flash",
+  "model": {"requested": "claude-sonnet", "used": "deepseek-v4-flash", "fallback": true},
   "payload": {
     "name": "20261102_141502.117-extract.json",
     "uid": "<sidecar file uid>",
@@ -710,7 +727,7 @@ without a new plug-in.
     "status": "complete",                    // complete | failed
     "reason": null,                          // failed only
     "prompt_set": {"id": "ps_7f3c…", "name": "Door datasheet", "revision": 3},
-    "model": "deepseek-v4-flash",
+    "model": {"requested": "claude-sonnet", "used": "deepseek-v4-flash", "fallback": true},
     "source": "automation | headless | interactive",
     "extracted_at": "…",
     "counts": {"fields": 5, "found": 4, "not_found": 1, "dropped": 0},
@@ -806,8 +823,11 @@ automation exists.
 - csai unit: compilation of every field type to JSON Schema; revision
   immutability; test runs (pasted text and file) never write the cache, a run
   record or a stored PDF; pasted-text offsets; `CSAI_EXTRACT_MODELS` parsing
-  (default, duplicates, missing default refuses start, unknown id 400,
-  removed model `model_unavailable`, keys never in `GET /v1/extract/models`); markup locator against a
+  (default, duplicates, missing default refuses start, keys never in
+  `GET /v1/extract/models`); model fallback: a preferred id not in the list
+  (prompt set, raw-schema request, import, application publish) runs on the
+  default and reports `requested`/`used`/`fallback` everywhere; the cache key
+  uses the model used; adding the model later switches runs to it; markup locator against a
   fixture corpus (single-line, wrapped, hyphenated, table row, ligature,
   repeated text, absent) with expected page and method; legend contents;
   pruning recognises the `extractpdf_` family and still ignores user `markup`.
@@ -833,13 +853,15 @@ automation exists.
   key with the same definition is a no-op; a builder-managed or taken-over set
   → 409 `managed_in_builder` for a plain member, accepted for an editor; a
   locked slug → 409; identical definitions are no-ops in every case; set and
-  revision caps; unknown model or classifier label → 422; retire → runs get
+  revision caps; an unconfigured model → published with a `model_fallback`
+  warning and runs on the default; unknown classifier label dropped with a
+  warning; retire → runs get
   410; `managed_by` recorded; a folder binding on an application-managed set
   stays on its pinned revision after an application publish.
 - Desktop simulator: list published sets (drafts and retired hidden, ETag
   revalidation), fetch one and map its fields, run by id with and without a
   pinned revision, `current_revision` reported after a new publish, 404 for a
-  draft, 410 for a retired set, 409 for a removed model, 400 for
+  draft, 410 for a retired set, fallback reported for an unconfigured model, 400 for
   `prompt_set` + `schema`, no model override; markup status values.
 - New live E2E: upload a datasheet into a folder with both bindings → values
   in metadata, file filed under the templated name, marked-up PDF present with
@@ -860,8 +882,11 @@ automation exists.
   `extraction.complete` on `fileengine:events`, flagging that values exist and
   naming the JSON payload (sidecar and entry) to read (§6.0). Values never go
   on the bus. Folder rules act on prompt-set events only.
-- **D5 Model:** a prompt set picks its model from a configured list
-  (`CSAI_EXTRACT_MODELS`, §4.4); the default is `CSAI_EXTRACT_DEFAULT_MODEL`.
+- **D5 Model:** the extraction models are a configured list
+  (`CSAI_EXTRACT_MODELS`, §4.4) with a deployment default
+  (`CSAI_EXTRACT_DEFAULT_MODEL`). A prompt set, an application or an import
+  names a **preferred** model; where it is not configured, runs fall back to
+  the default, and the fallback is reported (requested/used), never an error.
 - **D6 Loop guard for copies:** the `fa.filed_by` metadata marker (§6.2),
   plus "destination inside the bound tree" as a warning in the editor.
 - **D7 Marked-up rendition:** a PDF ("ODF" in the request was a typo).
