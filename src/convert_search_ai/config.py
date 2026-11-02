@@ -264,6 +264,15 @@ class Config:
         # the backstop if a provider's cap is lower still.
         self.embedding_batch_size = max(1, int(_env("CSAI_EMBEDDING_BATCH_SIZE", "512")))
 
+        # The most chunks ONE document may send to the embedder (0 = no limit).
+        # The ingest worker indexes one document at a time, so a document's cost
+        # is every other document's wait: a 9 MiB text file was ~9,000 chunks and
+        # held indexing for the whole deployment for the better part of an hour.
+        # A document past the cap has its first N chunks indexed — searchable,
+        # not lost — and the rest is logged. 4000 is ~4.8 MB of text, well past
+        # the largest real reference document seen (a 6 MB PDF at 1,445 chunks).
+        self.index_max_chunks = max(0, int(_env("CSAI_INDEX_MAX_CHUNKS", "4000")))
+
         # Shared secret for the in-cluster internal API (see api.py). Falls back
         # to the service-credential secret so ops manage one value, the same way
         # ldap_manager's internal API does. EMPTY DISABLES THE API: an unset
