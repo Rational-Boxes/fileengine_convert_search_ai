@@ -540,7 +540,86 @@ extraction block:
 - `ActionResult.detail` records which rule matched and which actions ran
   (field names and counts, not values).
 
-### 6.3 FA changes required underneath
+### 6.3 Webhook: fire on extracted data, with the values merged in
+
+The existing `webhook` plug-in (`plugins/webhook.py`) is extended (owner,
+2026-11-02) so a folder can send extracted values to an outside system
+without a new plug-in.
+
+- **Fire on data extracted (optional):** `extraction.complete` and
+  `extraction.failed` join the webhook's `SUPPORTED` events, so they appear
+  in the event pick-list. Choosing them is the opt-in; existing bindings are
+  unchanged.
+- **Merge in the extracted data:** the payload the webhook already builds
+  (`event`, `document_id`, `version`, `tenant`, `metadata`, `mime`,
+  `conversion`, `user`, `folder_uid`, `context`) gains an **`extracted`** key
+  on those events (owner, 2026-11-02):
+  ```json
+  "extracted": {
+    "status": "complete",                    // complete | failed
+    "reason": null,                          // failed only
+    "prompt_set": {"id": "ps_7f3c…", "name": "Door datasheet", "revision": 3},
+    "model": "deepseek-v4-flash",
+    "source": "automation | headless | interactive",
+    "extracted_at": "…",
+    "counts": {"fields": 5, "found": 4, "not_found": 1, "dropped": 0},
+    "values": {
+      "fire_rating": {"found": true, "value": "EI 60", "unit": null,
+                      "evidence": {"quote": "Fire resistance: EI 60", "offset": 1834}},
+      "width":       {"found": true, "value": 926, "unit": "mm", "evidence": {…}},
+      "certificate_expiry": {"found": false, "value": null, "unit": null, "evidence": null}
+    },
+    "fields": {"fire_rating": {"label": "Fire rating", "type": "enum", …}, …},
+    "markup": {"status": "written", "name": "…-extractpdf_7f3c.pdf"}
+  }
+  ```
+  The values are read when the webhook runs, through
+  `GET /v1/documents/{uid}/extractions?version=&entry=` (the `payload.entry`
+  the event names), as FA's service principal (READ-checked like any read).
+  `fields` carries the prompt set's field definitions, so the receiver can
+  interpret values (types, units, labels) without a second call; it is
+  omitted for a raw-schema entry, which carries its JSON Schema instead.
+- **Config additions** (`ConfigModel` + `config_fields()`):
+  - `extraction_prompt_sets`: optional multiselect (`options_source:
+    prompt_sets`); empty means any set. Events from other sets are
+    `skipped`. Raw-schema extractions are included only with
+    `extraction_include_raw: true` (default false).
+  - `extraction_fields`: optional allow-list of field names; only these are
+    sent (`counts` still reflects the whole extraction).
+  - `extraction_include_evidence`: default **false**. Quotes are verbatim
+    document text, so sending them out of FileEngine is an explicit choice.
+    `offset` and `markup` are sent either way.
+  - `extraction_only_found`: default false; when true, not-found fields are
+    left out of `values`.
+  These fields are shown only when an extraction event is selected
+  (`visible_when` on `on_events`).
+- **Other events can also carry the latest values (optional):**
+  `extraction_attach: "none" | "latest"` (default none). With `latest`, a
+  webhook firing on any other event (for example `file.moved`, or
+  `review.approved`) adds the `extracted` key for the file's current
+  version and the configured sets when an entry exists, or
+  `"extracted": {"status": "none"}` when none does. It never triggers an
+  extraction.
+- **Acting on the values remotely keeps working:** the webhook's response
+  contract (`move_to`, `metadata{}`) is unchanged, so an outside system can
+  decide on the values and send the filing and metadata back.
+- **Data leaving the system:** a webhook binding already needs WRITE on the
+  folder. The editor states plainly that the selected events send extracted
+  values (and, if enabled, quotes) to the URL. `action_run.detail` records the
+  set, revision, field names sent and counts, never the values. The FileEngine
+  audit gains a `webhook.extraction_sent` record per delivery (file uid, set,
+  revision, field count, destination host).
+- **Delivery:** extraction values can be large (many fields, long quotes), so
+  the `extracted` key is capped (`FA_WEBHOOK_EXTRACTED_MAX_BYTES`, default
+  256 KB). Over the cap, quotes are dropped first, then its content is replaced
+  by `{"status": "too_large", "entry": …}` and the receiver can fetch it.
+  Retries reuse the values read on the first attempt, so a retry never sends
+  a different extraction.
+- **Prerequisites from P0:** the webhook's form-to-model shape mismatches
+  (`context`, flat `auth` keys) and its blocking in-process backoff are fixed
+  first, since extraction events add more deliveries through the same path.
+
+### 6.4 FA changes required underneath
 
 - `CoreClient`: `copy`, `rename`, `move(new_name=)`, `mkdir` (all exist in
   python_interface).
@@ -559,7 +638,7 @@ extraction block:
 | P0 | Fix the PyMuPDF install; confirm the FA form-shape mismatches; `CoreClient` copy/rename/move-with-name | csai, docker_unified, FA, frontend |
 | P1 | Prompt-set store, revisions, API, configured model list, builder panel with test (paste text or pick a file), publish, import; **headless list/select** (`GET /v1/prompt-sets`, `/v1/extract {prompt_set}`) | csai, frontend, scripts |
 | P2 | Marked-up PDF (locate, draw, legend, sidecar, pruning family), in test runs and in `/v1/extract` (`markup: true`) | csai, frontend |
-| P3 | csai extraction jobs; `extraction.complete`/`extraction.failed` for every extraction (jobs and headless) + `EVENT_CONTRACT.md`; `GET /v1/documents/{uid}/extractions`; automation budget; FA `extract` plug-in | csai, FA, frontend |
+| P3 | csai extraction jobs; `extraction.complete`/`extraction.failed` for every extraction (jobs and headless) + `EVENT_CONTRACT.md`; `GET /v1/documents/{uid}/extractions`; automation budget; FA `extract` plug-in; **webhook fires on extracted data with values merged in** (§6.3) | csai, FA, frontend |
 | P4 | FA `extraction_rules` plug-in + rules editor; loop guard | FA, frontend |
 
 Each phase is shippable on its own; P2 is useful to desktop callers before any
@@ -581,6 +660,12 @@ automation exists.
   found; `payload.name`/`uid`/`entry` resolve to the sidecar entry that was
   written; no value, quote or field name anywhere in the event;
   `extraction.failed` reasons; a Redis outage does not fail the extraction.
+- FA webhook: fires on `extraction.complete`/`failed` only when selected;
+  `extracted` key shape; set filter, raw-schema opt-in, field allow-list,
+  evidence off by default, only-found; `extraction_attach: latest` on another
+  event (present and absent); size cap order (quotes first, then
+  `too_large`); a retry sends the same values; `action_run` and audit hold no
+  values; existing bindings' payloads unchanged.
 - FA unit: both plug-ins with fakes (event → job request; values → each
   condition type, each action); loop guard; invalid rule on save.
 - Desktop simulator: list published sets (drafts and retired hidden, ETag
