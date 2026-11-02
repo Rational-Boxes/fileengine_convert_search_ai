@@ -20,7 +20,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import scenarios_live, scenarios_sandbox  # noqa: F401  (register)
+from . import scenarios_automation, scenarios_live, scenarios_sandbox  # noqa: F401  (register)
 from .app import Stack
 from .harness import REGISTRY, Env, run_one
 
@@ -58,6 +58,7 @@ def main(argv=None) -> int:
                   csai=os.environ.get("CSAI", "http://localhost:8092"),
                   tenant=os.environ.get("FE_TENANT", "default"),
                   user_token=os.environ["USER_TOKEN"])
+    stack.fa = os.environ.get("FA", "http://localhost:8099")
     env = Env(stack)
     env.log_dir = out_dir
     if os.environ.get("USER2_TOKEN"):
