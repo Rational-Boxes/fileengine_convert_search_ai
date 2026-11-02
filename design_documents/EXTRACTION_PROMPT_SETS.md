@@ -923,3 +923,20 @@ Changes from the text above, made while implementing (branch
   and builds one provider per other entry. The Anthropic provider takes a
   per-entry key (`api_key_env`) through a dedicated override, not
   `CSAI_CHAT_API_KEY`, which falls back to `OPENAI_API_KEY`.
+- **Automation jobs** run on worker threads in the csai app
+  (`CSAI_EXTRACT_JOB_WORKERS`, started only by `create_app`), fed by a Redis
+  stream (`csai:extract:jobs`, consumer group, re-claimed when left), not a
+  new container. Jobs are queued only by accounts holding `file_services`.
+- **The rules editor** uses the generic binding form: one row per condition
+  (field, operator, value) and one action per rule. Every rule is checked
+  against the prompt set's field types when the binding is saved (422 naming
+  the rule and condition) instead of a bespoke editor.
+- **`markup not located` is not a rule condition**: the sidecar entry does
+  not record where each value was found in the PDF, so it could never hold.
+- **Copying** finds the copy's uid by listing the destination: the core's
+  CopyResponse carries no `new_uid` (follow-up). A copy is marked
+  `fa.filed_by` at the copy's own version.
+- **The webhook** reads values by the event's entry key, which is stable for
+  that extraction, so a retry sends the same values.
+- **Event contract**: `EVENT_CONTRACT.md` §3.2 documents the events and the
+  sidecar entry format.
