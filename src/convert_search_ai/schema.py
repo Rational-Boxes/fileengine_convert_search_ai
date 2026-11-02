@@ -263,6 +263,42 @@ CREATE INDEX IF NOT EXISTS idx_headless_results_run
     ON "{schema}".headless_results (conversation_id, id);
 CREATE INDEX IF NOT EXISTS idx_headless_results_file
     ON "{schema}".headless_results (file_uid);
+
+-- Extraction prompt sets (EXTRACTION_PROMPT_SETS.md §4). A set is a named
+-- definition with numbered revisions; a revision is a draft until published and
+-- immutable after. `managed` says who governs it: 'builder' (people, in the web
+-- application) or 'application' (first published by a desktop application,
+-- which may publish further revisions without a person, §4.5). Definitions
+-- live in `body` (canonical JSON, headless/promptsets.py); `hash` makes an
+-- unchanged republish a no-op.
+CREATE TABLE IF NOT EXISTS "{schema}".prompt_sets (
+    id               TEXT        PRIMARY KEY,
+    slug             TEXT,
+    name             TEXT        NOT NULL,
+    description      TEXT        NOT NULL DEFAULT '',
+    status           TEXT        NOT NULL DEFAULT 'active',
+    managed          TEXT        NOT NULL DEFAULT 'builder',
+    locked           BOOLEAN     NOT NULL DEFAULT FALSE,
+    replaced_by      TEXT        NOT NULL DEFAULT '',
+    current_revision INTEGER,
+    created_by       TEXT        NOT NULL DEFAULT '',
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_prompt_sets_slug
+    ON "{schema}".prompt_sets (slug) WHERE slug IS NOT NULL;
+CREATE TABLE IF NOT EXISTS "{schema}".prompt_set_revisions (
+    set_id       TEXT        NOT NULL REFERENCES "{schema}".prompt_sets (id) ON DELETE CASCADE,
+    revision     INTEGER     NOT NULL,
+    body         JSONB       NOT NULL,
+    hash         TEXT        NOT NULL,
+    state        TEXT        NOT NULL DEFAULT 'draft',
+    managed_by   JSONB,
+    created_by   TEXT        NOT NULL DEFAULT '',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    published_at TIMESTAMPTZ,
+    PRIMARY KEY (set_id, revision)
+);
 '''
 
 

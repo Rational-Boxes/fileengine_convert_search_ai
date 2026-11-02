@@ -53,7 +53,12 @@ def make_chat_provider(config) -> ChatProvider:
     max_tokens = int(getattr(config, "chat_max_tokens", 8192))
     if name == "anthropic":
         from .chat import AnthropicChatProvider
-        return AnthropicChatProvider(model=model, max_tokens=max_tokens)
+        # An extraction model entry may carry its own key (api_key_env); without
+        # one the provider reads ANTHROPIC_API_KEY as before. Not chat_api_key:
+        # that falls back to OPENAI_API_KEY, which is never an Anthropic key.
+        return AnthropicChatProvider(model=model, max_tokens=max_tokens,
+                                     api_key=getattr(config, "anthropic_api_key_override",
+                                                     "") or None)
     if name in _OPENAI_COMPATIBLE:
         from .chat import OpenAICompatibleChatProvider
         base_url = getattr(config, "chat_base_url", "") or (

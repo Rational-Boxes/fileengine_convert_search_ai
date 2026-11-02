@@ -302,6 +302,29 @@ class Config:
         # a longer document is read in consecutive windows.
         self.headless_extract_window_chars = int(_env("CSAI_HEADLESS_EXTRACT_WINDOW_CHARS", "60000"))
         self.headless_max_schema_fields = int(_env("CSAI_HEADLESS_MAX_SCHEMA_FIELDS", "60"))
+        # Extraction models (EXTRACTION_PROMPT_SETS.md §4.4): a JSON list of
+        # {id, label, model, provider?, base_url?, max_tokens?, json_mode?,
+        # api_key_env?}. Unset = the chat model alone. A requested model that is
+        # not listed falls back to the default; it is never an error.
+        self.extract_models = _env("CSAI_EXTRACT_MODELS", "")
+        self.extract_default_model = _env("CSAI_EXTRACT_DEFAULT_MODEL", "")
+        self.extract_test_max_chars = int(_env("CSAI_EXTRACT_TEST_MAX_CHARS", "200000"))
+        # Marked-up extraction PDFs (§5): PyMuPDF holds the whole PDF in memory,
+        # so a larger one is reported as too_large instead of read.
+        self.extract_markup_max_mb = int(_env("CSAI_EXTRACT_MARKUP_MAX_MB", "100"))
+        # Extraction jobs for folder automation (§6.1): worker threads in the
+        # app (0 = this instance runs none), who may enqueue, and how a job over
+        # the tenant's automation budget waits.
+        self.extract_job_workers = int(_env("CSAI_EXTRACT_JOB_WORKERS", "1"))
+        self.extract_job_roles = [r.strip() for r in _env(
+            "CSAI_EXTRACT_JOB_ROLES", "file_services").split(",") if r.strip()]
+        self.extract_job_budget_retry_s = int(_env("CSAI_EXTRACT_JOB_BUDGET_RETRY_S", "900"))
+        self.extract_job_budget_wait_s = int(_env("CSAI_EXTRACT_JOB_BUDGET_WAIT_S", "172800"))
+        # Applications publish their own definitions with no person approving
+        # (§4.5), so their volume is bounded.
+        self.prompt_set_app_max_sets = int(_env("CSAI_PROMPT_SET_APP_MAX_SETS", "50"))
+        self.prompt_set_app_revisions_per_day = int(
+            _env("CSAI_PROMPT_SET_APP_REVISIONS_PER_DAY", "20"))
 
         # --- Web search tool (WEB_SEARCH_TOOL_PLAN; OFF by default) ---
         # The chat web_search tool. `enabled` is the master switch (off by default —

@@ -18,6 +18,12 @@ dependencies = [
     "reportlab>=4.0",     # first-page colour-coded PDF for the text preview
     "Markdown>=3.4",      # chat create_document: render the model's Markdown report to HTML
     "jsonschema>=4.18",   # headless extraction: validate the caller's schema and each value
+    # Marked-up extraction PDFs (EXTRACTION_PROMPT_SETS.md §5). AGPL-3.0, like
+    # this service. Capped below 2: pymupdf4llm 2.x is an empty shim release
+    # (2.0 ships no module at all), and the 1.9.69 image installed exactly that,
+    # so neither `pymupdf` nor `pymupdf4llm` could be imported in production.
+    "pymupdf>=1.24,<2",
+    "PyYAML>=6.0",        # prompt-set YAML export/import (§4.6)
 ]
 # The FileEngine Python client (`fileengine`, from ../python_interface) is reused
 # at runtime for gRPC core access (permission checks + rendition writes), exactly
@@ -30,7 +36,7 @@ dev = ["pytest>=7.0", "pytest-cov>=4.0", "httpx>=0.27"]
 # `pdf` is the light MIT default; the others are higher-fidelity opt-ins.
 pdf = ["pdfplumber>=0.11"]                 # MIT, light — solid tables
 pdf-docling = ["docling>=2.0"]             # MIT, heavy (ML) — best structure+tables
-pdf-pymupdf = ["pymupdf4llm>=0.0.17"]      # NOTE: PyMuPDF is AGPL-3.0
+pdf-pymupdf = ["pymupdf4llm>=0.0.17,<2"]   # NOTE: PyMuPDF is AGPL-3.0; 2.x is an empty shim
 # Pluggable AI providers (DEVELOPMENT_PLAN §7) — install the ones a deployment uses.
 anthropic = ["anthropic>=0.40"]
 voyage = ["voyageai>=0.2"]

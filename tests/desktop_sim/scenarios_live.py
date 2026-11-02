@@ -304,11 +304,16 @@ def report(ctx):
     ctx.check("saved as an editable Word document", saved.get("name", "").endswith(".docx"),
               saved.get("name"))
     text = docx_text(r.content) if r.status_code == 200 else ""
-    want = words(report_body(answer))
+    # The streamed answer cites sources as "(file <uid>)"; the saved report
+    # renders those as the documents' names, so the ids are not "missing".
+    body = re.sub(r"\(?\bfiles?\s+[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\)?", " ",
+                  report_body(answer), flags=re.I)
+    want = words(body)
     have = set(words(text))
     share = sum(1 for w in want if w in have) / max(1, len(want))
     ctx.check("the file holds what was streamed (>= 90% of its words)", share >= 0.9,
-              (round(share, 2), answer[:120], text[:120]))
+              (round(share, 2), sorted({w for w in want if w not in have})[:40],
+               report_body(answer)[-400:], text[-400:]))
     rends = ctx.stack.renditions(saved["uid"])
     names = [x.get("name", "") if isinstance(x, dict) else str(x) for x in rends]
     ctx.check("the report has its provenance sidecar", any(n.endswith("-chatlog.html") for n in names), names)

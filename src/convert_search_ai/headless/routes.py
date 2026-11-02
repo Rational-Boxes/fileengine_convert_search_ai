@@ -76,6 +76,14 @@ def _svc(app):
     s.cache = getattr(app.state, "headless_cache", None) or ExtractionCache(
         lambda: agent_client(config))
     s.relay = getattr(app.state, "headless_relay", None) or ConsentRelay(redis_client)
+    from .markup import MarkupStore, TestMarkups
+    s.markup = getattr(app.state, "headless_markup", None) or MarkupStore(
+        lambda: agent_client(config), int(getattr(config, "extract_markup_max_mb", 100)) << 20)
+    s.test_markups = TestMarkups()
+    from .events import ExtractionEvents
+    from .jobs import JobQueue
+    s.events = getattr(app.state, "headless_events", None) or ExtractionEvents(config)
+    s.jobs = getattr(app.state, "headless_jobs", None) or JobQueue(config, redis_client)
     app.state.headless = s
     return s
 
@@ -182,16 +190,26 @@ class MatchBody(BaseModel):
 
 
 class ExtractBody(BaseModel):
-    """Exactly one of ``folder_uid`` or ``files``."""
+    """Exactly one of ``folder_uid`` or ``files``; exactly one of ``prompt_set``
+    (a published server-side definition, EXTRACTION_PROMPT_SETS.md §4.5) or
+    ``schema`` (+ ``instructions``)."""
     model_config = ConfigDict(populate_by_name=True)
     folder_uid: Optional[str] = None
     files: Optional[List[str]] = None
     recursive: bool = False
     match: Optional[MatchBody] = None
-    schema_: dict = Field(alias="schema",
-                          description="JSON Schema (type object) of the values wanted")
+    schema_: Optional[dict] = Field(default=None, alias="schema",
+                                    description="JSON Schema (type object) of the values wanted")
     instructions: str = ""
     cache: Literal["use", "refresh"] = "use"
+    prompt_set: Optional[str] = Field(default=None, description="a published prompt set id")
+    revision: Optional[int] = Field(default=None,
+                                    description="pin a published revision (default: current)")
+    model: Optional[str] = Field(default=None, description=(
+        "preferred model id for a raw-schema request; one this deployment does not offer "
+        "falls back to the default. A prompt set uses its own model."))
+    markup: Optional[bool] = Field(default=None, description=(
+        "write the marked-up PDF sidecar (default: on for a prompt set, off otherwise)"))
 
 
 class ReportTarget(BaseModel):
@@ -242,10 +260,46 @@ async def extract(request: Request, body: ExtractBody,
     (or ``error``), ``usage``, ``done``."""
     app = request.app
     config = app.state.config
+    from .models import registry as model_registry
+    from .promptset_routes import service as promptset_service
+    from .promptset_service import ServiceError
+    from . import promptsets as ps
+    raw = body.model_dump(by_alias=True)
+    set_info = None
+    if body.prompt_set is not None:
+        if body.schema_ is not None or body.instructions:
+            raise HTTPException(status_code=400,
+                                detail="give prompt_set or schema + instructions, not both")
+        if body.model is not None:
+            raise HTTPException(status_code=400, detail=(
+                "a prompt set runs on its own model; model may not be overridden"))
+        try:
+            set_info, set_body = promptset_service(app).resolve_for_run(
+                identity, body.prompt_set, body.revision)
+        except ServiceError as e:
+            return JSONResponse(status_code=e.status, content=e.body())
+        raw["schema"] = ps.compile_schema(set_body)
+        raw["instructions"] = set_body["instructions"]
+        preferred = set_body.get("model")
+        markup_fields = set_body["fields"]
+        markup_colours = (set_body.get("markup") or {}).get("colours") or {}
+    else:
+        if body.schema_ is None:
+            raise HTTPException(status_code=400, detail="give prompt_set or schema")
+        if body.revision is not None:
+            raise HTTPException(status_code=400, detail="revision needs prompt_set")
+        preferred = body.model
+        markup_fields, markup_colours = [], {}
     try:
-        req = parse_request(body.model_dump(by_alias=True), config)
+        req = parse_request(raw, config)
     except ExtractRequestError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    models = model_registry(app)
+    entry, choice = models.resolve(preferred)
+    chat = models.provider(entry, app.state.chat.chat)
+    req.prompt_set, req.model_choice = set_info, choice
+    req.markup = body.markup if body.markup is not None else set_info is not None
+    req.markup_fields, req.markup_colours = markup_fields, markup_colours
     status, err = _admit(app, identity, spends_tokens=True)
     if err is not None:
         return err
@@ -257,19 +311,21 @@ async def extract(request: Request, body: ExtractBody,
         return _usage_error(e, identity)
 
     extractor = Extractor(config, client_for=_client_for(app), gate=app.state.permission_gate,
-                          store=s.store, chat=app.state.chat.chat, cache=s.cache,
-                          convert=_convert_fn(app), meter=s.meter)
+                          store=s.store, chat=chat, cache=s.cache, markup=s.markup,
+                          events=s.events, convert=_convert_fn(app), meter=s.meter)
 
     def producer(emit, cancelled):
         try:
             emit("usage", status)
             run_id = _start_run(s.runs, identity, title=_extract_title(req), request={
+                "prompt_set": set_info, "model": choice,
                 "kind": "extract", "target": ({"folder_uid": req.folder_uid,
                                                "recursive": req.recursive}
                                               if req.folder_uid is not None
                                               else {"files": req.files}),
                 "match": {"extensions": req.extensions, "name": req.name_glob},
                 "schema": req.schema, "instructions": req.instructions, "cache": req.cache})
+            req.run_id = run_id or ""
             try:
                 summary = extractor.run(
                     identity, req, emit, cancelled,
@@ -284,7 +340,10 @@ async def extract(request: Request, body: ExtractBody,
                          client_label=identity.client_label,
                          target="folder" if req.folder_uid is not None else "files",
                          folder_uid=req.folder_uid or "", requested=len(req.files),
-                         fields=req.fields, model=getattr(app.state.chat.chat, "model_id", ""),
+                         fields=req.fields, model=getattr(chat, "model_id", ""),
+                         model_fallback=bool(choice.get("fallback")),
+                         prompt_set=(set_info or {}).get("id", ""),
+                         prompt_set_revision=(set_info or {}).get("revision"),
                          **{k: v for k, v in summary.items() if isinstance(v, (int, bool))})
             final = _final_usage(s.meter, identity, status)
             emit("usage", final)
@@ -482,6 +541,111 @@ def _title(message: str) -> str:
 
 
 def _extract_title(req) -> str:
-    fields = ", ".join(req.fields[:4]) + ("…" if len(req.fields) > 4 else "")
     where = "folder" if req.folder_uid is not None else f"{len(req.files)} file(s)"
+    if req.prompt_set:
+        ps = req.prompt_set
+        return f"{ps.get('name', 'Prompt set')} r{ps.get('revision')} on {where}"[:120]
+    fields = ", ".join(req.fields[:4]) + ("…" if len(req.fields) > 4 else "")
     return f"Extract {fields} from {where}"[:120]
+
+
+# ------------------------------------------------------------------ automation jobs
+
+class ExtractJobBody(BaseModel):
+    file_uid: str
+    version: str = ""
+    prompt_set: str
+    revision: Optional[int] = None
+    markup: bool = True
+    binding_id: str = ""
+
+
+@router.post("/extract/jobs", status_code=202)
+def enqueue_extract_job(request: Request, body: ExtractJobBody,
+                        identity: Identity = Depends(_identity)):
+    """Folder automation asks for an extraction (EXTRACTION_PROMPT_SETS.md
+    §6.1) and returns at once; the outcome is an ``extraction.complete`` or
+    ``extraction.failed`` event. Only a service account (``file_services``)
+    may ask: jobs spend the tenant's automation budget."""
+    from .jobs import automation_identity
+    from .promptset_routes import service as promptset_service
+    from .promptset_service import ServiceError
+    app = request.app
+    config = app.state.config
+    allowed = set(getattr(config, "extract_job_roles", ["file_services"]))
+    if not (set(identity.roles or []) & allowed) or identity.client_key_id:
+        raise HTTPException(status_code=403, detail="extraction jobs are for service accounts")
+    try:
+        promptset_service(app).resolve_for_run(identity, body.prompt_set, body.revision)
+    except ServiceError as e:
+        return JSONResponse(status_code=e.status, content=e.body())
+    s = _svc(app)
+    try:
+        job_id = s.jobs.enqueue({"tenant": identity.tenant, "user": identity.user,
+                                 "roles": list(identity.roles or []),
+                                 "file_uid": body.file_uid, "version": body.version,
+                                 "prompt_set": body.prompt_set, "revision": body.revision,
+                                 "markup": body.markup, "binding_id": body.binding_id})
+    except Exception:
+        log.warning("extraction job not queued", exc_info=True)
+        return JSONResponse(status_code=503, content={
+            "kind": "queue_unavailable", "error": "the job queue is unavailable; retry"})
+    try:
+        st = s.meter.status(automation_identity(identity.user, identity.tenant, identity.roles))
+        budget = st.get("state")
+    except Exception:
+        budget = None
+    audit.record(action="extract_job.queued", user=identity.user, tenant=identity.tenant,
+                 result="ok", file_uid=body.file_uid, prompt_set=body.prompt_set,
+                 revision=body.revision, job_id=job_id, binding_id=body.binding_id)
+    return {"job_id": job_id, "budget": budget}
+
+
+@router.get("/documents/{file_uid}/extractions")
+def document_extractions(request: Request, file_uid: str, version: str = "", entry: str = "",
+                         prompt_set: str = "", identity: Identity = Depends(_identity)):
+    """The extracted values of one document version (the sidecar
+    ``extraction.complete`` names), READ-checked as the caller. Filter by
+    ``entry`` (the cache key in the event) or ``prompt_set``. Each entry
+    carries what its values mean: the prompt set's field definitions, or the
+    raw schema."""
+    from .promptset_routes import service as promptset_service
+    from .promptset_service import ServiceError
+    app = request.app
+    gate = app.state.permission_gate
+    client = _client_for(app)(identity)
+    try:
+        allowed = gate.can_read(client, identity, file_uid)   # existence as well as READ
+    except Exception:
+        allowed = False
+    if not allowed:
+        raise HTTPException(status_code=404, detail="not found or not readable")
+    s = _svc(app)
+    if not version:
+        try:
+            version = client.stat(file_uid, tenant=identity.tenant).version or ""
+        except Exception:
+            raise HTTPException(status_code=404, detail="not found or not readable")
+    entries = s.cache.entries(file_uid, version, identity.tenant)
+    out = []
+    svc = promptset_service(app)
+    for key, e in entries.items():
+        ps_ref = e.get("prompt_set") or None
+        if entry and key != entry:
+            continue
+        if prompt_set and (not ps_ref or ps_ref.get("id") != prompt_set):
+            continue
+        item = {"entry": key, "prompt_set": ps_ref, "model": e.get("model"),
+                "model_choice": e.get("model_choice"), "source": e.get("source"),
+                "created_at": e.get("created_at"), "data": e.get("data") or {}}
+        if ps_ref:
+            try:
+                view = svc.get(identity, ps_ref["id"], ps_ref.get("revision"))
+                item["prompt_set"] = {**ps_ref, "name": view["name"]}
+                item["fields"] = view.get("fields") or []
+            except ServiceError:
+                item["fields"] = []
+        else:
+            item["schema"] = e.get("schema")
+        out.append(item)
+    return {"file_uid": file_uid, "version": version, "entries": out}

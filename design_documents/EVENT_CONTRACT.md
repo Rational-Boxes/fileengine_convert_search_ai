@@ -182,6 +182,55 @@ so a brand-new file surfaces as a **`file.created` followed by a `file.updated`*
 (the first content version). Treating `file.updated` as "(re)index this content"
 and `file.created` as "an entity now exists" handles both idempotently.
 
+### 3.2 Extracted data: `extraction.complete` / `extraction.failed` (csai)
+
+Published by csai, not the core, onto the same stream
+(EXTRACTION_PROMPT_SETS.md §6.0). They announce that a document's values were
+extracted and **name the JSON to read**; they never carry values, quotes or
+field names. Like `conversion.*`, they carry `file_uid` but no `parent_uid`:
+resolve the folder from the file.
+
+Emitted once per file per **newly written** sidecar entry: an automation job,
+a headless/desktop `/v1/extract` (prompt set or raw schema), a `cache:
+refresh`. Not for a cache hit (announced when written), not for a builder
+test. `extraction.failed` is for a file attempted that produced no entry.
+Best-effort and fail-open; the sidecar is the durable record.
+
+```json
+{"event_id": "…", "type": "extraction.complete", "schema": 1,
+ "tenant": "default", "file_uid": "…", "version": "20261102_141502.117",
+ "actor": "fesk_… | <user> | auto", "ts": "20261102_141533.402",
+ "source": "headless | automation",
+ "values_present": true,
+ "counts": {"fields": 5, "found": 4, "not_found": 1, "dropped": 0},
+ "prompt_set": {"id": "ps_…", "name": "Door datasheet", "revision": 3},
+ "model": {"requested": "claude-sonnet", "used": "deepseek-v4-flash", "fallback": true},
+ "payload": {"name": "<version>-extract.json", "uid": "<sidecar uid>",
+             "entry": "<entry key>", "schema": "fileengine.extract_cache.v1"},
+ "markup": {"status": "written", "name": "<version>-extractpdf_<set>.pdf"},
+ "job_id": "xj_…", "run_id": "…"}
+```
+
+- `values_present` is false when nothing was found; that is a result, not a
+  failure. `prompt_set` is `null` for a raw-schema extraction.
+- `extraction.failed` replaces `values_present`/`counts`/`payload` with
+  `reason`: `no_text` | `model_error` | `budget` | a prompt-set refusal
+  (`not_found`, `prompt_set_retired`).
+- **Reading the values.** `payload` names a hidden child of the source file:
+  read it as yourself (it has the document's ACL, so you see values only for
+  documents you may read), or call csai `GET /v1/documents/{uid}/extractions
+  ?version=&entry=`, READ-checked, which also returns each entry's field
+  definitions (prompt set) or raw schema.
+
+**The sidecar entry (`fileengine.extract_cache.v1`)** is a published
+contract. The file is `{"schema", "file_uid", "version", "entries": {<entry
+key>: entry}}`; an entry holds `data` (per field `{found, value, unit,
+evidence: {quote, offset}}`), `prompt_set` (`{id, revision}` or null),
+`schema` (the raw schema when there is no prompt set), `model`,
+`model_choice`, `prompt_version`, `source`, `created_at`, `created_by`,
+`client_key_id`, `tokens`. A change to this shape changes the `schema`
+string.
+
 ## 4. Delivery semantics
 
 - **At-least-once.** Duplicates and redeliveries are expected.

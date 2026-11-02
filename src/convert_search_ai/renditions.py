@@ -58,6 +58,20 @@ _KNOWN_FMTS = frozenset({
     "extract",
 })
 
+#: The marked-up extraction PDFs (EXTRACTION_PROMPT_SETS.md §5): one per source
+#: version and prompt set, ``<version>-extractpdf_<set>.pdf``. A FAMILY of fmts
+#: rather than one, so one version can hold several; recognised by this prefix,
+#: and pruned with the version like the cache sidecar. Never ``markup``: the
+#: frontend's user-made ``-markup.pdf`` copies are deliberately not pruned.
+EXTRACT_PDF_PREFIX = "extractpdf_"
+_EXTRACT_PDF_FMT = re.compile(r"extractpdf_[a-z0-9]{1,32}")
+
+
+def extract_pdf_fmt(set_key: str) -> str:
+    """The fmt for one prompt set's (or one raw schema's) marked-up PDF."""
+    key = re.sub(r"[^a-z0-9]", "", (set_key or "").lower())[:32] or "x"
+    return EXTRACT_PDF_PREFIX + key
+
 #: Published media (MEDIA_SHARE.md §4.1). Recognised — so the orphan reaper
 #: (§4.3.1) can find them and nothing is ever left unparseable — but EXEMPT from
 #: version pruning: a media link pins the cut published when it was minted, and a
@@ -102,7 +116,8 @@ def parse_rendition_name(name: str) -> Optional[Tuple[str, str, str]]:
     if dash <= 0:
         return None
     version, fmt = stem[:dash], stem[dash + 1:]
-    if not version or not ext or fmt not in _KNOWN_FMTS:
+    if not version or not ext or (fmt not in _KNOWN_FMTS
+                                  and not _EXTRACT_PDF_FMT.fullmatch(fmt)):
         return None
     return version, fmt, ext
 
