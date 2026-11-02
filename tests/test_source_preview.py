@@ -160,3 +160,55 @@ def test_registry_routes_sql_to_source_plugin_with_pdf():
     assert res.supported
     assert res.markdown == SQL.decode()          # full text still extracted
     assert any(r.fmt == "pdf" for r in res.renditions)
+
+
+# --- one file cannot hold the ingest queue ----------------------------------
+#
+# The renderer runs in the ingest worker, one document at a time. A 12 MiB
+# text file with no line breaks (share_service's live tests upload one) is a
+# single source line, so CSAI_CODE_PREVIEW_MAX_LINES cannot bound it; it wrapped
+# to thousands of pages, and the wrap loop re-sliced the remaining line on every
+# row — quadratic, 37 s of a 43 s render even once the pages were capped.
+
+def _pdf_pages(renditions):
+    import io
+    from pypdf import PdfReader
+    pdf = next(r for r in renditions if r.fmt == "pdf").data
+    return PdfReader(io.BytesIO(pdf)).pages
+
+
+def test_a_huge_single_line_file_is_capped_by_pages_and_says_so():
+    import time
+    from convert_search_ai.plugins.source_preview import SourcePreviewPlugin
+    t = time.monotonic()
+    out = SourcePreviewPlugin(max_pages=50).render(b"m" * (12 * 1024 * 1024),
+                                                   "text/plain", "doc.txt")
+    elapsed = time.monotonic() - t
+    pages = _pdf_pages(out)
+    assert len(pages) == 50
+    assert "truncated after 50 pages" in pages[-1].extract_text()
+    assert {r.fmt for r in out} >= {"pdf", "thumbnail", "preview"}
+    assert elapsed < 15, f"capped render took {elapsed:.1f}s"
+
+
+def test_a_long_line_wraps_in_linear_time_and_completely():
+    from convert_search_ai.plugins.source_preview import SourcePreviewPlugin
+    out = SourcePreviewPlugin(max_pages=0).render(b"ab" * 25000, "text/plain", "w.txt")
+    text = "".join(p.extract_text() for p in _pdf_pages(out))
+    assert "truncated" not in text
+    assert text.count("ab") >= 24000            # nothing lost to the wrap
+
+
+def test_an_ordinary_file_is_not_truncated():
+    from convert_search_ai.plugins.source_preview import SourcePreviewPlugin
+    out = SourcePreviewPlugin().render(b"def f(x):\n    return x * 2\n" * 50,
+                                       "text/x-python", "a.py")
+    assert "truncated" not in _pdf_pages(out)[-1].extract_text()
+
+
+def test_the_page_cap_is_configured():
+    from convert_search_ai.config import Config
+    from convert_search_ai.plugins.registry import default_registry
+    reg = default_registry(Config())
+    src = next(p for p in reg._plugins if p.name == "source")
+    assert src.max_pages == 300

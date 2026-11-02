@@ -67,6 +67,27 @@ def _is_batch_error(exc: Exception) -> bool:
     return any(p in m for p in _TOO_MANY)
 
 
+#: A chunk at least this long...
+_DEGENERATE_MIN_CHARS = 200
+#: ...made of at most this many distinct non-space characters carries nothing to
+#: search: a run of one letter, a rule of dashes, a field of zeros. Embedding it
+#: costs the same as prose and returns a vector that matches nothing.
+_DEGENERATE_MAX_DISTINCT = 4
+
+
+def _is_degenerate(text: str) -> bool:
+    """True for a long chunk with (almost) no variety in it.
+
+    Bounded on both sides so it cannot touch real content: a short chunk is
+    never degenerate (a document that is just "OK" stays searchable), and four
+    distinct characters is below any natural-language, code or table text — a
+    markdown table rule ``|---|---|`` has two.
+    """
+    if len(text) < _DEGENERATE_MIN_CHARS:
+        return False
+    return len(set(text) - set(" \t\r\n")) <= _DEGENERATE_MAX_DISTINCT
+
+
 class Indexer:
     def __init__(self, config: Config, *, embedder=None, chunk_store=None):
         self.config = config
@@ -88,6 +109,37 @@ class Indexer:
         return self._chunks
 
     @property
+    def max_chunks(self) -> int:
+        return getattr(getattr(self, "config", None), "index_max_chunks", 4000) or 0
+
+    def _bounded(self, file_uid: str, chunks):
+        """The chunks of one document that are worth, and allowed, an embedding.
+
+        Two bounds, because the ingest worker indexes one document at a time and
+        a document's cost is everyone else's wait. A 9 MiB file of one repeated
+        letter chunked to ~9,000 pieces that embedded fine and meant nothing,
+        and it held every other document in the deployment behind it.
+
+        Degenerate chunks are dropped (see ``_is_degenerate``); what is left is
+        capped at ``CSAI_INDEX_MAX_CHUNKS``, keeping the START of the document so
+        it is still found by what it opens with. Both are logged with counts,
+        never silent.
+        """
+        kept = [c for c in chunks if not _is_degenerate(c.text)]
+        dropped = len(chunks) - len(kept)
+        if dropped:
+            log.info("index %s: skipped %d of %d chunk(s) with nothing to search "
+                     "(long runs of <=%d distinct characters)",
+                     file_uid, dropped, len(chunks), _DEGENERATE_MAX_DISTINCT)
+        cap = self.max_chunks
+        if cap and len(kept) > cap:
+            log.warning("index %s: %d chunk(s) exceeds CSAI_INDEX_MAX_CHUNKS=%d; "
+                        "indexing the first %d, the rest of the document is not "
+                        "searchable", file_uid, len(kept), cap, cap)
+            kept = kept[:cap]
+        return kept
+
+    @property
     def batch_size(self) -> int:
         """Chunks per embeddings request. Read through a property so an Indexer
         built without a Config (the tests do this) still has a usable default."""
@@ -97,6 +149,7 @@ class Indexer:
               version: Optional[str] = None) -> int:
         """Chunk + embed + store. Returns the number of chunks indexed."""
         chunks = chunk_markdown(content_md or "")
+        chunks = self._bounded(file_uid, chunks)
         if not chunks:
             self.chunks.delete(tenant, file_uid)
             return 0

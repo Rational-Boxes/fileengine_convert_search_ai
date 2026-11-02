@@ -208,3 +208,103 @@ def test_chunks_are_embedded_once_not_twice():
     assert n == 10
     assert sum(emb.calls) == n             # one item embedded once, no second pass
     assert len(emb.calls) == 1
+
+
+# --- one document cannot hold the queue -------------------------------------
+#
+# The ingest worker indexes one document at a time, so a document's embedding
+# cost is every other document's wait. share_service's live tests upload a
+# 9 MiB doc.txt of a single repeated letter; it chunked to ~9,000 pieces that
+# each embedded "fine", meant nothing, and held indexing for the whole
+# deployment for the better part of an hour.
+
+class _TallyEmbedder:
+    def __init__(self, dim=4):
+        self.dim = dim
+        self.items = 0
+
+    def embed(self, texts):
+        self.items += len(texts)
+        return [[0.1] * self.dim for _ in texts]
+
+
+class _BoundMemChunks:
+    def __init__(self):
+        self.stored = {}
+
+    def replace(self, tenant, file_uid, items):
+        self.stored[(tenant, file_uid)] = items
+
+    def delete(self, tenant, file_uid):
+        self.stored.pop((tenant, file_uid), None)
+
+
+class _BoundCfg:
+    embedding_batch_size = 512
+
+    def __init__(self, max_chunks=4000):
+        self.index_max_chunks = max_chunks
+
+
+def _bounded_indexer(max_chunks=4000):
+    from convert_search_ai.indexing import Indexer
+    emb, store = _TallyEmbedder(), _BoundMemChunks()
+    return Indexer(_BoundCfg(max_chunks), embedder=emb, chunk_store=store), emb, store
+
+
+def _prose(n_paragraphs):
+    return "\n\n".join(
+        f"Paragraph {i}: the quarterly review covers budgets, staffing and the "
+        f"schedule for site {i}, with notes on risks and the actions agreed."
+        * 8 for i in range(n_paragraphs))
+
+
+def test_a_9mib_run_of_one_letter_never_reaches_the_embedder():
+    ix, emb, store = _bounded_indexer()
+
+    n = ix.index("t", "doc", "m" * (9 * 1024 * 1024))
+
+    assert n == 0
+    assert emb.items == 0                      # no embedding work at all
+
+
+def test_degenerate_blocks_are_skipped_and_real_text_around_them_is_kept():
+    ix, emb, store = _bounded_indexer()
+    md = _prose(3) + "\n\n" + ("-" * 5000) + "\n\n" + ("0" * 3000) + "\n\n" + _prose(2)
+
+    n = ix.index("t", "doc", md)
+
+    texts = [t for _, t, _ in store.stored[("t", "doc")]]
+    assert n == len(texts) == emb.items > 0
+    assert any("Paragraph 0" in t for t in texts)
+    assert any("Paragraph 1:" in t for t in texts[-3:])     # the tail survived too
+    assert not any(set(t) <= set("-0 \n") for t in texts)
+
+
+def test_a_short_document_is_never_degenerate():
+    """Bounded below so a document that is just "OK" stays searchable."""
+    ix, emb, store = _bounded_indexer()
+    assert ix.index("t", "doc", "OK") == 1
+    assert ix.index("t", "doc2", "x" * 50) == 1
+
+
+def test_a_markdown_table_is_not_degenerate():
+    ix, emb, store = _bounded_indexer()
+    table = "| id | name | qty |\n|---|---|---|\n" + "\n".join(
+        f"| {i} | widget-{i} | {i * 3} |" for i in range(40))
+    assert ix.index("t", "doc", table) >= 1
+
+
+def test_a_document_past_the_cap_indexes_its_start_and_stops():
+    ix, emb, store = _bounded_indexer(max_chunks=3)
+
+    n = ix.index("t", "doc", _prose(40))
+
+    texts = [t for _, t, _ in store.stored[("t", "doc")]]
+    assert n == 3 == emb.items                 # bounded work
+    assert "Paragraph 0" in texts[0]           # the START is what is kept
+
+
+def test_cap_zero_means_no_limit():
+    ix, emb, store = _bounded_indexer(max_chunks=0)
+    assert ix.index("t", "doc", _prose(40)) > 3
