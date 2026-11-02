@@ -309,6 +309,9 @@ class Config:
         self.extract_models = _env("CSAI_EXTRACT_MODELS", "")
         self.extract_default_model = _env("CSAI_EXTRACT_DEFAULT_MODEL", "")
         self.extract_test_max_chars = int(_env("CSAI_EXTRACT_TEST_MAX_CHARS", "200000"))
+        # Marked-up extraction PDFs (§5): PyMuPDF holds the whole PDF in memory,
+        # so a larger one is reported as too_large instead of read.
+        self.extract_markup_max_mb = int(_env("CSAI_EXTRACT_MARKUP_MAX_MB", "100"))
         # Applications publish their own definitions with no person approving
         # (§4.5), so their volume is bounded.
         self.prompt_set_app_max_sets = int(_env("CSAI_PROMPT_SET_APP_MAX_SETS", "50"))

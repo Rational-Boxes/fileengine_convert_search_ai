@@ -375,7 +375,9 @@ async def _test(request: Request, body: TestBody, identity: Identity):
     req = ExtractRequest(schema=ps.compile_schema(set_body),
                          files=[body.file_uid] if body.file_uid else [],
                          instructions=set_body["instructions"], prompt_set=set_info,
-                         model_choice=choice, write_cache=False)
+                         model_choice=choice, write_cache=False,
+                         markup=body.file_uid is not None, markup_fields=set_body["fields"],
+                         markup_colours=(set_body.get("markup") or {}).get("colours") or {})
     status, err = _admit(app, identity, spends_tokens=True)
     if err is not None:
         return err
@@ -386,8 +388,8 @@ async def _test(request: Request, body: TestBody, identity: Identity):
     except (usage_mod.RateLimited, usage_mod.UsageUnavailable) as e:
         return _usage_error(e, identity)
     extractor = Extractor(config, client_for=_client_for(app), gate=app.state.permission_gate,
-                          store=s.store, chat=chat, cache=None, convert=_convert_fn(app),
-                          meter=s.meter)
+                          store=s.store, chat=chat, cache=None, markup=s.markup,
+                          test_markups=s.test_markups, convert=_convert_fn(app), meter=s.meter)
 
     def producer(emit, cancelled):
         try:
@@ -424,3 +426,16 @@ async def _test(request: Request, body: TestBody, identity: Identity):
                 "summary": result.get("summary"), "usage": result.get("usage")}
 
     return await _maybe_await(_respond(request, EventRun(producer), status, shape))
+
+
+@router.get("/prompt-sets/test/markup/{token}")
+def test_markup(request: Request, token: str, identity: Identity = Depends(_identity)):
+    """A builder test's marked-up PDF: held briefly, only for the editor who ran
+    the test, never stored (§4.3)."""
+    from .routes import _svc
+    data = _svc(request.app).test_markups.get(identity.user, token)
+    if data is None:
+        raise HTTPException(status_code=404, detail="no such test result (it expires)")
+    return Response(content=data, media_type="application/pdf",
+                    headers={"Content-Disposition": 'inline; filename="test-markup.pdf"',
+                             "Cache-Control": "no-store"})

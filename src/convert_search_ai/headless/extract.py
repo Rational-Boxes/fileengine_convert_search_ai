@@ -85,6 +85,10 @@ class ExtractRequest:
     model_choice: Optional[dict] = None
     #: Builder test runs store nothing (§4.3).
     write_cache: bool = True
+    #: The marked-up PDF (§5): on/off, the field definitions (labels) and colours.
+    markup: bool = False
+    markup_fields: List[dict] = field(default_factory=list)
+    markup_colours: dict = field(default_factory=dict)
 
     @property
     def fields(self) -> List[str]:
@@ -345,9 +349,12 @@ class Extractor:
     ``client_for(identity)`` a user-bound core client, ``gate`` the permission
     gate (READ + existence), ``store`` the document store (``get_text_row``),
     ``convert(file_uid, tenant)`` the re-index path (or None), ``cache`` the
-    sidecar cache, ``chat`` the chat provider, ``meter`` the usage meter."""
+    sidecar cache, ``chat`` the chat provider, ``meter`` the usage meter,
+    ``markup`` the marked-up PDF store and ``test_markups`` where a builder
+    test's PDF is held instead of stored."""
 
-    def __init__(self, config, *, client_for, gate, store, chat, cache=None,
+    def __init__(self, config, *, client_for, gate, store, chat, cache=None, markup=None,
+                 test_markups=None,
                  convert: Optional[Callable[[str, str], object]] = None, meter=None):
         self.config = config
         self.client_for = client_for
@@ -355,6 +362,8 @@ class Extractor:
         self.store = store
         self.chat = chat
         self.cache = cache
+        self.markup = markup
+        self.test_markups = test_markups
         self.convert = convert
         self.meter = meter
         self.truncated = False
@@ -461,9 +470,11 @@ class Extractor:
             if hit and isinstance(hit.get("data"), dict):
                 if self.meter is not None:
                     self.meter.add_cache_hit(identity, int(hit.get("tokens") or 0))
-                return {**base, "data": hit["data"], "counts": counts(hit["data"]),
+                item = {**base, "data": hit["data"], "counts": counts(hit["data"]),
                         "valid": True, "cached": True, "model": hit.get("model", model),
                         "created_at": hit.get("created_at", "")}
+                self._mark_up(identity, req, t, text, item, key, reuse=True)
+                return item
 
         spent = [0]
 
@@ -495,7 +506,46 @@ class Extractor:
                 "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
                 "created_by": identity.user, "client_key_id": identity.client_key_id,
                 "tokens": spent[0], "data": data})
+        if valid:
+            self._mark_up(identity, req, t, text, item, key)
         return item
+
+    def _mark_up(self, identity, req: ExtractRequest, t, text: str, item: dict, key: str,
+                 reuse: bool = False) -> None:
+        """Add the marked-up PDF to ``item`` (§5). Never fails the item."""
+        if not req.markup or self.markup is None:
+            return
+        from ..renditions import extract_pdf_fmt
+        from . import markup as mk
+        set_id = (req.prompt_set or {}).get("id") or ""
+        fmt = extract_pdf_fmt(set_id[3:] if set_id.startswith("ps_") else "s" + key[:12])
+        try:
+            if reuse and req.write_cache:
+                found = self.markup.existing(t.file_uid, t.version, fmt, identity.tenant)
+                if found:
+                    item["markup"] = {"status": "written", "uid": found[0], "name": found[1]}
+                    return
+            pdf, why = self.markup.source(t.file_uid, t.version, t.name, identity.tenant)
+            if pdf is None:
+                item["markup"] = {"status": why}
+                return
+            fields = req.markup_fields or [{"name": f} for f in req.fields]
+            title = (req.prompt_set or {}).get("name") or "Extracted values"
+            data, report = mk.mark_up(
+                pdf, item["data"], fields, text_len=len(text or ""), title=title,
+                legend=mk.legend_lines(prompt_set=req.prompt_set, model=item.get("model", ""),
+                                       version=t.version),
+                colours=req.markup_colours)
+            if req.write_cache:
+                uid, name = self.markup.write(t.file_uid, t.version, fmt, data, identity.tenant)
+                item["markup"] = {"status": "written", "uid": uid, "name": name, "fields": report}
+            elif self.test_markups is not None:
+                token = self.test_markups.put(identity.user, data)
+                item["markup"] = {"status": "ready", "fields": report,
+                                  "download": f"/v1/prompt-sets/test/markup/{token}"}
+        except Exception:
+            log.warning("marked-up PDF of %s failed", t.file_uid, exc_info=True)
+            item["markup"] = {"status": "error"}
 
     def extract_text(self, identity, req: ExtractRequest, name: str, text: str) -> dict:
         """One ``item`` for pasted text (builder test, §4.3): the text is the

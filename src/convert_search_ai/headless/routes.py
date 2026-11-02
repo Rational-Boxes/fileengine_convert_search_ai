@@ -76,6 +76,10 @@ def _svc(app):
     s.cache = getattr(app.state, "headless_cache", None) or ExtractionCache(
         lambda: agent_client(config))
     s.relay = getattr(app.state, "headless_relay", None) or ConsentRelay(redis_client)
+    from .markup import MarkupStore, TestMarkups
+    s.markup = getattr(app.state, "headless_markup", None) or MarkupStore(
+        lambda: agent_client(config), int(getattr(config, "extract_markup_max_mb", 100)) << 20)
+    s.test_markups = TestMarkups()
     app.state.headless = s
     return s
 
@@ -200,6 +204,8 @@ class ExtractBody(BaseModel):
     model: Optional[str] = Field(default=None, description=(
         "preferred model id for a raw-schema request; one this deployment does not offer "
         "falls back to the default. A prompt set uses its own model."))
+    markup: Optional[bool] = Field(default=None, description=(
+        "write the marked-up PDF sidecar (default: on for a prompt set, off otherwise)"))
 
 
 class ReportTarget(BaseModel):
@@ -271,12 +277,15 @@ async def extract(request: Request, body: ExtractBody,
         raw["schema"] = ps.compile_schema(set_body)
         raw["instructions"] = set_body["instructions"]
         preferred = set_body.get("model")
+        markup_fields = set_body["fields"]
+        markup_colours = (set_body.get("markup") or {}).get("colours") or {}
     else:
         if body.schema_ is None:
             raise HTTPException(status_code=400, detail="give prompt_set or schema")
         if body.revision is not None:
             raise HTTPException(status_code=400, detail="revision needs prompt_set")
         preferred = body.model
+        markup_fields, markup_colours = [], {}
     try:
         req = parse_request(raw, config)
     except ExtractRequestError as e:
@@ -285,6 +294,8 @@ async def extract(request: Request, body: ExtractBody,
     entry, choice = models.resolve(preferred)
     chat = models.provider(entry, app.state.chat.chat)
     req.prompt_set, req.model_choice = set_info, choice
+    req.markup = body.markup if body.markup is not None else set_info is not None
+    req.markup_fields, req.markup_colours = markup_fields, markup_colours
     status, err = _admit(app, identity, spends_tokens=True)
     if err is not None:
         return err
@@ -296,7 +307,7 @@ async def extract(request: Request, body: ExtractBody,
         return _usage_error(e, identity)
 
     extractor = Extractor(config, client_for=_client_for(app), gate=app.state.permission_gate,
-                          store=s.store, chat=chat, cache=s.cache,
+                          store=s.store, chat=chat, cache=s.cache, markup=s.markup,
                           convert=_convert_fn(app), meter=s.meter)
 
     def producer(emit, cancelled):
