@@ -194,6 +194,17 @@ def _conversion(request: Request) -> dict:
     return {"available": True, "formats": cached}
 
 
+def _extraction(request: Request) -> dict:
+    """Prompt sets and the extraction models (EXTRACTION_PROMPT_SETS.md §4):
+    the builder shows the model list; no provider details or keys."""
+    try:
+        from ..headless.models import registry
+        models = registry(request.app).public()
+    except Exception:
+        models = []
+    return {"prompt_sets": True, "models": models}
+
+
 @router.get("/capabilities")
 def capabilities(request: Request) -> dict:
     """The deployment's feature configuration, as one document.
@@ -212,4 +223,5 @@ def capabilities(request: Request) -> dict:
         "search": _search(config),
         "media": _media(config),
         "conversion": _conversion(request),
+        "extraction": _extraction(request),
     }

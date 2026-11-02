@@ -182,16 +182,24 @@ class MatchBody(BaseModel):
 
 
 class ExtractBody(BaseModel):
-    """Exactly one of ``folder_uid`` or ``files``."""
+    """Exactly one of ``folder_uid`` or ``files``; exactly one of ``prompt_set``
+    (a published server-side definition, EXTRACTION_PROMPT_SETS.md §4.5) or
+    ``schema`` (+ ``instructions``)."""
     model_config = ConfigDict(populate_by_name=True)
     folder_uid: Optional[str] = None
     files: Optional[List[str]] = None
     recursive: bool = False
     match: Optional[MatchBody] = None
-    schema_: dict = Field(alias="schema",
-                          description="JSON Schema (type object) of the values wanted")
+    schema_: Optional[dict] = Field(default=None, alias="schema",
+                                    description="JSON Schema (type object) of the values wanted")
     instructions: str = ""
     cache: Literal["use", "refresh"] = "use"
+    prompt_set: Optional[str] = Field(default=None, description="a published prompt set id")
+    revision: Optional[int] = Field(default=None,
+                                    description="pin a published revision (default: current)")
+    model: Optional[str] = Field(default=None, description=(
+        "preferred model id for a raw-schema request; one this deployment does not offer "
+        "falls back to the default. A prompt set uses its own model."))
 
 
 class ReportTarget(BaseModel):
@@ -242,10 +250,41 @@ async def extract(request: Request, body: ExtractBody,
     (or ``error``), ``usage``, ``done``."""
     app = request.app
     config = app.state.config
+    from .models import registry as model_registry
+    from .promptset_routes import service as promptset_service
+    from .promptset_service import ServiceError
+    from . import promptsets as ps
+    raw = body.model_dump(by_alias=True)
+    set_info = None
+    if body.prompt_set is not None:
+        if body.schema_ is not None or body.instructions:
+            raise HTTPException(status_code=400,
+                                detail="give prompt_set or schema + instructions, not both")
+        if body.model is not None:
+            raise HTTPException(status_code=400, detail=(
+                "a prompt set runs on its own model; model may not be overridden"))
+        try:
+            set_info, set_body = promptset_service(app).resolve_for_run(
+                identity, body.prompt_set, body.revision)
+        except ServiceError as e:
+            return JSONResponse(status_code=e.status, content=e.body())
+        raw["schema"] = ps.compile_schema(set_body)
+        raw["instructions"] = set_body["instructions"]
+        preferred = set_body.get("model")
+    else:
+        if body.schema_ is None:
+            raise HTTPException(status_code=400, detail="give prompt_set or schema")
+        if body.revision is not None:
+            raise HTTPException(status_code=400, detail="revision needs prompt_set")
+        preferred = body.model
     try:
-        req = parse_request(body.model_dump(by_alias=True), config)
+        req = parse_request(raw, config)
     except ExtractRequestError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    models = model_registry(app)
+    entry, choice = models.resolve(preferred)
+    chat = models.provider(entry, app.state.chat.chat)
+    req.prompt_set, req.model_choice = set_info, choice
     status, err = _admit(app, identity, spends_tokens=True)
     if err is not None:
         return err
@@ -257,13 +296,14 @@ async def extract(request: Request, body: ExtractBody,
         return _usage_error(e, identity)
 
     extractor = Extractor(config, client_for=_client_for(app), gate=app.state.permission_gate,
-                          store=s.store, chat=app.state.chat.chat, cache=s.cache,
+                          store=s.store, chat=chat, cache=s.cache,
                           convert=_convert_fn(app), meter=s.meter)
 
     def producer(emit, cancelled):
         try:
             emit("usage", status)
             run_id = _start_run(s.runs, identity, title=_extract_title(req), request={
+                "prompt_set": set_info, "model": choice,
                 "kind": "extract", "target": ({"folder_uid": req.folder_uid,
                                                "recursive": req.recursive}
                                               if req.folder_uid is not None
@@ -284,7 +324,10 @@ async def extract(request: Request, body: ExtractBody,
                          client_label=identity.client_label,
                          target="folder" if req.folder_uid is not None else "files",
                          folder_uid=req.folder_uid or "", requested=len(req.files),
-                         fields=req.fields, model=getattr(app.state.chat.chat, "model_id", ""),
+                         fields=req.fields, model=getattr(chat, "model_id", ""),
+                         model_fallback=bool(choice.get("fallback")),
+                         prompt_set=(set_info or {}).get("id", ""),
+                         prompt_set_revision=(set_info or {}).get("revision"),
                          **{k: v for k, v in summary.items() if isinstance(v, (int, bool))})
             final = _final_usage(s.meter, identity, status)
             emit("usage", final)
@@ -482,6 +525,9 @@ def _title(message: str) -> str:
 
 
 def _extract_title(req) -> str:
-    fields = ", ".join(req.fields[:4]) + ("…" if len(req.fields) > 4 else "")
     where = "folder" if req.folder_uid is not None else f"{len(req.files)} file(s)"
+    if req.prompt_set:
+        ps = req.prompt_set
+        return f"{ps.get('name', 'Prompt set')} r{ps.get('revision')} on {where}"[:120]
+    fields = ", ".join(req.fields[:4]) + ("…" if len(req.fields) > 4 else "")
     return f"Extract {fields} from {where}"[:120]

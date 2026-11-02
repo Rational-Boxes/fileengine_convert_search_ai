@@ -183,6 +183,13 @@ def build_app(config: Config | None = None, *, search: SearchService | None = No
     # The headless API for desktop applications (HEADLESS_RESEARCH_API.md).
     from .headless.routes import router as headless_router
     app.include_router(headless_router)
+    # Extraction prompt sets and the extraction model list
+    # (EXTRACTION_PROMPT_SETS.md §4). The model list is read now so a broken
+    # CSAI_EXTRACT_MODELS stops startup instead of failing the first run.
+    from .headless.models import ModelRegistry
+    from .headless.promptset_routes import router as promptset_router
+    app.state.extract_models = ModelRegistry.from_config(config)
+    app.include_router(promptset_router)
 
     # What this deployment offers, so the SPA can hide controls for features it
     # does not have rather than surfacing whichever endpoint is missing.

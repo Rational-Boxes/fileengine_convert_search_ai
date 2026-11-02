@@ -302,6 +302,18 @@ class Config:
         # a longer document is read in consecutive windows.
         self.headless_extract_window_chars = int(_env("CSAI_HEADLESS_EXTRACT_WINDOW_CHARS", "60000"))
         self.headless_max_schema_fields = int(_env("CSAI_HEADLESS_MAX_SCHEMA_FIELDS", "60"))
+        # Extraction models (EXTRACTION_PROMPT_SETS.md §4.4): a JSON list of
+        # {id, label, model, provider?, base_url?, max_tokens?, json_mode?,
+        # api_key_env?}. Unset = the chat model alone. A requested model that is
+        # not listed falls back to the default; it is never an error.
+        self.extract_models = _env("CSAI_EXTRACT_MODELS", "")
+        self.extract_default_model = _env("CSAI_EXTRACT_DEFAULT_MODEL", "")
+        self.extract_test_max_chars = int(_env("CSAI_EXTRACT_TEST_MAX_CHARS", "200000"))
+        # Applications publish their own definitions with no person approving
+        # (§4.5), so their volume is bounded.
+        self.prompt_set_app_max_sets = int(_env("CSAI_PROMPT_SET_APP_MAX_SETS", "50"))
+        self.prompt_set_app_revisions_per_day = int(
+            _env("CSAI_PROMPT_SET_APP_REVISIONS_PER_DAY", "20"))
 
         # --- Web search tool (WEB_SEARCH_TOOL_PLAN; OFF by default) ---
         # The chat web_search tool. `enabled` is the master switch (off by default —

@@ -903,3 +903,23 @@ automation exists.
 - **Desktop selection:** the headless API lists the prompt sets published
   from the builder and runs one by id (§4.5). "Tested" means developed
   interactively in the builder; publishing is not gated on a recorded test.
+
+## 10. Implementation notes
+
+Changes from the text above, made while implementing (branch
+`feat/extraction-prompt-sets`):
+
+- **`applies_to` is stored, not validated, in csai.** The classifier sets live
+  in folder_actions, which csai cannot read. csai keeps the labels as given
+  (they filter `GET /v1/prompt-sets?applies_to=`); folder_actions checks them
+  where a binding maps classifier labels to prompt sets (§6.1). The "unknown
+  label dropped with a warning" behaviour in §4.5/§4.6 moves there.
+- **The model report.** The SSE `plan` and the summary carry `model:
+  {requested, used, fallback}`; each `item` keeps its `model` string (the
+  provider's model name), as 1.9.69 clients read it.
+- **Builder routes are refused to key sessions** (403), including for a key
+  of an editor: applications use `PUT /v1/prompt-sets/slug/{slug}`.
+- `ModelRegistry` reuses the app's chat provider for the chat model itself
+  and builds one provider per other entry. The Anthropic provider takes a
+  per-entry key (`api_key_env`) through a dedicated override, not
+  `CSAI_CHAT_API_KEY`, which falls back to `OPENAI_API_KEY`.

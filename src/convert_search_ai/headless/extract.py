@@ -78,6 +78,13 @@ class ExtractRequest:
     name_glob: str = ""
     instructions: str = ""
     cache: str = "use"            # use | refresh
+    #: The prompt set this run uses ({id, name, slug, revision, current_revision})
+    #: and the model choice ({requested, used, fallback}); both reported in the
+    #: plan and summary (EXTRACTION_PROMPT_SETS.md §4.4, §4.5).
+    prompt_set: Optional[dict] = None
+    model_choice: Optional[dict] = None
+    #: Builder test runs store nothing (§4.3).
+    write_cache: bool = True
 
     @property
     def fields(self) -> List[str]:
@@ -449,7 +456,7 @@ class Extractor:
             return {**base, "skipped": why}
         model = getattr(self.chat, "model_id", "")
         key = cache_key(req, model)
-        if self.cache is not None and req.cache == "use":
+        if self.cache is not None and req.cache == "use" and req.write_cache:
             hit = self.cache.get(t.file_uid, t.version, identity.tenant, key)
             if hit and isinstance(hit.get("data"), dict):
                 if self.meter is not None:
@@ -478,7 +485,7 @@ class Extractor:
                 "cached": False, "model": model, "tokens": spent[0]}
         if not valid:
             item["problems"] = problems_left[:10]
-        elif self.cache is not None:
+        elif self.cache is not None and req.write_cache:
             import datetime as _dt
             self.cache.put(t.file_uid, t.version, identity.tenant, key, {
                 "schema_hash": fingerprint(req.schema),
@@ -488,6 +495,33 @@ class Extractor:
                 "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
                 "created_by": identity.user, "client_key_id": identity.client_key_id,
                 "tokens": spent[0], "data": data})
+        return item
+
+    def extract_text(self, identity, req: ExtractRequest, name: str, text: str) -> dict:
+        """One ``item`` for pasted text (builder test, §4.3): the text is the
+        document's Markdown; quotes are checked and offsets given against it.
+        Nothing is cached."""
+        model = getattr(self.chat, "model_id", "")
+        spent = [0]
+
+        def sink(i, o):
+            spent[0] += i + o
+
+        parts, problems_left = [], []
+        chunks = windows(text, int(getattr(self.config, "headless_extract_window_chars", 60000)))
+        with collect_usage(sink):
+            for n, chunk in enumerate(chunks, 1):
+                data, problems = self._ask(req, name, chunk, n, len(chunks), text)
+                parts.append(data)
+                problems_left += problems
+        if self.meter is not None:
+            self.meter.add_tokens(identity, spent[0])
+        data = merge(parts, req.fields)
+        item = {"file_uid": "", "name": name, "version": "", "data": data,
+                "counts": counts(data), "valid": not problems_left, "cached": False,
+                "model": model, "tokens": spent[0]}
+        if problems_left:
+            item["problems"] = problems_left[:10]
         return item
 
     def _ask(self, req, name, chunk, part, parts, text):
@@ -534,10 +568,18 @@ class Extractor:
             # The folder holds more matching documents than one run reads; the
             # caller narrows the request (match, a subfolder) or names ids.
             plan["limit"] = int(getattr(self.config, "headless_files_per_run", 200))
+        if req.prompt_set:
+            plan["prompt_set"] = dict(req.prompt_set)
+        if req.model_choice:
+            plan["model"] = dict(req.model_choice)
         emit("plan", plan)
         summary = {"files": len(targets), "extracted": 0, "cached": 0, "skipped": 0,
                    "failed": 0, "found": 0, "not_found": 0, "dropped_no_evidence": 0,
                    "tokens": 0, "cancelled": False, "truncated": self.truncated}
+        if req.prompt_set:
+            summary["prompt_set"] = dict(req.prompt_set)
+        if req.model_choice:
+            summary["model"] = dict(req.model_choice)
         budget_out = False
         state = self._usage_state(identity)
         for t in targets:
