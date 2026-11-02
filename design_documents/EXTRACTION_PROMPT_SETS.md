@@ -177,7 +177,7 @@ records the revision it used.
 - **API** (csai): `GET/POST /v1/prompt-sets`, `GET/PUT /v1/prompt-sets/{id}`
   (a PUT of a published set creates a new draft revision),
   `POST /v1/prompt-sets/{id}/publish`, `GET /v1/prompt-sets/{id}/revisions`,
-  `POST /v1/prompt-sets/{id}/test` (§4.3), import/export (§4.6).
+  `POST /v1/prompt-sets/{id}/test` (§4.3), YAML export/import (§4.6).
 - `/v1/extract` gains `{"prompt_set": "ps_…", "revision": n?}` as an
   alternative to an inline `schema` + `instructions`. The cache key already
   covers schema and instructions, so a set's revisions cache separately.
@@ -206,7 +206,10 @@ A "Prompt sets" admin panel next to Classifier sets:
   Another model can be picked for the test alone, to compare models on the
   same input without changing the set;
 - revision history with diff; publish; retire, optionally naming the set that
-  replaces it.
+  replaces it;
+- **⬇ Export YAML** per set and for a selection, and **⬆ Import YAML**
+  (paste or upload), laid out as in the classifier editor; import warnings
+  shown on the imported draft (§4.6).
 
 ### 4.3 Test runs
 
@@ -326,13 +329,161 @@ tokens).
 - OpenAPI: the new routes and the `prompt_set` request variant are added to
   csai's published schema, alongside `/v1/extract`.
 
-### 4.6 Import from the reviewed repo
+**Publishing a definition from the application** (owner, 2026-11-02). A
+desktop application publishes the extraction definitions it needs **without
+user intervention and without server-side configuration**: Reviera, for
+example, ships its definitions and makes sure each is present and published
+when it starts, with no admin creating sets or granting roles first. The
+integration and its definitions ship together.
 
-The import accepts that repo's YAML/JSON (`type: extractor`, `prompt`,
-`fields:[{name, description}]`): `prompt` becomes instructions, every field
-becomes `type: string` with its description, and the set is imported as a
-**draft** with a note that the types need setting. Our own export is the
-prompt-set JSON above.
+- `PUT /v1/prompt-sets/slug/{slug}` with the definition in the shared format
+  (§4.6), as YAML (`application/yaml`) or the same structure as JSON. `slug`
+  is a new, optional, tenant-unique machine name on a prompt set
+  (`[a-z0-9][a-z0-9._-]{2,63}`, e.g. `reviera.door-datasheet`) that an
+  application can address without knowing the server's id. A set built in
+  the builder can be given one too.
+- **Idempotent.** The definition is normalised and hashed:
+  - no set with that slug → a new set is created and its revision 1
+    published (`201`);
+  - the current published revision has the same hash → nothing changes, and
+    `200` returns its id and revision. An application can call this at every
+    start;
+  - different → a new revision is created and published (`200`, `revision`
+    incremented). Earlier revisions stay usable by pin (§4.5).
+- **Concurrency with the builder.** The request may carry `base_revision`
+  (the revision the application last saw). If someone has since published
+  another revision in the builder, the call returns `409 revision_conflict`
+  with the current revision. The application then decides: adopt the
+  server's revision, or resend with `force: true` to publish its own over it.
+  Without `base_revision`, the newer definition simply wins; history keeps
+  both.
+- `publish: false` uploads it as a **draft** instead, for a person to review
+  in the builder before it is used.
+- **Who may publish:** any `api`-scoped key session of a tenant member. No
+  role, no new scope and no prior setup (owner: no server-side
+  configuration). What a key may change is limited by who manages the set:
+  - **application-managed** sets (first published through this endpoint):
+    any key session in the tenant may publish to them. They are governed by
+    the applications that use them, so a second user's Reviera with the same
+    definition is a no-op, and a newer Reviera release publishes the next
+    revision;
+  - **builder-managed** sets (made or taken over in the builder): a key
+    session gets `409 managed_in_builder` unless its user holds the editor
+    role (D2). An identical definition is still a `200` no-op, so an app whose
+    set an editor has adopted keeps working;
+  - a slug an editor has **locked** in the builder: `409 locked` for any
+    change; identical definitions are still a no-op.
+- **Guard rails, since no person approves these:** at most 50
+  application-managed sets per tenant and 20 new revisions per set per day
+  (`CSAI_PROMPT_SET_APP_MAX_SETS`, `CSAI_PROMPT_SET_APP_REVISIONS_PER_DAY`);
+  the normal field, size and model validation; every publish audited with the
+  key and user.
+- **Strict, not remapped.** Unlike a file import, an application relies on
+  exactly what it sends, so a model id not in `CSAI_EXTRACT_MODELS` is `422
+  model_unavailable`, and an unknown classifier set or label in `applies_to`
+  is `422`. Validation is otherwise the editor's (§4.1).
+- **Provenance and editor control.** Each revision records `managed_by
+  {client_key_id, label, user}`. The builder lists application-managed sets
+  separately ("Published by application Reviera"), and an editor can, at any
+  time: **take over** a set (it becomes builder-managed; the application's
+  later publishes get `409 managed_in_builder`), **lock** its slug, or
+  **retire** it. Nothing an application publishes needs an editor, and
+  nothing an editor decides can be overridden by an application.
+- **Automation is not moved by an application release.** A folder-automation
+  binding (§6.1) that uses an application-managed set pins the revision
+  chosen when the binding was saved (it does not follow
+  `latest_published`). A new Reviera release therefore never changes what a
+  folder's automation extracts; the Actions tab shows "newer revision
+  available".
+- `POST /v1/prompt-sets/slug/{slug}/retire` (optional `replaced_by`): allowed
+  for application-managed sets on the same terms as publishing; a desktop
+  run of a retired set then gets the `410` above.
+- Counts as a request against the key's limits; spends no tokens. Audit
+  `prompt_set.published` / `retired` with set id, revision, slug, hash, key
+  id and source `headless`, never the field definitions.
+
+### 4.6 YAML export and import (sharing definitions)
+
+Prompt sets are shared between tenants, deployments and people as YAML files
+(owner, 2026-11-02), the same way classifier sets already are in folder
+automation (`classifier_io.py`, SmolDocBot `type: classifier`).
+
+**Format** (`format: fileengine.prompt_set.v1`): only what defines the set,
+nothing tied to one deployment.
+
+```yaml
+format: fileengine.prompt_set.v1
+type: extraction_prompt_set
+name: Door datasheet
+slug: reviera.door-datasheet      # optional; how an application addresses it (§4.5)
+description: Fire doors - values for the BIM model properties
+instructions: |
+  If several door types are listed, use the one named in the file name.
+model: deepseek-v4-flash          # a hint; mapped on import (below)
+applies_to:                       # optional; matched by classifier set NAME
+  classifier_set: Construction documents
+  labels: [door_datasheet]
+markup:
+  colours: {fire_rating: "#e8590c"}
+fields:
+  - name: fire_rating
+    label: Fire rating
+    type: enum
+    enum: [EI 30, EI 60, EI 90, EI 120]
+    required: true
+    description: Fire resistance classification to EN 13501-2
+  - name: width
+    label: Leaf width
+    type: number
+    unit: mm
+    minimum: 300
+    description: Door leaf width
+exported:                         # informational, ignored on import
+  from_revision: 3
+  at: 2026-11-02T14:15:02Z
+```
+
+Not exported: ids, revision history, tenant, authors, test inputs, cache or
+run data. Field order is preserved.
+
+**Export.**
+- `GET /v1/prompt-sets/{id}/export[?revision=n]` → `text/yaml`, filename
+  `<name>.promptset.yaml`. Default: the current published revision. A draft
+  can be exported by an editor (marked `status: draft`).
+- `GET /v1/prompt-sets/export?ids=…` → one file holding several sets
+  (`type: extraction_prompt_sets`, `sets: [...]`).
+- Editors export from the builder (⬇ per set, and "Export selected"). A
+  desktop key session may export **published** sets, so an integration can
+  keep the definition it was built against, and can publish its own (§4.5).
+
+**Import.**
+- `POST /v1/prompt-sets/import`: raw YAML body or a file upload, single or
+  multi-set, like the classifier import. Editors only.
+- Always imported as a **draft**; never published by import. A person looks at
+  it in the builder, tries it (§4.3) and publishes.
+- Name clash: `?on_conflict=new` (default: a new set, name suffixed
+  "(imported)") or `revision` (a new draft revision of the existing set with
+  that name, so an updated shared definition can replace an older one with
+  its history kept).
+- Model: kept if its id is in this deployment's `CSAI_EXTRACT_MODELS` (§4.4);
+  otherwise the draft gets the default model and a warning.
+- `applies_to`: the classifier set is matched by name in this tenant; labels
+  that do not exist there are dropped with a warning.
+- The response lists what was created and every warning, and the builder
+  shows them.
+- Validation is the same as for a set built in the editor (field names, types,
+  enum values, field-count and size limits), plus `yaml.safe_load` only, a
+  256 KB file cap and at most 50 sets per file. An invalid file imports
+  nothing (all or none) and the error names the set and field.
+- **Older formats accepted:** the reviewed repo's / SmolDocBot `type:
+  extractor` YAML or JSON (`prompt`, `fields: [{name, description}]`):
+  `prompt` becomes the instructions, each field `type: string` with its
+  description, and a warning that the types need setting.
+- Audit: `prompt_set.exported` / `prompt_set.imported` with set ids, counts
+  and format, never the content.
+
+**Round trip** is a test: export → import → export gives the same YAML (apart
+from `exported`), for every field type.
 
 ## 5. Marked-up PDF
 
@@ -636,7 +787,7 @@ without a new plug-in.
 | Phase | Scope | Repos |
 |---|---|---|
 | P0 | Fix the PyMuPDF install; confirm the FA form-shape mismatches; `CoreClient` copy/rename/move-with-name | csai, docker_unified, FA, frontend |
-| P1 | Prompt-set store, revisions, API, configured model list, builder panel with test (paste text or pick a file), publish, import; **headless list/select** (`GET /v1/prompt-sets`, `/v1/extract {prompt_set}`) | csai, frontend, scripts |
+| P1 | Prompt-set store, revisions, API, configured model list, builder panel with test (paste text or pick a file), publish, **YAML export/import** (§4.6); **headless list/select/publish** (`GET /v1/prompt-sets`, `/v1/extract {prompt_set}`, `PUT /v1/prompt-sets/slug/{slug}`) | csai, frontend, scripts |
 | P2 | Marked-up PDF (locate, draw, legend, sidecar, pruning family), in test runs and in `/v1/extract` (`markup: true`) | csai, frontend |
 | P3 | csai extraction jobs; `extraction.complete`/`extraction.failed` for every extraction (jobs and headless) + `EVENT_CONTRACT.md`; `GET /v1/documents/{uid}/extractions`; automation budget; FA `extract` plug-in; **webhook fires on extracted data with values merged in** (§6.3) | csai, FA, frontend |
 | P4 | FA `extraction_rules` plug-in + rules editor; loop guard | FA, frontend |
@@ -646,6 +797,12 @@ automation exists.
 
 ## 8. Tests
 
+- YAML: export → import → export round trip for every field type and for a
+  multi-set file; imports are drafts; `on_conflict` new/revision; unknown
+  model → default + warning; unmatched classifier labels dropped + warning;
+  SmolDocBot `type: extractor` import; invalid file imports nothing; size and
+  count caps; key session exports published sets only and cannot use the
+  file import (it publishes through `PUT …/slug/{slug}` instead).
 - csai unit: compilation of every field type to JSON Schema; revision
   immutability; test runs (pasted text and file) never write the cache, a run
   record or a stored PDF; pasted-text offsets; `CSAI_EXTRACT_MODELS` parsing
@@ -668,6 +825,17 @@ automation exists.
   values; existing bindings' payloads unchanged.
 - FA unit: both plug-ins with fakes (event → job request; values → each
   condition type, each action); loop guard; invalid rule on save.
+- Desktop simulator, publishing: first `PUT` creates and publishes (201);
+  the same definition again is a no-op (200, same revision, no new row); a
+  changed definition is a new published revision; `base_revision` stale after
+  a builder publish → 409, then `force` wins; `publish: false` → draft, not
+  listed; a plain member's key (no role, no setup) publishes; a second user's
+  key with the same definition is a no-op; a builder-managed or taken-over set
+  → 409 `managed_in_builder` for a plain member, accepted for an editor; a
+  locked slug → 409; identical definitions are no-ops in every case; set and
+  revision caps; unknown model or classifier label → 422; retire → runs get
+  410; `managed_by` recorded; a folder binding on an application-managed set
+  stays on its pinned revision after an application publish.
 - Desktop simulator: list published sets (drafts and retired hidden, ETag
   revalidation), fetch one and map its fields, run by id with and without a
   pinned revision, `current_revision` reported after a new publish, 404 for a
@@ -699,6 +867,14 @@ automation exists.
 - **D7 Marked-up rendition:** a PDF ("ODF" in the request was a typo).
 - **Test operation:** as in the classifier editor, paste text or choose a
   stored file (§4.2, §4.3).
+- **Sharing:** prompt sets export and import as YAML
+  (`fileengine.prompt_set.v1`), matching the classifier sets' YAML; imports
+  arrive as drafts (§4.6).
+- **Desktop publishing:** an application publishes the definitions it relies
+  on without user intervention or server-side configuration (any `api` key of
+  a member, idempotent by `slug`). Editors keep control: take over, lock,
+  retire. Folder automation pins revisions of application-managed sets
+  (§4.5).
 - **Desktop selection:** the headless API lists the prompt sets published
   from the builder and runs one by id (§4.5). "Tested" means developed
   interactively in the builder; publishing is not gated on a recorded test.
