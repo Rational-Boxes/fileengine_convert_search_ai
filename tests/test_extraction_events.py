@@ -248,6 +248,45 @@ def test_the_extractions_of_a_document(ctx):
                       params={"version": "v1"}).status_code == 404
 
 
+def test_an_entry_names_its_marked_up_pdf_and_where_each_value_is(ctx):
+    """The preview's extraction view: the PDF to show, the page to jump to
+    and the colour each value is marked in."""
+    client, app, auth, model, events, cache = ctx
+    sid = _publish(client, auth)
+    _extract(client, auth, {"files": ["d1"], "prompt_set": sid})
+    (e,) = client.get("/v1/documents/d1/extractions", headers=auth,
+                      params={"version": "v1"}).json()["entries"]
+    m = e["markup"]
+    assert m["name"] == f"v1-extractpdf_{sid[3:]}.pdf" and m["uid"]
+    assert m["fields"]["fire_rating"]["located"] is True and m["fields"]["fire_rating"]["page"] >= 1
+    assert m["fields"]["epd_number"] == {"located": False, "reason": "not_found"}
+    assert set(m["colours"]) == {"fire_rating", "width_mm", "epd_number"}
+    stored = cache.store[("d1", "v1")][events[0]["payload"]["entry"]]["markup"]
+    assert "uid" not in stored and stored["fields"] == m["fields"]
+
+
+def test_a_pruned_or_unwritten_pdf_is_not_offered(ctx):
+    client, app, auth, model, events, cache = ctx
+    sid = _publish(client, auth)
+    _extract(client, auth, {"files": ["d1"], "prompt_set": sid})
+    app.state.headless_markup.files.clear()                      # pruned with its version
+    (e,) = client.get("/v1/documents/d1/extractions", headers=auth,
+                      params={"version": "v1"}).json()["entries"]
+    assert e["markup"] is None and e["data"]["fire_rating"]["value"] == "EI 60"
+
+
+def test_an_older_entry_still_finds_its_pdf_without_pages(ctx):
+    client, app, auth, model, events, cache = ctx
+    sid = _publish(client, auth)
+    _extract(client, auth, {"files": ["d1"], "prompt_set": sid})
+    for entry in cache.store[("d1", "v1")].values():
+        entry.pop("markup")                                       # written before 1.9.72
+    (e,) = client.get("/v1/documents/d1/extractions", headers=auth,
+                      params={"version": "v1"}).json()["entries"]
+    assert e["markup"]["fields"] == {} and list(e["markup"]["colours"]) == [
+        "fire_rating", "width_mm", "epd_number"]
+
+
 def test_a_deferred_job_is_claimed_again_and_runs(ctx):
     client, app, auth, model, events, cache = ctx
     sid = _publish(client, auth)

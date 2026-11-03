@@ -329,6 +329,14 @@ def merge(parts: List[dict], fields: Iterable[str]) -> dict:
     return out
 
 
+def markup_fmt(prompt_set: Optional[dict], key: str) -> str:
+    """The fmt of an entry's marked-up PDF: one per prompt set, or per raw
+    schema (by its cache key) — ``<version>-<fmt>.pdf`` beside the source."""
+    from ..renditions import extract_pdf_fmt
+    set_id = (prompt_set or {}).get("id") or ""
+    return extract_pdf_fmt(set_id[3:] if set_id.startswith("ps_") else "s" + key[:12])
+
+
 def counts(data: dict) -> dict:
     return {"found": sum(1 for v in data.values() if v.get("found")),
             "not_found": sum(1 for v in data.values()
@@ -502,6 +510,10 @@ class Extractor:
         if not valid:
             item["problems"] = problems_left[:10]
         sidecar = ""
+        # The marked-up PDF first, so the entry can say where each value was
+        # found: the preview's extraction view jumps to that page (§5).
+        if valid:
+            self._mark_up(identity, req, t, text, item, key)
         if valid and self.cache is not None and req.write_cache:
             import datetime as _dt
             ps_ref = ({"id": req.prompt_set.get("id"), "revision": req.prompt_set.get("revision")}
@@ -517,9 +529,8 @@ class Extractor:
                 # What the values mean, for a consumer of the sidecar (§6.0):
                 # the prompt set it came from, or the raw schema itself.
                 "prompt_set": ps_ref, "schema": None if ps_ref else req.schema,
-                "model_choice": req.model_choice, "source": req.source})
-        if valid:
-            self._mark_up(identity, req, t, text, item, key)
+                "model_choice": req.model_choice, "source": req.source,
+                "markup": self._markup_record(req, item)})
         if sidecar and isinstance(sidecar, str):
             self._announce(identity, req, t, item, key, sidecar)
         return item
@@ -562,15 +573,26 @@ class Extractor:
             source=req.source, prompt_set=req.prompt_set, model=req.model_choice,
             reason=reason, job_id=req.job_id, run_id=req.run_id))
 
+    @staticmethod
+    def _markup_record(req: ExtractRequest, item: dict) -> Optional[dict]:
+        """What the cache entry keeps of the marked-up PDF: its name, the page
+        each value was located on and the colour it was marked in. Never the
+        uid (the reader looks the PDF up, so a pruned one is not offered)."""
+        m = item.get("markup") or {}
+        if m.get("status") != "written":
+            return None
+        from . import markup as mk
+        fields = req.markup_fields or [{"name": f} for f in req.fields]
+        return {"name": m.get("name"), "fields": m.get("fields") or {},
+                "colours": mk.colours_for([f["name"] for f in fields], req.markup_colours)}
+
     def _mark_up(self, identity, req: ExtractRequest, t, text: str, item: dict, key: str,
                  reuse: bool = False) -> None:
         """Add the marked-up PDF to ``item`` (§5). Never fails the item."""
         if not req.markup or self.markup is None:
             return
-        from ..renditions import extract_pdf_fmt
         from . import markup as mk
-        set_id = (req.prompt_set or {}).get("id") or ""
-        fmt = extract_pdf_fmt(set_id[3:] if set_id.startswith("ps_") else "s" + key[:12])
+        fmt = markup_fmt(req.prompt_set, key)
         try:
             if reuse and req.write_cache:
                 found = self.markup.existing(t.file_uid, t.version, fmt, identity.tenant)

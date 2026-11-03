@@ -228,8 +228,16 @@ key>: entry}}`; an entry holds `data` (per field `{found, value, unit,
 evidence: {quote, offset}}`), `prompt_set` (`{id, revision}` or null),
 `schema` (the raw schema when there is no prompt set), `model`,
 `model_choice`, `prompt_version`, `source`, `created_at`, `created_by`,
-`client_key_id`, `tokens`. A change to this shape changes the `schema`
-string.
+`client_key_id`, `tokens`, and optionally `markup` (`{name, fields: {<field>:
+{located, page?, method?, reason?}}, colours: {<field>: "#rrggbb"}}`, the
+marked-up PDF written with the entry and where each value was located; absent
+on entries written before 1.9.72 and when no PDF was written). Optional keys
+may be added without changing the `schema` string, so a reader ignores keys it
+does not know; any other change to this shape changes it.
+
+`GET /v1/documents/{uid}/extractions` returns per entry `markup`: `{uid, name,
+fields, colours}` when the marked-up PDF is still held for that version, else
+null (an older entry's `fields` is `{}`).
 
 ## 4. Delivery semantics
 

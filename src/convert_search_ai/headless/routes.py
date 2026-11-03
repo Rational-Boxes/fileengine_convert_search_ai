@@ -608,7 +608,10 @@ def document_extractions(request: Request, file_uid: str, version: str = "", ent
     ``extraction.complete`` names), READ-checked as the caller. Filter by
     ``entry`` (the cache key in the event) or ``prompt_set``. Each entry
     carries what its values mean: the prompt set's field definitions, or the
-    raw schema."""
+    raw schema, and its marked-up PDF (``markup``: uid, name, the page each
+    value was located on, its colour) when one is held for this version."""
+    from . import markup as mk
+    from .extract import markup_fmt
     from .promptset_routes import service as promptset_service
     from .promptset_service import ServiceError
     app = request.app
@@ -647,5 +650,26 @@ def document_extractions(request: Request, file_uid: str, version: str = "", ent
                 item["fields"] = []
         else:
             item["schema"] = e.get("schema")
+        item["markup"] = _entry_markup(s, file_uid, version, identity.tenant, key, e, item, mk,
+                                       markup_fmt)
         out.append(item)
     return {"file_uid": file_uid, "version": version, "entries": out}
+
+
+def _entry_markup(s, file_uid, version, tenant, key, e, item, mk, markup_fmt):
+    """The entry's marked-up PDF, looked up (so a pruned or never-written one
+    is not offered), or None. An entry written before the location report was
+    kept has only the PDF: no pages, and colours in field order."""
+    if s.markup is None:
+        return None
+    try:
+        found = s.markup.existing(file_uid, version, markup_fmt(e.get("prompt_set"), key), tenant)
+    except Exception:
+        found = None
+    if not found:
+        return None
+    rec = e.get("markup") or {}
+    names = [f.get("name") for f in item.get("fields") or [] if f.get("name")] \
+        or list((e.get("data") or {}).keys())
+    return {"uid": found[0], "name": found[1], "fields": rec.get("fields") or {},
+            "colours": rec.get("colours") or mk.colours_for(names)}
